@@ -130,3 +130,7 @@ without rewriting skills/memory/tool registry — as long as `SandboxPort` and `
 3. Optional Docker backend
 4. Output compression + file helpers
 5. Toolbox profiles (optional image/docs extras)
+
+## Deep design
+
+See [design/sandbox-v1.md](design/sandbox-v1.md) for backend ports, filesystem contract, lifecycle modes, and observation handling.

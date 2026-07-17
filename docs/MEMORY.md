@@ -182,3 +182,7 @@ Kernel does not require a hosted multi-tenant DB.
 3. Summaries
 4. Semantic recall
 5. Conversation state projection (optional advanced track)
+
+## Deep design
+
+See [design/memory-v1.md](design/memory-v1.md) for the improved layered architecture, conversation state, and phased delivery plan.

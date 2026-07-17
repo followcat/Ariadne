@@ -105,3 +105,9 @@ Acceptance:
 7. Sandbox
 
 Do not start with company packaging or connector work.
+
+## Design references
+
+- Memory deep design: [design/memory-v1.md](design/memory-v1.md)
+- Sandbox deep design: [design/sandbox-v1.md](design/sandbox-v1.md)
+- Joint synthesis: [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md)

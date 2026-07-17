@@ -17,6 +17,9 @@ Normative design documents for the Ariadne personal open-source agent kernel.
 | [SOURCE_MAP.md](SOURCE_MAP.md) | Provenance from AIFlow branches/docs |
 | [NON_GOALS.md](NON_GOALS.md) | Explicit exclusions |
 | [GLOSSARY.md](GLOSSARY.md) | Terms |
+| [design/memory-v1.md](design/memory-v1.md) | Improved memory architecture |
+| [design/sandbox-v1.md](design/sandbox-v1.md) | Redesigned sandbox port |
+| [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md) | How memory and sandbox meet |
 
 ## Reading order
 
