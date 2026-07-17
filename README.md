@@ -46,7 +46,7 @@ Those systems can *call* Ariadne later. Ariadne itself is the thread through the
 
 ## Status
 
-**Documentation-first bootstrap.** This repository currently defines product intent, architecture, public surface, and migration principles extracted from battle-tested ideas in AIFlow’s `skills` / `toolcall` / `memory` workstreams. Implementation will follow these docs.
+**v0.1 kernel implemented** (CLI shell agent + skills/toolcall/memory/sandbox). This repository currently defines product intent, architecture, public surface, and migration principles extracted from battle-tested ideas in AIFlow’s `skills` / `toolcall` / `memory` workstreams. Implementation will follow these docs.
 
 See:
 
@@ -101,6 +101,15 @@ In myth, **Ariadne** gave Theseus a thread to escape the labyrinth.
 Here the labyrinth is multi-step tool use; the thread is skills + disciplined tool exposure; memory is what you keep so the next turn does not start blind.
 
 
+
+## Tests
+
+```bash
+cd /path/to/Ariadne
+PYTHONPATH=src python3 -m pytest -q
+```
+
+Offline e2e (FakeModel, no network): `tests/test_turn_e2e_fake_model.py` exercises skills, memory, sandbox, deferred tools, and the turn loop.
 
 ## CLI shell agent (basic usage)
 

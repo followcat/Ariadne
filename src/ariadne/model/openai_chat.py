@@ -3,18 +3,11 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from typing import Any
 
 from ..errors import AriadneError, app_error
 from ..types import Message, Usage
-
-
-@dataclass(slots=True)
-class ModelExchange:
-    message: Message
-    usage: Usage
-    raw: dict[str, Any]
+from .base import ModelExchange
 
 
 class OpenAIChatModel:

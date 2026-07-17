@@ -34,11 +34,37 @@ class Usage:
 
 
 @dataclass(slots=True)
+class LayerReport:
+    name: str
+    status: Literal["used", "skipped", "failed", "disabled", "stale_delta"]
+    token_chars: int = 0
+    item_ids: list[str] = field(default_factory=list)
+    notes: str = ""
+
+
+@dataclass(slots=True)
+class MemoryContextSummary:
+    layers: list[LayerReport] = field(default_factory=list)
+    curated_count: int = 0
+    state_entity_count: int = 0
+    recent_turn_count: int = 0
+
+
+@dataclass(slots=True)
+class SkillEvent:
+    kind: Literal["search", "load", "index"]
+    skill_name: str = ""
+    detail: str = ""
+
+
+@dataclass(slots=True)
 class TurnResult:
     turn_id: str
     status: Literal["completed", "failed", "needs_input"]
     text: str
     tool_calls: list[ToolCallTrace] = field(default_factory=list)
+    skill_events: list[SkillEvent] = field(default_factory=list)
+    memory: MemoryContextSummary = field(default_factory=MemoryContextSummary)
     usage: Usage = field(default_factory=Usage)
     error: AppError | None = None
     session_id: str = ""

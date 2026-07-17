@@ -23,6 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sandbox", choices=["local", "null"], default=None, help="Sandbox backend")
     parser.add_argument("--model", default=None, help="Override MODEL from .env")
     parser.add_argument("--tool-loop-limit", type=int, default=None)
+    parser.add_argument("--skills-dir", type=Path, default=None, help="Extra skills directory")
+    parser.add_argument("--eager-tools", action="store_true", help="Send all tool schemas eagerly")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show tool traces and usage")
     parser.add_argument("--json", action="store_true", dest="json_mode", help="Print TurnResult JSON")
 
@@ -36,12 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="Check configuration")
     sub.add_parser("tools", help="List tools")
+    sub.add_parser("skills", help="List installed skills")
     sub.add_parser("version", help="Print version")
     return parser
 
 
-async def cmd_run(args: argparse.Namespace) -> int:
-    settings = load_settings(
+def _settings_from_args(args: argparse.Namespace):
+    return load_settings(
         workspace=args.workspace,
         session_id=args.session,
         model=args.model,
@@ -49,7 +52,13 @@ async def cmd_run(args: argparse.Namespace) -> int:
         tool_loop_limit=args.tool_loop_limit,
         verbose=args.verbose,
         json_mode=args.json_mode,
+        skills_dir=args.skills_dir,
+        prefer_deferred_tools=not args.eager_tools,
     )
+
+
+async def cmd_run(args: argparse.Namespace) -> int:
+    settings = _settings_from_args(args)
     agent = compose_agent(settings)
     prompt = " ".join(args.prompt).strip()
     if not prompt:
@@ -64,15 +73,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
 
 async def cmd_chat(args: argparse.Namespace) -> int:
-    settings = load_settings(
-        workspace=args.workspace,
-        session_id=args.session,
-        model=args.model,
-        sandbox=args.sandbox,
-        tool_loop_limit=args.tool_loop_limit,
-        verbose=args.verbose,
-        json_mode=args.json_mode,
-    )
+    settings = _settings_from_args(args)
     agent = compose_agent(settings)
     if not args.no_welcome:
         print(f"Ariadne chat  session={settings.session_id}  workspace={settings.workspace}")
@@ -88,7 +89,7 @@ async def cmd_chat(args: argparse.Namespace) -> int:
         if line in {"/exit", "/quit"}:
             return 0
         if line == "/help":
-            print("/exit /quit /session /workspace /tools /help")
+            print("/exit /quit /session /workspace /tools /skills /help")
             continue
         if line == "/session":
             print(settings.session_id)
@@ -100,6 +101,10 @@ async def cmd_chat(args: argparse.Namespace) -> int:
             for name in agent.turn_app.tools.tools:
                 print(name)
             continue
+        if line == "/skills":
+            for skill in agent.turn_app.skills.list():
+                print(f"{skill.name}\t{skill.description}")
+            continue
         result = await agent.run(line)
         if settings.json_mode:
             sys.stdout.write(render_json(result))
@@ -110,12 +115,7 @@ async def cmd_chat(args: argparse.Namespace) -> int:
 
 
 async def cmd_doctor(args: argparse.Namespace) -> int:
-    settings = load_settings(
-        workspace=args.workspace,
-        session_id=args.session,
-        model=args.model,
-        sandbox=args.sandbox,
-    )
+    settings = _settings_from_args(args)
     print(f"workspace: {settings.workspace}")
     print(f"session:   {settings.session_id}")
     print(f"sandbox:   {settings.sandbox}")
@@ -123,12 +123,14 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"base_url:  {'set' if settings.base_url else 'MISSING'}")
     print(f"api_key:   {'set' if settings.api_key else 'MISSING'}")
     print(f"data_dir:  {settings.resolved_data_dir}")
+    print(f"deferred:  {settings.prefer_deferred_tools}")
     if not settings.base_url or not settings.api_key:
         print("FAIL: configure BASE_URL and API_KEY in .env")
         return 1
     try:
         agent = compose_agent(settings)
         print(f"tools:     {', '.join(agent.turn_app.tools.tools)}")
+        print(f"skills:    {', '.join(s.name for s in agent.turn_app.skills.list()) or '(none)'}")
         print("OK")
         return 0
     except AriadneError as exc:
@@ -137,13 +139,33 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 async def cmd_tools(args: argparse.Namespace) -> int:
-    settings = load_settings(workspace=args.workspace, sandbox=args.sandbox or "null")
-    # tools listing should not require API key hard-fail for null compose — use registry only
     from ..tools.registry import build_default_registry
 
     reg = build_default_registry()
     for name, spec in reg.tools.items():
-        print(f"{name}\t{spec.catalog_description or spec.description[:60]}")
+        print(f"{name}\t{spec.tool_exposure}\t{spec.catalog_description or spec.description[:60]}")
+    return 0
+
+
+async def cmd_skills(args: argparse.Namespace) -> int:
+    from ..skills.store import SkillStore
+
+    roots: list[Path] = []
+    repo = Path(__file__).resolve().parents[3] / "skills" / "builtin"
+    if repo.is_dir():
+        roots.append(repo)
+    if args.skills_dir:
+        roots.append(args.skills_dir)
+    if args.workspace:
+        ws = Path(args.workspace) / "skills"
+        if ws.is_dir():
+            roots.append(ws)
+    skills = SkillStore.from_dirs(roots, strict=False).list() if roots else []
+    if not skills:
+        print("(no skills)")
+        return 0
+    for skill in skills:
+        print(f"{skill.name}\t{skill.description}")
     return 0
 
 
@@ -162,6 +184,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(cmd_doctor(args))
         elif args.command == "tools":
             code = asyncio.run(cmd_tools(args))
+        elif args.command == "skills":
+            code = asyncio.run(cmd_skills(args))
         else:
             parser.error(f"unknown command {args.command}")
             code = 2

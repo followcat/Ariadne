@@ -63,6 +63,8 @@ class Settings:
     verbose: bool = False
     json_mode: bool = False
     data_dir: Path | None = None
+    skills_dir: Path | None = None
+    prefer_deferred_tools: bool = True
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -81,6 +83,8 @@ def load_settings(
     verbose: bool = False,
     json_mode: bool = False,
     env_file: Path | None = None,
+    skills_dir: Path | None = None,
+    prefer_deferred_tools: bool | None = None,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
     file_cfg: dict[str, str] = {}
@@ -116,4 +120,6 @@ def load_settings(
         tool_loop_limit=limit,
         verbose=verbose,
         json_mode=json_mode,
+        skills_dir=skills_dir,
+        prefer_deferred_tools=True if prefer_deferred_tools is None else prefer_deferred_tools,
     )

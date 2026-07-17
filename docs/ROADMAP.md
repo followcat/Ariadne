@@ -1,100 +1,83 @@
 # Roadmap
 
-Documentation-first bootstrap is Phase 0 (this repository now).
+## Implemented (v0.1 kernel)
 
-## Phase 0 — Docs & repo skeleton (current)
+The personal open-source kernel designs are implemented in `src/ariadne` with offline tests.
 
+| Design area | Status | Code | Tests |
+| --- | --- | --- | --- |
+| CLI shell agent host | done | `cli/`, `host/compose.py` | `test_cli_parser.py` |
+| Callable turn / tool loop | done | `kernel/turn.py`, `agent.py` | `test_turn_e2e_fake_model.py` |
+| Sandbox port + LocalWorkdir | done | `sandbox/` | `test_local_sandbox.py` |
+| Tool registry + deferred exposure | done | `tools/` | `test_tool_exposure.py` |
+| Skills store/search/load | done | `skills/` | `test_skills_store.py` + e2e |
+| Memory L0 transcript | done | `memory/transcript.py` | e2e |
+| Memory L1 turn summary store | done | `memory/summary.py` | e2e |
+| Memory L2 conversation state | done | `memory/state.py` | `test_memory_layers.py` |
+| Memory L3 curated durable | done | `memory/curated.py` | `test_memory_layers.py` |
+| Memory L4 semantic index | done | `memory/semantic.py` | e2e |
+| Memory facade / layer reports | done | `memory/facade.py` | `test_memory_layers.py` |
+| OpenAI-compatible model adapter | done | `model/openai_chat.py` | live via `.env` / CLI |
+| FakeModel for offline verification | done | `model/fake.py` | e2e |
+
+### Phase 0 — Docs & repo skeleton
 - [x] Name: Ariadne
-- [x] Git repository initialized
-- [x] Vision, architecture, API, skills, toolcall, memory, sandbox docs
-- [x] Source map from AIFlow skills/toolcall/memory work
-- [ ] License selection
-- [ ] Package skeleton (`pyproject.toml`) — next after docs review
+- [x] Git repository + design docs
+- [x] Package skeleton (`pyproject.toml`)
 
-## Phase 0.5 — CLI shell agent host (landed skeleton)
-
-- [x] `ariadne run` / `ariadne chat` / `doctor` / `tools`
-- [x] LocalWorkdir sandbox + `sandbox_exec` tool
-- [x] OpenAI-compatible model adapter via `.env`
+### Phase 0.5 / 1 — CLI + callable turn
+- [x] `ariadne run` / `chat` / `doctor` / `tools` / `skills`
+- [x] LocalWorkdir sandbox + `sandbox_exec`
+- [x] OpenAI-compatible model via `.env`
 - [x] L0 transcript under `.ariadne/sessions/`
+- [x] Full tool loop with structured errors
 - [ ] Streaming tokens in CLI
-- [ ] active_session sandbox for chat
+- [ ] `active_session` sandbox for chat
 
-## Phase 1 — Callable turn MVP
+### Phase 2 — Skills runtime
+- [x] Filesystem skill packs + validation
+- [x] Skill index injection
+- [x] `search_skills` (lexical) + `load_skill` (turn-scoped tool result)
+- [x] Example builtin skill `shell_project_notes`
+- [ ] Hybrid/vector skill search
 
-Deliver a real `await agent.run(...)` with:
+### Phase 3 — Toolcall efficiency
+- [x] Deferred exposure + `tool_search`
+- [x] Catalog vs schema layering on builtins
+- [x] Deferred demo tool + unit test
+- [ ] Schema size metrics in production traces
 
-- OpenAI-compatible model adapter (or Responses adapter)
-- eager tool registry + tool loop + traces
-- session transcript persistence (filesystem/sqlite)
-- recent raw memory window only
-- filesystem skill store with index injection (no search yet)
-- `NullSandbox`
+### Phase 4 — Memory depth
+- [x] Curated memory tool + store + caps/fastfail
+- [x] Async-ready turn summary store (written at turn end)
+- [x] Semantic multi-chunk lexical index
+- [x] Layer budgets/metadata via `LayerReport`
+- [x] Conversation state closed ops + evidence quotes
 
-Acceptance:
+### Phase 5 — Sandbox redesign v1
+- [x] `NullSandbox` + clear errors
+- [x] `LocalWorkdirSandbox` + truncation markers
+- [x] `/workspace` + `/session` contract
+- [ ] Docker backend
+- [ ] Observation compression beyond head/tail
+- [ ] Toolbox profiles
 
-- CLI or python demo completes multi-step tool call on a toy tool
-- unknown tool fails with stable error code
+### Phase 6 — Advanced memory (optional)
+- [ ] Background projection worker / leases
+- [ ] External embedding providers
+- [ ] Full memory lab case suite port
 
-## Phase 2 — Skills runtime
+### Phase 7 — Polish for public 0.1
+- [x] Offline e2e verification test
+- [ ] CI packaging
+- [ ] Streaming + richer CLI UX
 
-- `search_skills` lexical
-- `load_skill` turn-scoped body
-- skill validation CLI
-- selection discipline in policy
-- example builtin skills (authoring notes, generic runbook)
+## Design references
 
-Acceptance:
-
-- skill load improves a scripted multi-step task vs no-skill baseline
-
-## Phase 3 — Toolcall efficiency
-
-- deferred tool exposure + `tool_search`
-- catalog vs schema layering enforced in builtins
-- schema size metrics in traces
-- initial case suite (functional + cost)
-
-Acceptance:
-
-- deferred mode reduces upfront schema chars without losing tool coverage cases
-
-## Phase 4 — Memory depth
-
-- curated memory tool + store
-- summaries
-- optional semantic recall
-- layer budgets + metadata
-
-Acceptance:
-
-- durable preference survives new session
-- at least one multi-turn state case passes
-
-## Phase 5 — Sandbox redesign v1
-
-- `LocalWorkdirSandbox`
-- `sandbox.exec`
-- output truncation markers
-- optional Docker backend experimental
-
-Acceptance:
-
-- model can create a file via sandbox and read back content in-loop
-
-## Phase 6 — Advanced memory (optional track)
-
-- conversation state projection
-- stricter not-ready semantics
-- evaluation suite expanded from memory lab ideas
-
-## Phase 7 — Polish for public 0.1
-
-- docs sync with code
-- typed public exports
-- CI tests
-- example project
-- performance notes
+- Memory deep design: [design/memory-v1.md](design/memory-v1.md)
+- Sandbox deep design: [design/sandbox-v1.md](design/sandbox-v1.md)
+- CLI shell agent: [design/cli-shell-agent.md](design/cli-shell-agent.md)
+- Joint synthesis: [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md)
 
 ## Explicitly deferred forever (unless product changes)
 
@@ -102,21 +85,3 @@ Acceptance:
 - WeCom/Feishu/Telegram connectors in core
 - Odoo/GitLab/Redmine adapters in core
 - enterprise mail/egress gateway mesh as required runtime
-
-## Suggested contribution order
-
-1. Agree docs
-2. Package skeleton + TurnApplication empty loop
-3. Model adapter + traces
-4. Tools
-5. Skills
-6. Memory
-7. Sandbox
-
-Do not start with company packaging or connector work.
-
-## Design references
-
-- Memory deep design: [design/memory-v1.md](design/memory-v1.md)
-- Sandbox deep design: [design/sandbox-v1.md](design/sandbox-v1.md)
-- Joint synthesis: [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md)

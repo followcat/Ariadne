@@ -1,6 +1,6 @@
 [project]
 name = "ariadne"
-version = "0.0.1"
+version = "0.1.0"
 description = "Personal open-source agent kernel — CLI shell agent first."
 readme = "README.md"
 requires-python = ">=3.13"

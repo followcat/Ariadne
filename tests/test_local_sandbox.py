@@ -19,7 +19,6 @@ def test_local_sandbox_exec_and_file(tmp_path: Path) -> None:
         assert result.exit_code == 0
         assert "hello" in result.stdout
         assert (workspace / "hi.txt").read_text() == "hello\n"
-
         scratch = await session.exec(
             SandboxExecRequest(cmd="printf 'tmp\\n' > a.txt && cat a.txt", cwd="/session")
         )

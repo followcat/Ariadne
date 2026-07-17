@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,3 +36,14 @@ class TranscriptStore:
             if role in {"user", "assistant"} and content:
                 messages.append({"role": role, "content": content})
         return messages
+
+    def all_records(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out

@@ -77,6 +77,25 @@ def render_json(result: TurnResult) -> str:
             "total_tokens": result.usage.total_tokens,
             "reasoning_tokens": result.usage.reasoning_tokens,
         },
+        "skill_events": [
+            {"kind": e.kind, "skill_name": e.skill_name, "detail": e.detail}
+            for e in result.skill_events
+        ],
+        "memory": {
+            "curated_count": result.memory.curated_count,
+            "state_entity_count": result.memory.state_entity_count,
+            "recent_turn_count": result.memory.recent_turn_count,
+            "layers": [
+                {
+                    "name": layer.name,
+                    "status": layer.status,
+                    "token_chars": layer.token_chars,
+                    "item_ids": layer.item_ids,
+                    "notes": layer.notes,
+                }
+                for layer in result.memory.layers
+            ],
+        },
         "tool_calls": [
             {
                 "call_id": c.call_id,
