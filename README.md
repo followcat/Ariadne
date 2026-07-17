@@ -100,6 +100,33 @@ This snippet is the **north-star public shape**, not a claim that the package is
 In myth, **Ariadne** gave Theseus a thread to escape the labyrinth.  
 Here the labyrinth is multi-step tool use; the thread is skills + disciplined tool exposure; memory is what you keep so the next turn does not start blind.
 
+
+
+## CLI shell agent (basic usage)
+
+Ariadne is meant to be used first as a **project shell agent**:
+
+```bash
+cd /path/to/your/project
+
+# from Ariadne checkout
+export PYTHONPATH=/path/to/Ariadne/src
+python3 -m ariadne doctor
+python3 -m ariadne run "create NOTES.md with one line about this repo"
+python3 -m ariadne chat
+```
+
+Or install editable:
+
+```bash
+pip install -e /path/to/Ariadne
+ariadne run "list files and summarize the project"
+```
+
+Config: `.env` with `BASE_URL`, `API_KEY`, `MODEL` (see `.env.example`).
+
+Details: [docs/USAGE_CLI.md](docs/USAGE_CLI.md), [docs/design/cli-shell-agent.md](docs/design/cli-shell-agent.md).
+
 ## License
 
 TBD at first code release. Documentation may be used for design discussion now.

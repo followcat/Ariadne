@@ -11,6 +11,15 @@ Documentation-first bootstrap is Phase 0 (this repository now).
 - [ ] License selection
 - [ ] Package skeleton (`pyproject.toml`) — next after docs review
 
+## Phase 0.5 — CLI shell agent host (landed skeleton)
+
+- [x] `ariadne run` / `ariadne chat` / `doctor` / `tools`
+- [x] LocalWorkdir sandbox + `sandbox_exec` tool
+- [x] OpenAI-compatible model adapter via `.env`
+- [x] L0 transcript under `.ariadne/sessions/`
+- [ ] Streaming tokens in CLI
+- [ ] active_session sandbox for chat
+
 ## Phase 1 — Callable turn MVP
 
 Deliver a real `await agent.run(...)` with:

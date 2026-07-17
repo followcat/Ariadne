@@ -20,6 +20,8 @@ Normative design documents for the Ariadne personal open-source agent kernel.
 | [design/memory-v1.md](design/memory-v1.md) | Improved memory architecture |
 | [design/sandbox-v1.md](design/sandbox-v1.md) | Redesigned sandbox port |
 | [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md) | How memory and sandbox meet |
+| [design/cli-shell-agent.md](design/cli-shell-agent.md) | CLI as primary shell-agent host |
+| [USAGE_CLI.md](USAGE_CLI.md) | CLI usage guide |
 
 ## Reading order
 
