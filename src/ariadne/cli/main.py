@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
+import uuid
 from pathlib import Path
 
 from .. import __version__
@@ -14,52 +16,84 @@ from ..types import TurnEvent
 from .render import render_event, render_human, render_json
 
 
+def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
+    """Global flags. suppress=True lets subcommands accept them after the
+    subcommand name without clobbering values given before it."""
+    s = argparse.SUPPRESS if suppress else None
+    b = argparse.SUPPRESS if suppress else False
+    p.add_argument("--session", default=s, help="Session id (default: local-<workspace hash>)")
+    p.add_argument("--workspace", type=Path, default=s, help="Project workspace (default: cwd)")
+    p.add_argument(
+        "--sandbox",
+        choices=["local", "null", "docker"],
+        default=s,
+        help="Sandbox backend",
+    )
+    p.add_argument(
+        "--no-sandbox",
+        action="store_true",
+        default=b,
+        help="Force NullSandbox (alias for --sandbox null)",
+    )
+    p.add_argument(
+        "--sandbox-lifecycle",
+        choices=["per_turn", "active_session"],
+        default=s,
+        help="Sandbox lifecycle (chat prefers active_session)",
+    )
+    p.add_argument("--toolbox", default=s, help="Toolbox profile: minimal|docs|data")
+    p.add_argument("--docker-image", default=s, help="Override docker image")
+    p.add_argument("--model", default=s, help="Override MODEL from .env")
+    p.add_argument("--tool-loop-limit", type=int, default=s)
+    p.add_argument("--skills-dir", type=Path, default=s, help="Extra skills directory")
+    p.add_argument(
+        "--eager-tools", action="store_true", default=b, help="Send all tool schemas eagerly"
+    )
+    p.add_argument(
+        "--force-workspace",
+        action="store_true",
+        default=b,
+        help="Allow risky workspaces like / or $HOME",
+    )
+    p.add_argument("-v", "--verbose", action="store_true", default=b, help="Show tool traces and usage")
+    p.add_argument("--json", action="store_true", default=b, dest="json_mode", help="Print TurnResult JSON")
+    p.add_argument("--stream", action="store_true", default=b, help="Stream model tokens / turn events")
+    p.add_argument(
+        "--sandbox-prestart",
+        action="store_true",
+        default=b,
+        help="Start sandbox session in parallel with memory context build",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ariadne",
         description="Ariadne — personal shell agent (CLI host over the agent kernel).",
     )
     parser.add_argument("--version", action="version", version=f"ariadne {__version__}")
-    parser.add_argument("--session", default=None, help="Session id (default: default)")
-    parser.add_argument("--workspace", type=Path, default=None, help="Project workspace (default: cwd)")
-    parser.add_argument(
-        "--sandbox",
-        choices=["local", "null", "docker"],
-        default=None,
-        help="Sandbox backend",
-    )
-    parser.add_argument(
-        "--sandbox-lifecycle",
-        choices=["per_turn", "active_session"],
-        default=None,
-        help="Sandbox lifecycle (chat prefers active_session)",
-    )
-    parser.add_argument("--toolbox", default=None, help="Toolbox profile: minimal|docs|data")
-    parser.add_argument("--docker-image", default=None, help="Override docker image")
-    parser.add_argument("--model", default=None, help="Override MODEL from .env")
-    parser.add_argument("--tool-loop-limit", type=int, default=None)
-    parser.add_argument("--skills-dir", type=Path, default=None, help="Extra skills directory")
-    parser.add_argument("--eager-tools", action="store_true", help="Send all tool schemas eagerly")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show tool traces and usage")
-    parser.add_argument("--json", action="store_true", dest="json_mode", help="Print TurnResult JSON")
-    parser.add_argument("--stream", action="store_true", help="Stream model tokens / turn events")
-    parser.add_argument(
-        "--sandbox-prestart",
-        action="store_true",
-        help="Start sandbox session in parallel with memory context build",
-    )
+    _add_global_flags(parser, suppress=False)
 
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_p = sub.add_parser("run", help="Run one agent turn")
+    _add_global_flags(run_p, suppress=True)
     run_p.add_argument("prompt", nargs="+", help="User prompt")
 
     chat_p = sub.add_parser("chat", help="Interactive multi-turn shell agent")
+    _add_global_flags(chat_p, suppress=True)
     chat_p.add_argument("--no-welcome", action="store_true", help="Suppress welcome banner")
 
     sub.add_parser("doctor", help="Check configuration")
     sub.add_parser("tools", help="List tools")
-    sub.add_parser("skills", help="List installed skills")
+    skills_p = sub.add_parser("skills", help="List installed skills")
+    skills_p.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "validate"],
+        help="list (default) or validate skill packs strictly",
+    )
     sub.add_parser("toolbox", help="List toolbox profiles")
     sub.add_parser("version", help="Print version")
     return parser
@@ -69,11 +103,12 @@ def _settings_from_args(args: argparse.Namespace, *, default_lifecycle: str | No
     lifecycle = args.sandbox_lifecycle
     if lifecycle is None and default_lifecycle is not None:
         lifecycle = default_lifecycle
+    sandbox = "null" if getattr(args, "no_sandbox", False) else args.sandbox
     return load_settings(
         workspace=args.workspace,
         session_id=args.session,
         model=args.model,
-        sandbox=args.sandbox,
+        sandbox=sandbox,
         sandbox_lifecycle=lifecycle,
         tool_loop_limit=args.tool_loop_limit,
         verbose=args.verbose,
@@ -84,7 +119,17 @@ def _settings_from_args(args: argparse.Namespace, *, default_lifecycle: str | No
         toolbox_profile=args.toolbox,
         docker_image=args.docker_image,
         sandbox_prestart=args.sandbox_prestart,
+        force_workspace=getattr(args, "force_workspace", False),
     )
+
+
+def _event_to_jsonable(event: TurnEvent) -> dict[str, object]:
+    data: dict[str, object] = {}
+    for key, value in event.data.items():
+        if key == "result":
+            continue
+        data[key] = value
+    return {"kind": event.kind, "data": data}
 
 
 async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) -> int:
@@ -98,6 +143,10 @@ async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) ->
             if chunk:
                 sys.stdout.write(chunk)
                 sys.stdout.flush()
+        else:
+            # NDJSON event stream (cli-shell-agent §6.2), final result after
+            sys.stdout.write(json.dumps(_event_to_jsonable(event), ensure_ascii=False, default=str) + "\n")
+            sys.stdout.flush()
     if final is None:
         print("ERROR: stream ended without result", file=sys.stderr)
         return 1
@@ -163,8 +212,8 @@ async def cmd_chat(args: argparse.Namespace) -> int:
             return 0
         if line == "/help":
             print(
-                "/exit /quit /session /workspace /tools /skills /sandbox-status "
-                "/clear-session-files /help"
+                "/exit /quit /session /workspace /tools /skills /memory read "
+                "/reset-session /sandbox-status /clear-session-files /help"
             )
             continue
         if line == "/session":
@@ -180,6 +229,26 @@ async def cmd_chat(args: argparse.Namespace) -> int:
         if line == "/skills":
             for skill in agent.turn_app.skills.list():
                 print(f"{skill.name}\t{skill.description}")
+            continue
+        if line.startswith("/memory"):
+            parts = line.split()
+            action = parts[1] if len(parts) > 1 else "read"
+            if action != "read":
+                print("usage: /memory read")
+                continue
+            curated = await agent.get_curated(session_id=settings.session_id)
+            for scope in ("user", "session"):
+                entries = curated.get(scope) or []
+                print(f"[{scope}] {len(entries)} entries")
+                for entry in entries:
+                    print(f"  {entry['id']}. {entry['content']}")
+            continue
+        if line == "/reset-session":
+            if agent.active_sessions is not None:
+                await agent.active_sessions.close(settings.session_id, reason="reset_session")
+            settings.session_id = f"reset-{uuid.uuid4().hex[:8]}"
+            agent = compose_agent(settings)
+            print(f"new session: {settings.session_id} (workspace kept)")
             continue
         if line == "/sandbox-status":
             if agent.active_sessions is None:
@@ -272,6 +341,13 @@ async def cmd_skills(args: argparse.Namespace) -> int:
         if candidate is not None and Path(candidate).is_dir():
             skill_dirs.append(Path(candidate))
     from ..skills.store import SkillStore
+
+    if args.action == "validate":
+        store = SkillStore.from_dirs(skill_dirs, strict=True, user_root=user_skills)
+        for skill in store.list():
+            print(f"ok\t{skill.name}\t{skill.namespace}")
+        print(f"valid: {len(store.list())} skill(s)")
+        return 0
 
     store = SkillStore.from_dirs(skill_dirs, strict=False, user_root=user_skills)
     for skill in store.list():

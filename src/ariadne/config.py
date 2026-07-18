@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
+
+from .errors import AriadneError, app_error
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -29,7 +32,7 @@ class Settings:
     session_id: str = "default"
     sandbox: str = "local"
     sandbox_lifecycle: str = "per_turn"
-    tool_loop_limit: int = 16
+    tool_loop_limit: int = 32
     verbose: bool = False
     json_mode: bool = False
     stream: bool = False
@@ -69,8 +72,16 @@ def load_settings(
     embedding_provider: str | None = None,
     env_file: Path | None = None,
     sandbox_prestart: bool = False,
+    force_workspace: bool = False,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
+    if workspace in {Path("/"), Path.home()} and not force_workspace:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"Refusing risky workspace {workspace} (pass --force-workspace to override)",
+            )
+        )
     env: dict[str, str] = {}
     # project .env then CWD .env (repo root when developing)
     for candidate in (
@@ -103,11 +114,14 @@ def load_settings(
     ).strip().lower()
     if lifecycle not in {"per_turn", "active_session"}:
         lifecycle = "per_turn"
-    sid = session_id or pick("ARIADNE_SESSION", default="default")
+    sid = session_id or pick("ARIADNE_SESSION", default="")
+    if not sid:
+        # stable per project (cli-shell-agent §8)
+        sid = "local-" + hashlib.sha1(str(workspace).encode()).hexdigest()[:8]
     limit = tool_loop_limit
     if limit is None:
-        raw = pick("ARIADNE_TOOL_LOOP_LIMIT", default="16")
-        limit = max(int(raw or 16), 1)
+        raw = pick("ARIADNE_TOOL_LOOP_LIMIT", default="32")
+        limit = max(int(raw or 32), 1)
     profile = toolbox_profile or pick("ARIADNE_TOOLBOX", default="minimal")
     emb = embedding_provider or pick("ARIADNE_EMBEDDING_PROVIDER", default="hash")
     emb_model = pick("ARIADNE_EMBEDDING_MODEL", default="text-embedding-3-small")
