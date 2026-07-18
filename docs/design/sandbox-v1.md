@@ -95,7 +95,7 @@ serial exec only in v1
 @dataclass
 class SandboxExecRequest:
     cmd: str
-    cwd: str = "/session"
+    cwd: str = "/workspace"
     timeout_seconds: float | None = 60
     env: dict[str, str] | None = None
     max_stdout_bytes: int = 256_000
@@ -125,12 +125,13 @@ class SandboxBackend(Protocol):
         self,
         *,
         scope_key: str,
-        workspace_root: str | None,
-        mode: str,
     ) -> SandboxSession: ...
 ```
 
-Kernel tools depend only on these types.
+Kernel tools depend only on these types. `scope_key` encodes the lifecycle
+mode (`<session>-<turn>` for `per_turn`, `active-<session>` for
+`active_session`); the workspace root is backend configuration, not a
+per-start parameter.
 
 ---
 

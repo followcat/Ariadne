@@ -16,6 +16,17 @@ The personal open-source kernel designs are implemented in `src/ariadne` with of
 | Memory constructors (`Memory.local`/`in_memory`) + inspection helpers | done | `memory/facade.py`, `agent.py` | `test_public_api.py` |
 | `last_good_plus_delta` read mode | done | `memory/facade.py`, `state.py`, `transcript.py` | `test_public_api.py` |
 | Sandbox prestart (parallel with memory build) | done | `kernel/turn.py`, `config.py` | `test_public_api.py` |
+| Sandbox cleanup guard (all exit paths) | done | `kernel/turn.py` `_SandboxGuard` | `test_turn_lifecycle.py` |
+| L2 append-only versions + CAS | done | `memory/state.py` | `test_memory_acceptance.py` |
+| Full L2 op set (relations, collection_move) | done | `memory/state.py` | `test_memory_acceptance.py` |
+| Layer char budgets with markers | done | `memory/facade.py` | `test_memory_acceptance.py` |
+| Sandbox env allowlist | done | `sandbox/local.py` | `test_sandbox_acceptance.py` |
+| CapabilitySpec fields + `ToolRegistry.builtins()` | done | `tools/registry.py`, `tools/exposure.py` | e2e |
+| Trace secret redaction | done | `redact.py`, `kernel/turn.py` | `test_skill_plan_and_redact.py` |
+| Skill selection plan + scores | done | `skills/store.py`, `kernel/turn.py` | `test_skill_plan_and_redact.py` |
+| Skill pack allowlist + agents yaml | done | `skills/store.py` | `test_skill_plan_and_redact.py` |
+| CLI hardening (flag order, /memory read, /reset-session, guards, validate, NDJSON) | done | `cli/main.py`, `config.py` | parser tests + live |
+| Memory acceptance suite (isolation, forget/update, multi-entity) | done | — | `test_memory_acceptance.py` |
 | Active session lifecycle | done | `sandbox/active.py` | `test_active_session.py` |
 | Docker sandbox backend | done | `sandbox/docker.py` | `test_docker_sandbox.py` (skip if no docker) |
 | Observation compression | done | `sandbox/compress.py` | `test_local_sandbox.py` |
@@ -53,12 +64,16 @@ The personal open-source kernel designs are implemented in `src/ariadne` with of
 - [x] `skill_manage` for user skills
 - [x] Example builtin skill `shell_project_notes`
 - [x] Hybrid/vector skill search
+- [x] Selection plan (auto_load / recommended / other) with explainable scores
+- [x] Pack allowlist validation + agents/index.yaml + runtime.yaml
 
 ### Phase 3 — Toolcall efficiency
 - [x] Deferred exposure + `tool_search`
 - [x] Catalog vs schema layering on builtins
 - [x] Deferred demo tool + unit test
 - [x] Schema size metrics in production traces
+- [x] CapabilitySpec fields (title/kind/exposed_to_llm) + ToolRegistry.builtins()
+- [x] Secret redaction in tool traces
 
 ### Phase 4 — Memory depth
 - [x] Curated memory tool + store + caps/fastfail
@@ -77,6 +92,8 @@ The personal open-source kernel designs are implemented in `src/ariadne` with of
 - [x] Session FS API (`read_file`/`write_file`/`list_dir`) + path-escape rejection
 - [x] per_turn `/session` cleanup on close + acceptance scenarios 1–6
 - [x] Optional sandbox prestart (bounded, parallel with memory build)
+- [x] env allowlist (no host secrets forwarded by default)
+- [x] cleanup guard: sandbox closed on every turn exit path
 
 Model-facing `sandbox.read_file`/`sandbox.write_file` tools are intentionally
 **not** added yet: sandbox-v1 §5.2 makes them conditional ("only if exec-based
@@ -88,6 +105,10 @@ hosts and kernel code.
 - [x] External embedding providers (hash + OpenAI-compatible)
 - [x] Memory lab case suite (lightweight port)
 - [x] `last_good_plus_delta` read mode (last-good state + newer raw delta, `stale_delta` report)
+- [x] Append-only state versions + CAS parent check
+- [x] Full closed op set (relations + collection_move)
+- [x] Per-layer char budgets with explicit truncation markers
+- [x] Memory acceptance suite (isolation, forget/update, multi-entity, CAS)
 
 ### Phase 7 — Polish for public 0.1
 - [x] Offline e2e verification test

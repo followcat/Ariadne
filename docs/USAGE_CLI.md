@@ -33,27 +33,35 @@ ariadne --stream -v run "summarize README.md"
 ariadne doctor
 ariadne tools
 ariadne skills
+ariadne skills validate     # strict pack validation
 ariadne toolbox
 ariadne version
 ```
+
+Global flags work both before and after the subcommand
+(`ariadne --session demo run "..."` and `ariadne run --session demo "..."`).
 
 ## Flags
 
 ```text
 --workspace PATH              default: cwd (mapped to /workspace)
 --session ID                  conversation / transcript key
+                              (default: local-<hash(workspace)>)
 --sandbox local|null|docker   execution backend
+--no-sandbox                  alias for --sandbox null
+--force-workspace             allow / or $HOME as workspace (refused by default)
 --sandbox-lifecycle           per_turn | active_session
 --toolbox PROFILE             minimal | docs | data
 --docker-image IMAGE          override docker image
 --model NAME                  override MODEL from env
---tool-loop-limit N
+--tool-loop-limit N           default: 32
 --skills-dir PATH             extra skill packs
 --eager-tools                 send all schemas (disable deferred)
 --stream                      stream model deltas + turn events
 --sandbox-prestart            start sandbox in parallel with memory build
 -v / --verbose                tool traces, usage, schema metrics
---json                        print TurnResult JSON (includes schema_metrics)
+--json                        print TurnResult JSON (includes schema_metrics);
+                              with --stream, NDJSON events then final result
 ```
 
 ## Chat meta-commands
@@ -65,6 +73,8 @@ ariadne version
 /workspace
 /tools
 /skills
+/memory read
+/reset-session              # new session id, keep workspace
 /sandbox-status
 /clear-session-files
 ```
