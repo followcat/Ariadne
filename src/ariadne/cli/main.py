@@ -90,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     chat_p = sub.add_parser("chat", help="Interactive multi-turn shell agent")
     _add_global_flags(chat_p, suppress=True)
     chat_p.add_argument("--no-welcome", action="store_true", help="Suppress welcome banner")
+    chat_p.add_argument("--no-stream", action="store_true", help="Disable streaming in chat")
 
     sub.add_parser("doctor", help="Check configuration")
     sub.add_parser("tools", help="List tools")
@@ -148,8 +149,9 @@ def _event_to_jsonable(event: TurnEvent) -> dict[str, object]:
     return {"kind": event.kind, "data": data}
 
 
-async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) -> int:
+async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) -> tuple[int, object]:
     final = None
+    saw_delta = False
     async for event in agent.run_stream(prompt):
         if event.kind in {"turn_completed", "turn_failed"}:
             final = event.data.get("result")
@@ -160,6 +162,7 @@ async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) ->
             sys.stdout.flush()
             continue
         if event.kind == "model_delta":
+            saw_delta = True
             ui.print_delta(str(event.data.get("text") or ""))
         elif event.kind == "tool_started":
             ui.print_tool_start(str(event.data.get("name") or ""), {})
@@ -176,18 +179,20 @@ async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) ->
             ui.print_event_line(str(event.kind), str(detail))
     if final is None:
         ui.print_error("STREAM", "stream ended without result")
-        return 1
+        return 1, None
     if json_mode:
         sys.stdout.write(render_json(final))
-        return 0 if final.status == "completed" else 1
+        return (0 if final.status == "completed" else 1), final
     if final.status != "completed":
         ui.render_result(final, verbose=True, skip_text=True)
     else:
-        # streamed text already printed; ensure trailing newline, show tools/usage
-        if final.text and not final.text.endswith("\n"):
+        if final.text and not saw_delta:
+            # provider returned no deltas — print the final text now
+            ui.print_assistant(final.text)
+        elif final.text and not final.text.endswith("\n"):
             ui.out.print()
         ui.render_result(final, verbose=verbose, skip_text=True)
-    return 0 if final.status == "completed" else 1
+    return (0 if final.status == "completed" else 1), final
 
 
 async def cmd_run(args: argparse.Namespace) -> int:
@@ -198,9 +203,10 @@ async def cmd_run(args: argparse.Namespace) -> int:
         print("Prompt is empty.", file=sys.stderr)
         return 2
     if settings.stream:
-        return await _emit_stream(
+        code, _ = await _emit_stream(
             agent, prompt, json_mode=settings.json_mode, verbose=settings.verbose
         )
+        return code
     result = await agent.run(prompt)
     if settings.json_mode:
         sys.stdout.write(render_json(result))
@@ -209,97 +215,13 @@ async def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.status == "completed" else 1
 
 
-async def cmd_chat(args: argparse.Namespace) -> int:
+def cmd_chat(args: argparse.Namespace) -> int:
     # chat defaults to active_session lifecycle when not specified
     settings = _settings_from_args(args, default_lifecycle="active_session")
     agent = _compose_with_approval(settings)
-    if not args.no_welcome:
-        print(
-            f"Ariadne chat  session={settings.session_id}  workspace={settings.workspace}  "
-            f"sandbox={settings.sandbox}/{settings.sandbox_lifecycle}"
-        )
-        print("Type /exit to quit, /help for commands.")
-    while True:
-        try:
-            line = input("ariadne> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            if agent.active_sessions is not None:
-                await agent.active_sessions.close(settings.session_id, reason="chat_exit")
-            return 0
-        if not line:
-            continue
-        if line in {"/exit", "/quit"}:
-            if agent.active_sessions is not None:
-                await agent.active_sessions.close(settings.session_id, reason="chat_exit")
-            return 0
-        if line == "/help":
-            print(
-                "/exit /quit /session /workspace /tools /skills /memory read "
-                "/reset-session /sandbox-status /clear-session-files /help"
-            )
-            continue
-        if line == "/session":
-            print(settings.session_id)
-            continue
-        if line == "/workspace":
-            print(settings.workspace)
-            continue
-        if line == "/tools":
-            for name in agent.turn_app.tools.tools:
-                print(name)
-            continue
-        if line == "/skills":
-            for skill in agent.turn_app.skills.list():
-                print(f"{skill.name}\t{skill.description}")
-            continue
-        if line.startswith("/memory"):
-            parts = line.split()
-            action = parts[1] if len(parts) > 1 else "read"
-            if action != "read":
-                print("usage: /memory read")
-                continue
-            curated = await agent.get_curated(session_id=settings.session_id)
-            for scope in ("user", "session"):
-                entries = curated.get(scope) or []
-                print(f"[{scope}] {len(entries)} entries")
-                for entry in entries:
-                    print(f"  {entry['id']}. {entry['content']}")
-            continue
-        if line == "/reset-session":
-            if agent.active_sessions is not None:
-                await agent.active_sessions.close(settings.session_id, reason="reset_session")
-            settings.session_id = f"reset-{uuid.uuid4().hex[:8]}"
-            agent = compose_agent(settings)
-            print(f"new session: {settings.session_id} (workspace kept)")
-            continue
-        if line == "/sandbox-status":
-            if agent.active_sessions is None:
-                print("lifecycle=per_turn (no active session manager)")
-            else:
-                print(agent.active_sessions.status())
-            continue
-        if line == "/clear-session-files":
-            if agent.active_sessions is None:
-                print("no active sandbox session")
-                continue
-            ok = await agent.active_sessions.clear_session_files(settings.session_id)
-            print("cleared" if ok else "no active session or clear failed")
-            continue
-        if settings.stream:
-            code = await _emit_stream(
-                agent, line, json_mode=settings.json_mode, verbose=settings.verbose or True
-            )
-            if code != 0:
-                print(f"(turn failed)", file=sys.stderr)
-            continue
-        result = await agent.run(line)
-        if settings.json_mode:
-            sys.stdout.write(render_json(result))
-        else:
-            ui.render_result(result, verbose=settings.verbose)
-            if result.status != "completed":
-                print(f"(turn status={result.status})", file=sys.stderr)
+    from .repl import run_repl
+
+    return run_repl(args, settings, agent, welcome=not args.no_welcome)
 
 
 async def cmd_doctor(args: argparse.Namespace) -> int:
@@ -396,7 +318,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "run":
             code = asyncio.run(cmd_run(args))
         elif args.command == "chat":
-            code = asyncio.run(cmd_chat(args))
+            code = cmd_chat(args)
         elif args.command == "doctor":
             code = asyncio.run(cmd_doctor(args))
         elif args.command == "tools":
