@@ -77,7 +77,8 @@ class ToolRegistry:
             memory=memory, skills=skills, enable_deferred_demo=enable_deferred_demo
         )
         if not include_sandbox:
-            registry.tools.pop("sandbox_exec", None)
+            for name in [n for n in registry.tools if n.startswith("sandbox_")]:
+                registry.tools.pop(name, None)
         return registry
 
     def get(self, name: str) -> ToolSpec | None:
@@ -521,5 +522,9 @@ def build_default_registry(
                 tool_exposure="named_deferred",
             )
         )
+
+    from .filetools import register_file_tools
+
+    register_file_tools(registry)
 
     return registry
