@@ -23,6 +23,7 @@ class ToolCallTrace:
     error: AppError | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    schema_chars: int = 0
 
 
 @dataclass(slots=True)
@@ -58,17 +59,13 @@ class SkillEvent:
 
 
 @dataclass(slots=True)
-class TurnResult:
-    turn_id: str
-    status: Literal["completed", "failed", "needs_input"]
-    text: str
-    tool_calls: list[ToolCallTrace] = field(default_factory=list)
-    skill_events: list[SkillEvent] = field(default_factory=list)
-    memory: MemoryContextSummary = field(default_factory=MemoryContextSummary)
-    usage: Usage = field(default_factory=Usage)
-    error: AppError | None = None
-    session_id: str = ""
-    model: str = ""
+class SchemaMetrics:
+    exchange_index: int
+    tool_count: int
+    schema_chars: int
+    catalog_chars: int
+    deferred_count: int
+    loaded_deferred: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -78,3 +75,49 @@ class Message:
     tool_call_id: str | None = None
     name: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
+
+
+@dataclass(slots=True)
+class RunTurnCommand:
+    session_id: str
+    input: str | list[Message]
+    user_id: str | None = None
+    model: str | None = None
+    stream: bool = False
+    tool_loop_limit: int = 32
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class TurnResult:
+    turn_id: str
+    status: Literal["completed", "failed", "needs_input"]
+    text: str
+    messages: list[Message] = field(default_factory=list)
+    tool_calls: list[ToolCallTrace] = field(default_factory=list)
+    skill_events: list[SkillEvent] = field(default_factory=list)
+    memory: MemoryContextSummary = field(default_factory=MemoryContextSummary)
+    usage: Usage = field(default_factory=Usage)
+    error: AppError | None = None
+    session_id: str = ""
+    model: str = ""
+    schema_metrics: list[SchemaMetrics] = field(default_factory=list)
+
+
+# Streaming / host events
+TurnEventKind = Literal[
+    "turn_started",
+    "model_delta",
+    "tool_started",
+    "tool_completed",
+    "skill_event",
+    "memory_layer",
+    "turn_completed",
+    "turn_failed",
+]
+
+
+@dataclass(slots=True)
+class TurnEvent:
+    kind: TurnEventKind
+    data: dict[str, Any] = field(default_factory=dict)
