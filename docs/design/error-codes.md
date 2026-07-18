@@ -27,6 +27,7 @@ Stable enough for hosts to branch on.
 | `ARIADNE_SANDBOX_DISABLED` | sandbox | exec without backend |
 | `ARIADNE_SANDBOX_EXEC_FAILED` | sandbox | backend exec failure |
 | `ARIADNE_MODEL_ERROR` | model | provider/API failure |
+| `ARIADNE_PLUGIN_ERROR` | plugins | plugin config/call failure |
 | `ARIADNE_CONFIG_INVALID` | bootstrap | bad construction config |
 
 ## Rules

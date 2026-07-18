@@ -111,6 +111,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="list (default) or validate skill packs strictly",
     )
     sub.add_parser("sessions", help="List recorded sessions")
+    sub.add_parser("plugins", help="List official plugins and their status")
+    plugin_p = sub.add_parser("plugin", help="Enable/disable an official plugin")
+    plugin_p.add_argument("action", choices=["enable", "disable"])
+    plugin_p.add_argument("name", help="Plugin name: odoo | gitlab | redmine")
+    plugin_p.add_argument("--url", default=None, help="Base URL of the service")
+    plugin_p.add_argument("--token", default=None, help="API token (gitlab)")
+    plugin_p.add_argument("--api-key", default=None, help="API key (redmine)")
+    plugin_p.add_argument("--database", default=None, help="Odoo database")
+    plugin_p.add_argument("--login", default=None, help="Odoo login")
+    plugin_p.add_argument("--password", default=None, help="Odoo password/API key")
     sub.add_parser("toolbox", help="List toolbox profiles")
     sub.add_parser("version", help="Print version")
     return parser
@@ -291,6 +301,11 @@ async def cmd_tools(args: argparse.Namespace) -> int:
     )
     skills = SkillStore({})
     registry = build_default_registry(memory=memory, skills=skills, enable_deferred_demo=True)
+    from ..plugins import PluginStore, build_plugin_tools
+
+    for plugin_name, plugin_config in PluginStore(data / "plugins.json").enabled().items():
+        for spec in build_plugin_tools(plugin_name, plugin_config):
+            registry.register(spec)
     for name, spec in sorted(registry.tools.items()):
         print(f"{name}\t{spec.tool_exposure}\t{spec.catalog_description or spec.description}")
     return 0
@@ -321,6 +336,55 @@ async def cmd_skills(args: argparse.Namespace) -> int:
     store = SkillStore.from_dirs(skill_dirs, strict=False, user_root=user_skills)
     for skill in store.list():
         print(f"{skill.name}\t{skill.namespace}\t{skill.description}")
+    return 0
+
+
+def cmd_plugins(args: argparse.Namespace) -> int:
+    from ..plugins import PLUGIN_REGISTRY, PluginStore
+
+    settings = _settings_from_args(args)
+    store = PluginStore(settings.resolved_data_dir / "plugins.json")
+    configured = store.list()
+    rows = []
+    for name, plugin in sorted(PLUGIN_REGISTRY.items()):
+        entry = configured.get(name) or {}
+        status = "enabled" if entry.get("enabled") else ("disabled" if entry else "not configured")
+        rows.append([name, status, plugin.description])
+    ui.print_table(["plugin", "status", "description"], rows)
+    return 0
+
+
+def cmd_plugin(args: argparse.Namespace) -> int:
+    from ..plugins import PLUGIN_REGISTRY, PluginStore
+
+    settings = _settings_from_args(args)
+    store = PluginStore(settings.resolved_data_dir / "plugins.json")
+    if args.name not in PLUGIN_REGISTRY:
+        ui.print_error("PLUGIN", f"unknown plugin: {args.name} (see: ariadne plugins)")
+        return 2
+    if args.action == "disable":
+        store.disable(args.name)
+        ui.print_info(f"plugin {args.name} disabled")
+        return 0
+    config = {
+        k: v
+        for k, v in {
+            "url": args.url,
+            "token": args.token,
+            "api_key": args.api_key,
+            "database": args.database,
+            "login": args.login,
+            "password": args.password,
+        }.items()
+        if v
+    }
+    required = PLUGIN_REGISTRY[args.name].required_config
+    missing = [k for k in required if k not in config]
+    if missing:
+        ui.print_error("PLUGIN", f"missing required options for {args.name}: {', '.join(missing)}")
+        return 2
+    store.enable(args.name, config)
+    ui.print_info(f"plugin {args.name} enabled (config stored in {store.path})")
     return 0
 
 
@@ -371,6 +435,10 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(cmd_skills(args))
         elif args.command == "sessions":
             code = cmd_sessions(args)
+        elif args.command == "plugins":
+            code = cmd_plugins(args)
+        elif args.command == "plugin":
+            code = cmd_plugin(args)
         elif args.command == "toolbox":
             code = asyncio.run(cmd_toolbox(args))
         elif args.command == "version":

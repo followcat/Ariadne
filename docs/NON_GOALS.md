@@ -4,16 +4,22 @@ This list protects Ariadne from becoming an accidental enterprise platform rewri
 
 ## Hard non-goals (core)
 
-1. **Company Pack / multi-company extension model**
+1. **Company Pack / multi-company extension model** — replaced by **official
+   optional plugins** (`src/ariadne/plugins/`): odoo / gitlab / redmine are
+   supported integrations the host enables with its own URL + token/api key
+   (`ariadne plugin enable <name> ...`). Plugin tools register into the one
+   capability registry at compose time. The kernel core never depends on
+   them, and there is no multi-company pack manifest/namespace system.
 2. **First-class WeCom / Feishu / Telegram / Slack connectors**
-3. **Business system adapters** (Odoo, GitLab, Redmine, internal ERP) inside core
+3. **Business system adapters inside core** — they live in the official
+   plugin modules, configured per host, never as required kernel code
 4. **Mandatory multi-tenant SaaS control plane**
 5. **Enterprise egress/mail gateway mesh as required architecture**
 6. **Second tool registry** for demos, benchmarks, or plugins
 7. **Silent compatibility fallbacks** for undefined behavior
 8. **In-process arbitrary plugin code execution** from skill packs
 9. **Secret material in prompts, skills, or tool descriptions**
-10. **Forking AIFlow company deployment topology “as the product”**
+10. **Forking AIFlow company deployment topology "as the product"**
 
 ## Soft non-goals (not now)
 

@@ -134,9 +134,13 @@ hosts and kernel code.
 - CLI shell agent: [design/cli-shell-agent.md](design/cli-shell-agent.md)
 - Joint synthesis: [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md)
 
+### Phase 9 — Guardrails & plugins
+- [x] in/out bound: secret redaction + injection warnings (`guardrails.py`)
+- [x] Official plugin mechanism (odoo/gitlab/redmine, token-configured)
+- [x] `ariadne plugins` / `ariadne plugin enable|disable` + 0600 credential store
+
 ## Explicitly deferred forever (unless product changes)
 
-- Company Pack system
+- Company Pack system (superseded by official optional plugins)
 - WeCom/Feishu/Telegram connectors in core
-- Odoo/GitLab/Redmine adapters in core
 - enterprise mail/egress gateway mesh as required runtime

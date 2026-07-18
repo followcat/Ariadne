@@ -120,6 +120,12 @@ def compose_agent(settings: Settings) -> Agent:
     )
 
     tools = build_default_registry(memory=memory, skills=skills)
+    from ..plugins import PluginStore, build_plugin_tools
+
+    plugin_store = PluginStore(settings.resolved_data_dir / "plugins.json")
+    for plugin_name, plugin_config in plugin_store.enabled().items():
+        for spec in build_plugin_tools(plugin_name, plugin_config):
+            tools.register(spec)
     turn_app = TurnApplication(
         model=model,
         tools=tools,
