@@ -134,6 +134,16 @@ pip install -e /path/to/Ariadne
 ariadne run "list files and summarize the project"
 ```
 
+Terminal agent highlights (codex/claude-code class):
+
+- streaming REPL with persistent history, multiline input, Ctrl+C turn cancel
+- file tools with unified diffs (`sandbox_write_file` / `sandbox_edit_file`)
+- `--approval-mode auto|on-request|readonly` tool approvals
+- session management: `ariadne sessions`, `--continue`, `/resume`, `/model`, `/usage`
+- in/out guardrails: pasted-secret redaction, injection warnings
+- official plugins: `ariadne plugin enable gitlab|redmine|odoo ...`
+- web UI with user registration + BYOK provider binding: `ariadne serve --port 8420`
+
 Config: `.env` with `BASE_URL`, `API_KEY`, `MODEL` (see `.env.example`).
 
 Details: [docs/USAGE_CLI.md](docs/USAGE_CLI.md), [docs/design/cli-shell-agent.md](docs/design/cli-shell-agent.md).

@@ -34,8 +34,20 @@ ariadne doctor
 ariadne tools
 ariadne skills
 ariadne skills validate     # strict pack validation
+ariadne sessions
 ariadne toolbox
 ariadne version
+
+# web UI
+ariadne serve --port 8420   # register users, bind their own provider (BYOK)
+
+# official plugins
+ariadne plugins
+ariadne plugin enable gitlab --url https://gitlab.example.com --token ...
+ariadne plugin enable redmine --url https://redmine.example.com --api-key ...
+ariadne plugin enable odoo --url https://odoo.example.com \
+    --database db --login user --password ...
+ariadne plugin disable gitlab
 ```
 
 Global flags work both before and after the subcommand

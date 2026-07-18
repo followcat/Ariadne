@@ -45,7 +45,12 @@ def make_approval_hook(
         from rich.prompt import Confirm
 
         def confirm(question: str) -> bool:  # type: ignore[no-redef]
-            return Confirm.ask(question, default=False, console=ui.console)
+            try:
+                return Confirm.ask(question, default=False, console=ui.console)
+            except EOFError:
+                # no input available (pipe closed): safe default is deny
+                ui.print_info("no input available — denied by default")
+                return False
 
     def hook(name: str, args: dict[str, Any]) -> bool:
         if name not in WRITE_TOOLS:

@@ -134,7 +134,12 @@ hosts and kernel code.
 - CLI shell agent: [design/cli-shell-agent.md](design/cli-shell-agent.md)
 - Joint synthesis: [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md)
 
-### Phase 9 — Guardrails & plugins
+### Phase 9 — Guardrails, plugins, web UI
+- [x] in/out bound guardrails (secret redaction + injection warnings)
+- [x] Official plugins: odoo / gitlab / redmine with per-host credentials
+- [x] `ariadne serve`: web UI, user registration, BYOK provider binding
+- [x] SSE streaming turns in browser; per-user data isolation
+- [x] playwright end-to-end verification (`scripts/verify_web.py`)
 - [x] in/out bound: secret redaction + injection warnings (`guardrails.py`)
 - [x] Official plugin mechanism (odoo/gitlab/redmine, token-configured)
 - [x] `ariadne plugins` / `ariadne plugin enable|disable` + 0600 credential store
