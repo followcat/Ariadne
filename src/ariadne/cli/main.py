@@ -190,6 +190,10 @@ async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) ->
                 str(event.data.get("status") or ""),
                 event.data.get("output"),
             )
+        elif event.kind == "guard_finding":
+            ui.console.print(
+                f"[yellow]guard ({event.data.get('direction')})[/] {event.data.get('detail')}"
+            )
         elif verbose and event.kind == "turn_started":
             ui.print_event_line("turn", str(event.data.get("turn_id") or ""))
         elif verbose and event.kind in {"skill_event", "memory_layer"}:

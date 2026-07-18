@@ -112,6 +112,7 @@ TurnEventKind = Literal[
     "tool_completed",
     "skill_event",
     "memory_layer",
+    "guard_finding",
     "turn_completed",
     "turn_failed",
 ]

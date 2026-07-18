@@ -11,6 +11,7 @@ from typing import Any
 from ..errors import AriadneError, app_error
 from ..memory.facade import MemoryFacade
 from ..model.base import ModelPort
+from ..guardrails import scan_input, scan_output
 from ..redact import redact_secrets
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.port import SandboxBackend, SandboxSession
@@ -131,6 +132,7 @@ class TurnApplication:
     sandbox_prestart: bool = False
     sandbox_prestart_limit: int = 4
     redact_traces: bool = True
+    guardrails_enabled: bool = True
     approval_hook: ApprovalHook | None = None
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
@@ -225,6 +227,14 @@ class TurnApplication:
             "turn_started",
             {"turn_id": turn_id, "session_id": session_id, "metadata": dict(metadata or {})},
         )
+
+        if self.guardrails_enabled:
+            prompt, in_findings = scan_input(prompt)
+            for finding in in_findings:
+                yield TurnEvent(
+                    "guard_finding",
+                    {"direction": "in", "kind": finding.kind, "detail": finding.detail},
+                )
 
         sandbox_task: asyncio.Task[SandboxSession] | None = None
         if self.sandbox_prestart:
@@ -381,6 +391,13 @@ class TurnApplication:
 
                 if not tool_calls_payload:
                     text = (assistant.content or "").strip()
+                    if self.guardrails_enabled:
+                        text, out_findings = scan_output(text)
+                        for finding in out_findings:
+                            yield TurnEvent(
+                                "guard_finding",
+                                {"direction": "out", "kind": finding.kind, "detail": finding.detail},
+                            )
                     self.memory.transcript.append(
                         {"role": "assistant", "content": text, "turn_id": turn_id}
                     )
