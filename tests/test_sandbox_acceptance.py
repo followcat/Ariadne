@@ -143,3 +143,27 @@ def test_file_api_roundtrip(tmp_path: Path) -> None:
         await session.close(reason="test")
 
     asyncio.run(run())
+
+
+def test_env_allowlist_no_host_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("MY_CUSTOM_VAR", "custom-value")
+    backend = _backend(tmp_path)
+
+    async def run() -> None:
+        session = await backend.start(scope_key="s-env")
+        result = await session.exec(
+            SandboxExecRequest(cmd="echo key=${OPENAI_API_KEY:-unset} custom=${MY_CUSTOM_VAR:-unset} path_ok=${PATH:+yes}")
+        )
+        assert result.exit_code == 0
+        assert "key=unset" in result.stdout, "host secrets must not leak into sandbox"
+        assert "custom=unset" in result.stdout, "allowlist blocks arbitrary host vars"
+        assert "path_ok=yes" in result.stdout, "PATH is on the default allowlist"
+        # explicit req.env still passes through
+        injected = await session.exec(
+            SandboxExecRequest(cmd="echo v=$INJECTED", env={"INJECTED": "42"})
+        )
+        assert "v=42" in injected.stdout
+        await session.close(reason="test")
+
+    asyncio.run(run())

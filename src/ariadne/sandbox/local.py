@@ -10,6 +10,19 @@ from ..errors import AriadneError, app_error
 from .compress import compress_observation
 from .port import SandboxBackend, SandboxExecRequest, SandboxExecResult, SandboxSession
 
+# sandbox-v1 §4.2: env allowlist only — no host process secrets by default.
+DEFAULT_ENV_ALLOWLIST: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "TERM",
+    "TZ",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+)
+
 
 class LocalWorkdirSession:
     def __init__(
@@ -18,10 +31,14 @@ class LocalWorkdirSession:
         session_id: str,
         workspace: Path,
         session_dir: Path,
+        env_allowlist: tuple[str, ...] = DEFAULT_ENV_ALLOWLIST,
     ) -> None:
         self.id = session_id
         self.workspace = workspace.resolve()
         self.session_dir = session_dir.resolve()
+        self.env_allowlist = env_allowlist
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.workspace.mkdir(parents=True, exist_ok=True)
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.workspace.mkdir(parents=True, exist_ok=True)
 
@@ -60,15 +77,14 @@ class LocalWorkdirSession:
         cwd_path = self._map_cwd(req.cwd)
         cwd_path.mkdir(parents=True, exist_ok=True)
         timeout = req.timeout_seconds if req.timeout_seconds is not None else 60.0
-        env = os.environ.copy()
-        for key in list(env):
-            if "proxy" in key.lower():
-                env.pop(key, None)
-        # do not forward obvious secrets
-        for key in list(env):
-            ku = key.upper()
-            if any(s in ku for s in ("API_KEY", "SECRET", "TOKEN", "PASSWORD")):
-                env.pop(key, None)
+        # env allowlist only: never forward host secrets into the sandbox
+        env: dict[str, str] = {}
+        for key in self.env_allowlist:
+            if key in os.environ:
+                env[key] = os.environ[key]
+        for key, val in os.environ.items():
+            if key.startswith("LC_"):
+                env[key] = val
         if req.env:
             env.update(req.env)
         env["ARIADNE_WORKSPACE"] = str(self.workspace)
@@ -146,9 +162,16 @@ class LocalWorkdirSession:
 
 
 class LocalWorkdirSandbox(SandboxBackend):
-    def __init__(self, *, workspace: Path, data_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        workspace: Path,
+        data_dir: Path,
+        env_allowlist: tuple[str, ...] = DEFAULT_ENV_ALLOWLIST,
+    ) -> None:
         self.workspace = workspace.resolve()
         self.data_dir = data_dir.resolve()
+        self.env_allowlist = env_allowlist
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     async def start(self, *, scope_key: str) -> SandboxSession:
@@ -158,4 +181,5 @@ class LocalWorkdirSandbox(SandboxBackend):
             session_id=f"local-{safe}",
             workspace=self.workspace,
             session_dir=session_dir,
+            env_allowlist=self.env_allowlist,
         )
