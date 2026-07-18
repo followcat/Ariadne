@@ -46,7 +46,9 @@ Those systems can *call* Ariadne later. Ariadne itself is the thread through the
 
 ## Status
 
-**v0.1 kernel implemented** (CLI shell agent + skills/toolcall/memory/sandbox). This repository currently defines product intent, architecture, public surface, and migration principles extracted from battle-tested ideas in AIFlow’s `skills` / `toolcall` / `memory` workstreams. Implementation will follow these docs.
+**v0.2 design coverage** — CLI shell agent kernel with skills, toolcall, layered memory, sandbox (local/docker/active_session), streaming, hybrid search, projection worker, and offline tests (`pytest` green).
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the checklist. Normative design docs remain under `docs/`.
 
 See:
 
