@@ -266,14 +266,69 @@ def build_default_registry(
             name="conversation_state",
             catalog_description="authoritative current session state",
             description=(
-                "Read or apply closed-set conversation state ops. "
-                "Each apply op requires evidence_quote found in turn text."
+                "Read or apply conversation state (L2 authoritative session state: "
+                "todos, entities, current facts). "
+                "action=read returns the rendered state. "
+                "action=apply takes operations=[...]; every op must include an "
+                "evidence_quote copied verbatim from the conversation text. "
+                "Allowed ops: "
+                "ensure_entity {entity_id, type?}; "
+                "set_alias {entity_id, alias}; "
+                "set_attribute {entity_id, key, value, authority?}; "
+                "set_status {entity_id, status: active|done|cancelled|archived}; "
+                "set_relation {relation, from, to}; "
+                "remove_relation {relation, from, to}; "
+                "ensure_collection {name}; "
+                "collection_append {name, member}; "
+                "collection_remove {name, member}; "
+                "collection_move {name, member, to_index}. "
+                "For durable cross-session preferences use the memory tool instead."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["read", "apply"]},
-                    "operations": {"type": "array", "items": {"type": "object"}},
+                    "operations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "op": {
+                                    "type": "string",
+                                    "enum": [
+                                        "ensure_entity",
+                                        "set_alias",
+                                        "set_attribute",
+                                        "set_status",
+                                        "set_relation",
+                                        "remove_relation",
+                                        "ensure_collection",
+                                        "collection_append",
+                                        "collection_remove",
+                                        "collection_move",
+                                    ],
+                                },
+                                "entity_id": {"type": "string"},
+                                "type": {"type": "string"},
+                                "alias": {"type": "string"},
+                                "key": {"type": "string"},
+                                "value": {},
+                                "authority": {"type": "string"},
+                                "status": {"type": "string"},
+                                "relation": {"type": "string"},
+                                "from": {"type": "string"},
+                                "to": {"type": "string"},
+                                "name": {"type": "string"},
+                                "member": {"type": "string"},
+                                "to_index": {"type": "integer"},
+                                "evidence_quote": {
+                                    "type": "string",
+                                    "description": "verbatim quote from the conversation justifying this op",
+                                },
+                            },
+                            "required": ["op", "evidence_quote"],
+                        },
+                    },
                     "evidence_text": {"type": "string"},
                 },
                 "required": ["action"],
