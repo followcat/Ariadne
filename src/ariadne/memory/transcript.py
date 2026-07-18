@@ -47,3 +47,18 @@ class TranscriptStore:
             except json.JSONDecodeError:
                 continue
         return out
+
+    def records_after(self, turn_id: str | None) -> list[dict[str, Any]]:
+        """Records newer than the given turn (transcript order).
+
+        Empty when turn_id is None or is the last turn recorded. If the turn id
+        is not present in this transcript, all records are newer by definition.
+        """
+        records = self.all_records()
+        if turn_id is None:
+            return []
+        last_idx = -1
+        for idx, rec in enumerate(records):
+            if str(rec.get("turn_id") or "") == turn_id:
+                last_idx = idx
+        return records[last_idx + 1 :]

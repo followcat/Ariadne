@@ -47,6 +47,15 @@ class ConversationStateStore:
             return empty_state()
         return dict(doc.get("state") or empty_state())
 
+    def watermark(self, session_id: str) -> str | None:
+        """Turn id of the last succeeded projection, or None if never projected."""
+        data = self._read()
+        doc = (data.get("documents") or {}).get(session_id)
+        if not doc:
+            return None
+        wm = doc.get("watermark_turn_id")
+        return str(wm) if wm else None
+
     def render(self, session_id: str) -> tuple[str, int]:
         state = self.get(session_id)
         entities = state.get("entities") or {}
