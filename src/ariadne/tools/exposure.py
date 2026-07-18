@@ -12,6 +12,8 @@ class ToolExposureState:
     deferred_tools: dict[str, dict[str, Any]] = field(default_factory=dict)
     callable_function_names: set[str] = field(default_factory=set)
     loaded_tool_names: set[str] = field(default_factory=set)
+    # none | function (tool_search) | native (provider-side search)
+    client_search_mode: str = "function"
 
     def load_exact(self, tool_names: list[str]) -> list[dict[str, Any]]:
         loaded: list[dict[str, Any]] = []

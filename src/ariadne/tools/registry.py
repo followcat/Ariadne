@@ -28,12 +28,18 @@ class ToolContext:
 
 @dataclass(slots=True)
 class ToolSpec:
+    """CapabilitySpec (TOOLCALL §2.1): one unit of registration."""
+
     name: str
     description: str
     parameters: dict[str, Any]
     handler: ToolHandler
     catalog_description: str = ""
     tool_exposure: ToolExposure = "eager"
+    title: str = ""
+    kind: str = "tool"  # tool | system_action | ...
+    exposed_to_llm: bool = True
+    required_credentials: tuple[str, ...] = ()  # personal v1 ignores credentials
 
     def openai_tool(self) -> dict[str, Any]:
         return {
@@ -53,8 +59,26 @@ class ToolSpec:
 class ToolRegistry:
     tools: dict[str, ToolSpec] = field(default_factory=dict)
 
-    def register(self, spec: ToolSpec) -> None:
+    def register(self, spec: ToolSpec, handler: ToolHandler | None = None) -> None:
+        if handler is not None:
+            spec.handler = handler
         self.tools[spec.name] = spec
+
+    @classmethod
+    def builtins(
+        cls,
+        *,
+        include_sandbox: bool = True,
+        memory: MemoryFacade | None = None,
+        skills: SkillStore | None = None,
+        enable_deferred_demo: bool = True,
+    ) -> "ToolRegistry":
+        registry = build_default_registry(
+            memory=memory, skills=skills, enable_deferred_demo=enable_deferred_demo
+        )
+        if not include_sandbox:
+            registry.tools.pop("sandbox_exec", None)
+        return registry
 
     def get(self, name: str) -> ToolSpec | None:
         return self.tools.get(name)
@@ -62,7 +86,7 @@ class ToolRegistry:
     def catalog_text(self) -> str:
         lines = []
         for spec in self.tools.values():
-            if spec.tool_exposure == "hidden":
+            if spec.tool_exposure == "hidden" or not spec.exposed_to_llm:
                 continue
             phrase = spec.catalog_description or spec.description.split(".")[0]
             marker = " (deferred)" if spec.tool_exposure == "named_deferred" else ""
@@ -77,7 +101,7 @@ class ToolRegistry:
         deferred: dict[str, dict[str, Any]] = {}
         callable_names: set[str] = set()
         for spec in self.tools.values():
-            if spec.tool_exposure == "hidden":
+            if spec.tool_exposure == "hidden" or not spec.exposed_to_llm:
                 continue
             schema = spec.openai_tool()
             if prefer_deferred and spec.tool_exposure == "named_deferred":
@@ -267,8 +291,9 @@ def build_default_registry(
         mode = str(args.get("mode") or "lexical").lower()
         if mode == "hybrid":
             hits = await ctx.skills.search_hybrid(query, limit=max(1, min(limit, 20)))
+            scored_hits = [(None, s) for s in hits]
         else:
-            hits = ctx.skills.search(query, limit=max(1, min(limit, 20)))
+            scored_hits = ctx.skills.search_scored(query, limit=max(1, min(limit, 20)))
         if ctx.skill_events is not None:
             from ..types import SkillEvent
 
@@ -283,8 +308,9 @@ def build_default_registry(
                     "keywords": s.keywords,
                     "requires_tools": s.requires_tools,
                     "namespace": s.namespace,
+                    **({"score": score} if score is not None else {}),
                 }
-                for s in hits
+                for score, s in scored_hits
             ],
         }
 
