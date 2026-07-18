@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..types import LayerReport, MemoryContextSummary
@@ -27,6 +27,18 @@ class MemoryFacade:
     projection: ProjectionWorker | None = None
     recent_limit: int = 4
     hybrid_semantic: bool = True
+    # per-layer char budgets (config, not vibes); truncation is always marked
+    layer_budgets: dict[str, int] = field(default_factory=dict)
+
+    def _apply_budget(self, name: str, text: str) -> tuple[str, str]:
+        """Clamp a layer block to its configured budget with an explicit marker."""
+        budget = self.layer_budgets.get(name)
+        if not text or budget is None or len(text) <= budget:
+            return text, ""
+        return (
+            text[:budget] + f"\n[ariadne: layer {name} truncated to budget {budget} chars]",
+            f"budget:{budget}",
+        )
 
     def build_context(self, *, session_id: str, query: str, user_id: str | None = None) -> tuple[str, MemoryContextSummary]:
         # sync wrapper for simple callers
@@ -38,6 +50,10 @@ class MemoryFacade:
             return asyncio.run(self.build_context_async(session_id=session_id, user_id=user_id, query=query))
         # if already in loop, fall back to lexical path without await hybrid
         return self._build_context_sync(session_id=session_id, query=query)
+
+    def recent_messages(self) -> list[dict[str, str]]:
+        """L0 recent raw window honoring the facade's configured limit."""
+        return self.transcript.recent_messages(limit=self.recent_limit)
 
     def get_curated(self, *, session_id: str) -> dict[str, object]:
         """Convenience read for hosts: user-scope + session-scope curated entries."""
@@ -95,6 +111,7 @@ class MemoryFacade:
         blocks: list[str] = []
 
         state_text, entity_count = self.state.render(session_id)
+        state_text, state_note = self._apply_budget("conversation_state", state_text)
         if state_text:
             blocks.append(state_text)
             layers.append(
@@ -103,6 +120,7 @@ class MemoryFacade:
                     status="used",
                     token_chars=len(state_text),
                     item_ids=[f"entities:{entity_count}"],
+                    notes=state_note,
                 )
             )
         else:
@@ -122,6 +140,7 @@ class MemoryFacade:
             )
 
         curated_text, curated_count = self.curated.snapshot_text(session_id=session_id)
+        curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
             blocks.append(curated_text)
             layers.append(
@@ -136,6 +155,7 @@ class MemoryFacade:
             layers.append(LayerReport(name="curated", status="skipped"))
 
         summary_text = self.summaries.render(session_id, limit=8)
+        summary_text, _ = self._apply_budget("turn_summary", summary_text)
         if summary_text:
             blocks.append(summary_text)
             layers.append(LayerReport(name="turn_summary", status="used", token_chars=len(summary_text)))
@@ -150,6 +170,7 @@ class MemoryFacade:
             demote_entity_ids=self._demote_entities(session_id),
         )
         semantic_text = self.semantic.render(hits)
+        semantic_text, _ = self._apply_budget("semantic", semantic_text)
         if semantic_text:
             blocks.append(semantic_text)
             layers.append(
@@ -163,7 +184,7 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="semantic", status="skipped"))
 
-        recent = self.transcript.recent_messages()
+        recent = self.recent_messages()
         if recent:
             layers.append(
                 LayerReport(
@@ -192,6 +213,7 @@ class MemoryFacade:
         blocks: list[str] = []
 
         state_text, entity_count = self.state.render(session_id)
+        state_text, state_note = self._apply_budget("conversation_state", state_text)
         if state_text:
             blocks.append(state_text)
             layers.append(
@@ -200,6 +222,7 @@ class MemoryFacade:
                     status="used",
                     token_chars=len(state_text),
                     item_ids=[f"entities:{entity_count}"],
+                    notes=state_note,
                 )
             )
         else:
@@ -219,6 +242,7 @@ class MemoryFacade:
             )
 
         curated_text, curated_count = self.curated.snapshot_text(session_id=session_id)
+        curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
             blocks.append(curated_text)
             layers.append(
@@ -233,6 +257,7 @@ class MemoryFacade:
             layers.append(LayerReport(name="curated", status="skipped"))
 
         summary_text = self.summaries.render(session_id, limit=8)
+        summary_text, _ = self._apply_budget("turn_summary", summary_text)
         if summary_text:
             blocks.append(summary_text)
             layers.append(LayerReport(name="turn_summary", status="used", token_chars=len(summary_text)))
@@ -247,6 +272,7 @@ class MemoryFacade:
             demote_entity_ids=self._demote_entities(session_id),
         )
         semantic_text = self.semantic.render(hits)
+        semantic_text, _ = self._apply_budget("semantic", semantic_text)
         if semantic_text:
             blocks.append(semantic_text)
             layers.append(
@@ -261,7 +287,7 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="semantic", status="skipped"))
 
-        recent = self.transcript.recent_messages()
+        recent = self.recent_messages()
         if recent:
             layers.append(
                 LayerReport(

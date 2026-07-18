@@ -13,9 +13,12 @@ ALLOWED_OPS = {
     "set_alias",
     "set_attribute",
     "set_status",
+    "set_relation",
+    "remove_relation",
     "ensure_collection",
     "collection_append",
     "collection_remove",
+    "collection_move",
 }
 
 MAX_ENTITIES = 256
@@ -47,6 +50,19 @@ class ConversationStateStore:
             return empty_state()
         return dict(doc.get("state") or empty_state())
 
+    def version(self, session_id: str) -> int:
+        """Current document version (0 when never projected)."""
+        data = self._read()
+        doc = (data.get("documents") or {}).get(session_id)
+        if not doc:
+            return 0
+        return int(doc.get("version") or 0)
+
+    def list_versions(self, session_id: str) -> list[dict[str, Any]]:
+        """Append-only projection history for the session."""
+        data = self._read()
+        return list((data.get("versions") or {}).get(session_id) or [])
+
     def watermark(self, session_id: str) -> str | None:
         """Turn id of the last succeeded projection, or None if never projected."""
         data = self._read()
@@ -59,7 +75,7 @@ class ConversationStateStore:
     def render(self, session_id: str) -> tuple[str, int]:
         state = self.get(session_id)
         entities = state.get("entities") or {}
-        if not entities and not (state.get("collections") or {}):
+        if not entities and not (state.get("collections") or {}) and not (state.get("relations") or {}):
             return "", 0
         lines = ["[CONVERSATION_STATE: AUTHORITATIVE]"]
         for eid, ent in entities.items():
@@ -75,6 +91,9 @@ class ConversationStateStore:
         for cname, coll in (state.get("collections") or {}).items():
             members = coll.get("members") or []
             lines.append(f"- collection {cname}: {members}")
+        for rel_name, rels in (state.get("relations") or {}).items():
+            for rel in rels:
+                lines.append(f"- relation {rel_name}: {rel.get('from')} -> {rel.get('to')}")
         text = "\n".join(lines)
         if len(text) > 8000:
             raise AriadneError(app_error("ARIADNE_MEMORY_NOT_READY", "state render exceeds hard cap"))
@@ -87,9 +106,20 @@ class ConversationStateStore:
         operations: list[dict[str, Any]],
         source_turn_id: str,
         evidence_text: str,
+        expected_parent_version: int | None = None,
     ) -> dict[str, Any]:
         if not operations:
             return {"decision": "no_change", "state": self.get(session_id)}
+        current_version = self.version(session_id)
+        if expected_parent_version is not None and expected_parent_version != current_version:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_NOT_READY",
+                    "state version conflict (CAS parent mismatch)",
+                    expected_parent_version=expected_parent_version,
+                    current_version=current_version,
+                )
+            )
         state = self.get(session_id)
         evidence = evidence_text or ""
         for op in operations:
@@ -110,18 +140,55 @@ class ConversationStateStore:
             raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "entity capacity exceeded"))
         data = self._read()
         docs = data.setdefault("documents", {})
+        new_version = current_version + 1
         docs[session_id] = {
             "state": state,
             "watermark_turn_id": source_turn_id,
+            "version": new_version,
         }
+        versions = data.setdefault("versions", {}).setdefault(session_id, [])
+        versions.append(
+            {
+                "version": new_version,
+                "parent_version": current_version,
+                "watermark_turn_id": source_turn_id,
+                "ops": [str(op.get("op")) for op in operations],
+            }
+        )
         self._write(data)
-        return {"decision": "apply", "state": state, "ops": len(operations)}
+        return {
+            "decision": "apply",
+            "state": state,
+            "ops": len(operations),
+            "version": new_version,
+            "parent_version": current_version,
+        }
 
     def _apply_one(self, state: dict[str, Any], op: dict[str, Any], *, source_turn_id: str) -> None:
         entities: dict[str, Any] = state.setdefault("entities", {})
         collections: dict[str, Any] = state.setdefault("collections", {})
+        relations: dict[str, Any] = state.setdefault("relations", {})
         name = op["op"]
-        if name == "ensure_entity":
+        if name == "set_relation":
+            rel = str(op["relation"])
+            edge = {"from": str(op["from"]), "to": str(op["to"])}
+            edges = relations.setdefault(rel, [])
+            if edge not in edges:
+                edges.append(edge)
+        elif name == "remove_relation":
+            rel = str(op["relation"])
+            edge = {"from": str(op["from"]), "to": str(op["to"])}
+            edges = relations.setdefault(rel, [])
+            relations[rel] = [e for e in edges if e != edge]
+        elif name == "collection_move":
+            cname = str(op["name"])
+            coll = collections.setdefault(cname, {"members": []})
+            member = str(op["member"])
+            members = [m for m in (coll.get("members") or []) if m != member]
+            to_index = max(0, min(int(op.get("to_index") or 0), len(members)))
+            members.insert(to_index, member)
+            coll["members"] = members
+        elif name == "ensure_entity":
             eid = str(op["entity_id"])
             ent = entities.setdefault(
                 eid,

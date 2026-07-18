@@ -22,9 +22,10 @@ class TranscriptStore:
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def recent_messages(self) -> list[dict[str, str]]:
+    def recent_messages(self, *, limit: int | None = None) -> list[dict[str, str]]:
         lines = [ln for ln in self.path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        selected = lines[-self.recent_limit :]
+        window = limit if limit is not None else self.recent_limit
+        selected = lines[-window:]
         messages: list[dict[str, str]] = []
         for line in selected:
             try:
