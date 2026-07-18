@@ -11,6 +11,7 @@ from typing import Any
 from ..errors import AriadneError, app_error
 from ..memory.facade import MemoryFacade
 from ..model.base import ModelPort
+from ..redact import redact_secrets
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.port import SandboxBackend, SandboxSession
 from ..skills.store import SkillStore
@@ -56,6 +57,46 @@ Rules:
 EventSink = Callable[[TurnEvent], Awaitable[None] | None]
 
 
+class _SandboxGuard:
+    """Closes the turn's sandbox session on every exit path.
+
+    Covers: normal completion, turn failure, memory-build errors before the
+    tool loop, and host cancellation (GeneratorExit) — no leaked /session
+    dirs or docker containers.
+    """
+
+    def __init__(self, app: "TurnApplication", *, session_id: str) -> None:
+        self._app = app
+        self._session_id = session_id
+        self._sandbox: SandboxSession | None = None
+        self._task: asyncio.Task[SandboxSession] | None = None
+        self._released = False
+
+    def attach(self, sandbox: SandboxSession) -> None:
+        self._sandbox = sandbox
+
+    def attach_task(self, task: "asyncio.Task[SandboxSession]") -> None:
+        self._task = task
+
+    async def release(self) -> None:
+        if self._released or self._sandbox is None:
+            return
+        self._released = True
+        await self._app._release_sandbox(session_id=self._session_id, sandbox=self._sandbox)
+
+    async def close(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                sandbox = await self._task
+            except BaseException:
+                sandbox = None
+            self._task = None
+            if sandbox is not None:
+                self._sandbox = sandbox
+        await self.release()
+
+
 def _public_messages(messages: list[dict[str, Any]]) -> list[Message]:
     """Turn conversation for hosts: excludes internal system assembly."""
     out: list[Message] = []
@@ -83,12 +124,13 @@ class TurnApplication:
     skills: SkillStore
     sandbox_backend: SandboxBackend | None = None
     active_sessions: ActiveSessionManager | None = None
-    tool_loop_limit: int = 16
+    tool_loop_limit: int = 32
     prefer_deferred_tools: bool = True
     sandbox_mode: str = "per_turn"  # per_turn | active_session
     stream_model: bool = False
     sandbox_prestart: bool = False
     sandbox_prestart_limit: int = 4
+    redact_traces: bool = True
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -113,6 +155,7 @@ class TurnApplication:
             model=model,
             user_id=user_id,
             tool_loop_limit=tool_loop_limit,
+            metadata=metadata,
         )
         final: TurnResult | None = None
         async for event in events:
@@ -146,10 +189,41 @@ class TurnApplication:
         model: str | None = None,
         user_id: str | None = None,
         tool_loop_limit: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AsyncIterator[TurnEvent]:
+        guard = _SandboxGuard(self, session_id=session_id)
+        try:
+            async for event in self._run_events_inner(
+                prompt=prompt,
+                session_id=session_id,
+                model=model,
+                user_id=user_id,
+                tool_loop_limit=tool_loop_limit,
+                metadata=metadata,
+                guard=guard,
+            ):
+                yield event
+        finally:
+            await guard.close()
+
+    async def _run_events_inner(
+        self,
+        *,
+        prompt: str,
+        session_id: str,
+        model: str | None = None,
+        user_id: str | None = None,
+        tool_loop_limit: int | None = None,
+        metadata: dict[str, Any] | None = None,
+        guard: _SandboxGuard,
     ) -> AsyncIterator[TurnEvent]:
         turn_id = uuid.uuid4().hex[:12]
         loop_limit = tool_loop_limit if tool_loop_limit is not None else self.tool_loop_limit
-        yield TurnEvent("turn_started", {"turn_id": turn_id, "session_id": session_id})
+        started_at = datetime.now(timezone.utc)
+        yield TurnEvent(
+            "turn_started",
+            {"turn_id": turn_id, "session_id": session_id, "metadata": dict(metadata or {})},
+        )
 
         sandbox_task: asyncio.Task[SandboxSession] | None = None
         if self.sandbox_prestart:
@@ -160,9 +234,11 @@ class TurnApplication:
                     return await self._acquire_sandbox(session_id=session_id, turn_id=turn_id)
 
             sandbox_task = asyncio.create_task(_prestart())
+            guard.attach_task(sandbox_task)
             sandbox: SandboxSession | None = None
         else:
             sandbox = await self._acquire_sandbox(session_id=session_id, turn_id=turn_id)
+            guard.attach(sandbox)
         tool_calls: list[ToolCallTrace] = []
         skill_events: list[SkillEvent] = []
         usage_total = Usage()
@@ -173,13 +249,14 @@ class TurnApplication:
         )
         if sandbox_task is not None:
             sandbox = await sandbox_task
+            guard.attach(sandbox)
         for layer in memory_summary.layers:
             yield TurnEvent(
                 "memory_layer",
                 {"name": layer.name, "status": layer.status, "token_chars": layer.token_chars},
             )
 
-        skill_index = self.skills.index_text()
+        skill_plan = self.skills.plan(prompt)
         exposure = self.tools.build_exposure(prefer_deferred=self.prefer_deferred_tools)
         catalog = self.tools.catalog_text()
 
@@ -187,14 +264,52 @@ class TurnApplication:
             {"role": "system", "content": SYSTEM_POLICY},
             {"role": "system", "content": "Available tools (catalog):\n" + (catalog or "(none)")},
         ]
-        if skill_index and skill_index != "(no skills installed)":
-            messages.append({"role": "system", "content": "Skill index:\n" + skill_index})
-            skill_events.append(SkillEvent(kind="index", detail=f"{len(self.skills.list())} skills"))
-            yield TurnEvent("skill_event", {"kind": "index", "detail": skill_events[-1].detail})
         if memory_system:
             messages.append({"role": "system", "content": memory_system})
 
-        for prior in self.memory.transcript.recent_messages():
+        # skill selection plan sits in a strong attention region near user input
+        if skill_plan["auto_load"] or skill_plan["recommended"]:
+            lines = ["[SKILL_SELECTION]"]
+            if skill_plan["auto_load"]:
+                names = ", ".join(s.name for s, _ in skill_plan["auto_load"])
+                lines.append(f"auto_load: {names} (call load_skill now)")
+            if skill_plan["recommended"]:
+                names = ", ".join(
+                    f"{s.name} (score {score})" for s, score in skill_plan["recommended"]
+                )
+                lines.append(f"recommended: {names}")
+            if skill_plan["other"]:
+                lines.append(f"other: {skill_plan['other']} more installed — use search_skills")
+            plan_text = "\n".join(lines)
+            detail = (
+                f"plan: {len(skill_plan['auto_load'])} auto, "
+                f"{len(skill_plan['recommended'])} recommended, {skill_plan['other']} other"
+            )
+            messages.append({"role": "system", "content": plan_text})
+            skill_events.append(SkillEvent(kind="index", detail=detail))
+            yield TurnEvent("skill_event", {"kind": "index", "detail": detail})
+        else:
+            skill_index = self.skills.index_text()
+            if skill_index and skill_index != "(no skills installed)":
+                messages.append({"role": "system", "content": "Skill index:\n" + skill_index})
+                skill_events.append(
+                    SkillEvent(kind="index", detail=f"{len(self.skills.list())} skills")
+                )
+                yield TurnEvent("skill_event", {"kind": "index", "detail": skill_events[-1].detail})
+
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "[RUNTIME_CONTEXT]\n"
+                    f"now_utc: {started_at.isoformat()}\n"
+                    f"session_id: {session_id}\n"
+                    f"turn_id: {turn_id}"
+                ),
+            }
+        )
+
+        for prior in self.memory.recent_messages():
             messages.append(prior)
 
         messages.append({"role": "user", "content": prompt})
@@ -294,7 +409,7 @@ class TurnApplication:
                             turn_id=turn_id,
                             evidence_text="\n".join(evidence_parts)[:8000],
                         )
-                    await self._release_sandbox(session_id=session_id, sandbox=sandbox)
+                    await guard.release()
                     result = TurnResult(
                         turn_id=turn_id,
                         status="completed",
@@ -323,6 +438,8 @@ class TurnApplication:
                         if not isinstance(args, dict):
                             raise ValueError("tool arguments must be a JSON object")
                         output = await self.tools.invoke(name, args, ctx)
+                        if self.redact_traces:
+                            output = redact_secrets(output)
                         finished = datetime.now(timezone.utc)
                         spec = self.tools.get(name)
                         trace = ToolCallTrace(
@@ -431,7 +548,7 @@ class TurnApplication:
                             },
                         )
 
-            await self._release_sandbox(session_id=session_id, sandbox=sandbox)
+            await guard.release()
             err = app_error(
                 "ARIADNE_TOOL_LOOP_LIMIT",
                 f"Exceeded tool loop limit ({loop_limit})",
@@ -452,7 +569,7 @@ class TurnApplication:
             )
             yield TurnEvent("turn_failed", {"result": result})
         except AriadneError as exc:
-            await self._release_sandbox(session_id=session_id, sandbox=sandbox)
+            await guard.release()
             result = TurnResult(
                 turn_id=turn_id,
                 status="failed",
@@ -469,7 +586,7 @@ class TurnApplication:
             )
             yield TurnEvent("turn_failed", {"result": result})
         except Exception as exc:  # noqa: BLE001
-            await self._release_sandbox(session_id=session_id, sandbox=sandbox)
+            await guard.release()
             result = TurnResult(
                 turn_id=turn_id,
                 status="failed",
