@@ -46,6 +46,7 @@ class Settings:
     max_ttl_seconds: float = 3600.0
     data_dir: Path | None = None
     sandbox_prestart: bool = False
+    approval_mode: str = "auto"  # auto | on-request | readonly
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -73,6 +74,7 @@ def load_settings(
     env_file: Path | None = None,
     sandbox_prestart: bool = False,
     force_workspace: bool = False,
+    approval_mode: str | None = None,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
     if workspace in {Path("/"), Path.home()} and not force_workspace:
@@ -135,6 +137,11 @@ def load_settings(
         "yes",
         "on",
     }
+    approval = (approval_mode or pick("ARIADNE_APPROVAL_MODE", default="auto")).strip().lower()
+    if approval not in {"auto", "on-request", "readonly"}:
+        raise AriadneError(
+            app_error("ARIADNE_CONFIG_INVALID", f"unknown approval mode: {approval!r}")
+        )
 
     return Settings(
         base_url=base_url,
@@ -157,4 +164,5 @@ def load_settings(
         idle_ttl_seconds=idle,
         max_ttl_seconds=maxt,
         sandbox_prestart=prestart_flag,
+        approval_mode=approval,
     )

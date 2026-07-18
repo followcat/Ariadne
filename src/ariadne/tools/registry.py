@@ -12,6 +12,9 @@ from .exposure import ToolExposureState
 
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[Any]]
 ToolExposure = Literal["eager", "named_deferred", "hidden"]
+# host-side approval: called with (tool_name, arguments) before dispatch;
+# False denies the invocation (SANDBOX.md: confirmation stays a host concern)
+ApprovalHook = Callable[[str, dict[str, Any]], bool]
 
 
 @dataclass(slots=True)
@@ -24,6 +27,7 @@ class ToolContext:
     exposure: ToolExposureState | None = None
     skill_events: list[Any] | None = None
     evidence_text: str = ""
+    approval_hook: ApprovalHook | None = None
 
 
 @dataclass(slots=True)
@@ -140,6 +144,14 @@ class ToolRegistry:
                         name=name,
                     )
                 )
+        if ctx.approval_hook is not None and not ctx.approval_hook(name, arguments):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TOOL_DENIED",
+                    f"Invocation denied by host approval policy: {name}",
+                    name=name,
+                )
+            )
         return await spec.handler(arguments, ctx)
 
 

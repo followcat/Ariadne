@@ -15,7 +15,7 @@ from ..redact import redact_secrets
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.port import SandboxBackend, SandboxSession
 from ..skills.store import SkillStore
-from ..tools.registry import ToolContext, ToolRegistry, dumps_tool_output
+from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry, dumps_tool_output
 from ..types import (
     Message,
     RunTurnCommand,
@@ -131,6 +131,7 @@ class TurnApplication:
     sandbox_prestart: bool = False
     sandbox_prestart_limit: int = 4
     redact_traces: bool = True
+    approval_hook: ApprovalHook | None = None
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -325,6 +326,7 @@ class TurnApplication:
             exposure=exposure,
             skill_events=skill_events,
             evidence_text=prompt,
+            approval_hook=self.approval_hook,
         )
 
         try:

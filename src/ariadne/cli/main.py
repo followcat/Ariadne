@@ -65,6 +65,12 @@ def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
         default=b,
         help="Start sandbox session in parallel with memory context build",
     )
+    p.add_argument(
+        "--approval-mode",
+        choices=["auto", "on-request", "readonly"],
+        default=s,
+        help="Tool approval policy (default: auto)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -121,7 +127,16 @@ def _settings_from_args(args: argparse.Namespace, *, default_lifecycle: str | No
         docker_image=args.docker_image,
         sandbox_prestart=args.sandbox_prestart,
         force_workspace=getattr(args, "force_workspace", False),
+        approval_mode=getattr(args, "approval_mode", None),
     )
+
+
+def _compose_with_approval(settings):
+    from .approval import make_approval_hook
+
+    agent = compose_agent(settings)
+    agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
+    return agent
 
 
 def _event_to_jsonable(event: TurnEvent) -> dict[str, object]:
@@ -177,7 +192,7 @@ async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) ->
 
 async def cmd_run(args: argparse.Namespace) -> int:
     settings = _settings_from_args(args)
-    agent = compose_agent(settings)
+    agent = _compose_with_approval(settings)
     prompt = " ".join(args.prompt).strip()
     if not prompt:
         print("Prompt is empty.", file=sys.stderr)
@@ -197,7 +212,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
 async def cmd_chat(args: argparse.Namespace) -> int:
     # chat defaults to active_session lifecycle when not specified
     settings = _settings_from_args(args, default_lifecycle="active_session")
-    agent = compose_agent(settings)
+    agent = _compose_with_approval(settings)
     if not args.no_welcome:
         print(
             f"Ariadne chat  session={settings.session_id}  workspace={settings.workspace}  "
