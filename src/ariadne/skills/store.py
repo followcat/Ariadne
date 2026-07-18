@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import AriadneError, app_error
+from ..memory.embeddings import EmbeddingProvider, HashEmbeddingProvider, cosine
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -18,9 +20,14 @@ class Skill:
     keywords: list[str] = field(default_factory=list)
     requires_tools: list[str] = field(default_factory=list)
     references: dict[str, str] = field(default_factory=dict)
+    version: str = "1"
+    namespace: str = "builtin"
 
     def index_line(self) -> str:
         return f"- {self.name}: {self.description}"
+
+    def searchable_text(self) -> str:
+        return " ".join([self.name, self.description, " ".join(self.keywords), self.body[:2000]])
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
@@ -62,22 +69,37 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
 
 
 class SkillStore:
-    def __init__(self, skills: dict[str, Skill] | None = None) -> None:
+    def __init__(
+        self,
+        skills: dict[str, Skill] | None = None,
+        *,
+        user_root: Path | None = None,
+        embedder: EmbeddingProvider | None = None,
+    ) -> None:
         self._skills = dict(skills or {})
+        self.user_root = user_root
+        self.embedder = embedder or HashEmbeddingProvider(dims=32)
+        self._emb_cache: dict[str, list[float]] = {}
 
     @classmethod
-    def from_dir(cls, root: Path, *, strict: bool = True) -> "SkillStore":
+    def from_dir(
+        cls,
+        root: Path,
+        *,
+        strict: bool = True,
+        user_root: Path | None = None,
+        embedder: EmbeddingProvider | None = None,
+    ) -> "SkillStore":
         root = root.resolve()
         if not root.is_dir():
             if strict:
                 raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"skills dir missing: {root}"))
-            return cls({})
+            return cls({}, user_root=user_root, embedder=embedder)
         skills: dict[str, Skill] = {}
         for path in sorted(root.iterdir()):
             if not path.is_dir():
                 continue
-            skill_md = path / "SKILL.md"
-            if not skill_md.is_file():
+            if not (path / "SKILL.md").is_file():
                 continue
             try:
                 skill = cls._load_one(path)
@@ -88,15 +110,22 @@ class SkillStore:
                     ) from exc
                 continue
             skills[skill.name] = skill
-        return cls(skills)
+        return cls(skills, user_root=user_root, embedder=embedder)
 
     @classmethod
-    def from_dirs(cls, roots: list[Path], *, strict: bool = True) -> "SkillStore":
+    def from_dirs(
+        cls,
+        roots: list[Path],
+        *,
+        strict: bool = True,
+        user_root: Path | None = None,
+        embedder: EmbeddingProvider | None = None,
+    ) -> "SkillStore":
         merged: dict[str, Skill] = {}
         for root in roots:
-            part = cls.from_dir(root, strict=strict)
+            part = cls.from_dir(root, strict=strict, user_root=user_root, embedder=embedder)
             merged.update(part._skills)
-        return cls(merged)
+        return cls(merged, user_root=user_root, embedder=embedder)
 
     @staticmethod
     def _load_one(path: Path) -> Skill:
@@ -125,6 +154,7 @@ class SkillStore:
         if ref_dir.is_dir():
             for ref in sorted(ref_dir.glob("*.md")):
                 refs[ref.name] = ref.read_text(encoding="utf-8")
+        ns = "user" if "user" in path.parts[-3:] else "builtin"
         return Skill(
             name=name,
             description=description,
@@ -133,6 +163,8 @@ class SkillStore:
             keywords=[str(x) for x in keywords],
             requires_tools=[str(x) for x in requires],
             references=refs,
+            version=str(meta.get("version") or "1"),
+            namespace=ns,
         )
 
     def list(self) -> list[Skill]:
@@ -154,9 +186,7 @@ class SkillStore:
         tokens = [t for t in re.split(r"[^a-z0-9_./-]+", q) if t]
         scored: list[tuple[int, Skill]] = []
         for skill in self._skills.values():
-            hay = " ".join(
-                [skill.name, skill.description, " ".join(skill.keywords), skill.body[:2000]]
-            ).lower()
+            hay = skill.searchable_text().lower()
             score = 0
             if q in hay:
                 score += 10
@@ -173,3 +203,89 @@ class SkillStore:
                 scored.append((score, skill))
         scored.sort(key=lambda item: (-item[0], item[1].name))
         return [s for _, s in scored[:limit]]
+
+    async def search_hybrid(self, query: str, *, limit: int = 5) -> list[Skill]:
+        lexical = self.search(query, limit=max(limit * 3, 10))
+        if not lexical:
+            return []
+        q_emb = (await self.embedder.embed([query]))[0]
+        scored: list[tuple[float, Skill]] = []
+        for i, skill in enumerate(lexical):
+            key = skill.name + ":" + skill.version
+            if key not in self._emb_cache:
+                emb = (await self.embedder.embed([skill.searchable_text()]))[0]
+                self._emb_cache[key] = emb
+            emb_score = cosine(q_emb, self._emb_cache[key])
+            # blend rank position with embedding
+            lex_score = 1.0 / (1 + i)
+            scored.append((0.4 * lex_score + 0.6 * emb_score, skill))
+        scored.sort(key=lambda item: -item[0])
+        return [s for _, s in scored[:limit]]
+
+    def manage(
+        self,
+        *,
+        action: str,
+        name: str,
+        description: str = "",
+        body: str = "",
+        keywords: list[str] | None = None,
+    ) -> dict[str, object]:
+        """Create/update/delete user skills with versioned directories."""
+        if self.user_root is None:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "user skills root not configured"))
+        action = (action or "").strip().lower()
+        name = (name or "").strip()
+        if not NAME_RE.match(name):
+            raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"invalid skill name {name!r}"))
+        self.user_root.mkdir(parents=True, exist_ok=True)
+        skill_dir = self.user_root / name
+        if action == "delete":
+            if not skill_dir.exists():
+                raise AriadneError(app_error("ARIADNE_SKILL_NOT_FOUND", f"skill not found: {name}"))
+            # version snapshot then remove active
+            versions = self.user_root / ".versions" / name
+            versions.mkdir(parents=True, exist_ok=True)
+            stamp = str(int(__import__("time").time()))
+            target = versions / stamp
+            if skill_dir.exists():
+                import shutil
+
+                if target.exists():
+                    shutil.rmtree(target)
+                shutil.copytree(skill_dir, target)
+                shutil.rmtree(skill_dir)
+            self._skills.pop(name, None)
+            return {"action": "delete", "name": name, "versioned_to": str(target)}
+        if action not in {"create", "update"}:
+            raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "action must be create|update|delete"))
+        if not description.strip():
+            raise AriadneError(app_error("ARIADNE_SKILL_INVALID", "description required"))
+        if not body.strip():
+            raise AriadneError(app_error("ARIADNE_SKILL_INVALID", "body required"))
+        if action == "create" and skill_dir.exists():
+            raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"skill already exists: {name}"))
+        if action == "update" and skill_dir.exists():
+            import shutil
+
+            versions = self.user_root / ".versions" / name
+            versions.mkdir(parents=True, exist_ok=True)
+            stamp = str(int(__import__("time").time()))
+            shutil.copytree(skill_dir, versions / stamp, dirs_exist_ok=True)
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        kw = keywords or []
+        fm = [
+            "---",
+            f"name: {name}",
+            f"description: {description.strip()}",
+            f"keywords: [{', '.join(kw)}]" if kw else "keywords: []",
+            "version: \"1\"",
+            "---",
+            "",
+            body.lstrip() + ("\n" if not body.endswith("\n") else ""),
+        ]
+        (skill_dir / "SKILL.md").write_text("\n".join(fm), encoding="utf-8")
+        skill = self._load_one(skill_dir)
+        skill.namespace = "user"
+        self._skills[name] = skill
+        return {"action": action, "name": name, "path": str(skill_dir), "description": skill.description}
