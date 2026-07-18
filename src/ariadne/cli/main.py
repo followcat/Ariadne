@@ -13,7 +13,8 @@ from ..errors import AriadneError
 from ..host.compose import compose_agent
 from ..sandbox.toolbox import list_profiles, profile_as_dict
 from ..types import TurnEvent
-from .render import render_event, render_human, render_json
+from .render import render_json
+from . import ui
 
 
 def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
@@ -138,32 +139,39 @@ async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) ->
         if event.kind in {"turn_completed", "turn_failed"}:
             final = event.data.get("result")
             continue
-        if not json_mode:
-            chunk = render_event(event, verbose=verbose)
-            if chunk:
-                sys.stdout.write(chunk)
-                sys.stdout.flush()
-        else:
+        if json_mode:
             # NDJSON event stream (cli-shell-agent §6.2), final result after
             sys.stdout.write(json.dumps(_event_to_jsonable(event), ensure_ascii=False, default=str) + "\n")
             sys.stdout.flush()
+            continue
+        if event.kind == "model_delta":
+            ui.print_delta(str(event.data.get("text") or ""))
+        elif event.kind == "tool_started":
+            ui.print_tool_start(str(event.data.get("name") or ""), {})
+        elif event.kind == "tool_completed":
+            ui.print_tool_done(
+                str(event.data.get("name") or ""),
+                str(event.data.get("status") or ""),
+                event.data.get("output"),
+            )
+        elif verbose and event.kind == "turn_started":
+            ui.print_event_line("turn", str(event.data.get("turn_id") or ""))
+        elif verbose and event.kind in {"skill_event", "memory_layer"}:
+            detail = event.data.get("detail") or event.data.get("name") or ""
+            ui.print_event_line(str(event.kind), str(detail))
     if final is None:
-        print("ERROR: stream ended without result", file=sys.stderr)
+        ui.print_error("STREAM", "stream ended without result")
         return 1
     if json_mode:
         sys.stdout.write(render_json(final))
+        return 0 if final.status == "completed" else 1
+    if final.status != "completed":
+        ui.render_result(final, verbose=True, skip_text=True)
     else:
-        # final human summary (assistant text already streamed if model_delta)
-        if not getattr(final, "text", None) or verbose:
-            sys.stdout.write(render_human(final, verbose=verbose, skip_text=bool(final.text)))
-        elif final.status != "completed":
-            sys.stdout.write(render_human(final, verbose=True))
-        else:
-            # ensure newline after streamed text
-            if final.text and not final.text.endswith("\n"):
-                sys.stdout.write("\n")
-            if verbose:
-                sys.stdout.write(render_human(final, verbose=True, skip_text=True))
+        # streamed text already printed; ensure trailing newline, show tools/usage
+        if final.text and not final.text.endswith("\n"):
+            ui.out.print()
+        ui.render_result(final, verbose=verbose, skip_text=True)
     return 0 if final.status == "completed" else 1
 
 
@@ -176,13 +184,13 @@ async def cmd_run(args: argparse.Namespace) -> int:
         return 2
     if settings.stream:
         return await _emit_stream(
-            agent, prompt, json_mode=settings.json_mode, verbose=settings.verbose or True
+            agent, prompt, json_mode=settings.json_mode, verbose=settings.verbose
         )
     result = await agent.run(prompt)
     if settings.json_mode:
         sys.stdout.write(render_json(result))
     else:
-        sys.stdout.write(render_human(result, verbose=settings.verbose or True))
+        ui.render_result(result, verbose=settings.verbose)
     return 0 if result.status == "completed" else 1
 
 
@@ -274,7 +282,7 @@ async def cmd_chat(args: argparse.Namespace) -> int:
         if settings.json_mode:
             sys.stdout.write(render_json(result))
         else:
-            sys.stdout.write(render_human(result, verbose=settings.verbose or True))
+            ui.render_result(result, verbose=settings.verbose)
             if result.status != "completed":
                 print(f"(turn status={result.status})", file=sys.stderr)
 
