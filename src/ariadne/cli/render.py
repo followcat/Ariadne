@@ -104,6 +104,16 @@ def render_json(result: TurnResult) -> str:
         "text": result.text,
         "session_id": result.session_id,
         "model": result.model,
+        "messages": [
+            {
+                "role": m.role,
+                "content": m.content,
+                **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {}),
+                **({"name": m.name} if m.name else {}),
+                **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
+            }
+            for m in result.messages
+        ],
         "usage": {
             "prompt_tokens": result.usage.prompt_tokens,
             "completion_tokens": result.usage.completion_tokens,
