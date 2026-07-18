@@ -5,9 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
 from ..errors import AriadneError, app_error
-from ..memory.curated import CuratedStore
 from ..memory.facade import MemoryFacade
-from ..memory.state import ConversationStateStore
 from ..sandbox.port import SandboxExecRequest, SandboxSession
 from ..skills.store import SkillStore
 from .exposure import ToolExposureState
@@ -47,6 +45,9 @@ class ToolSpec:
             },
         }
 
+    def schema_chars(self) -> int:
+        return len(json.dumps(self.openai_tool(), ensure_ascii=False, separators=(",", ":")))
+
 
 @dataclass
 class ToolRegistry:
@@ -68,6 +69,9 @@ class ToolRegistry:
             lines.append(f"- {spec.name}: {phrase}{marker}")
         return "\n".join(lines)
 
+    def catalog_chars(self) -> int:
+        return len(self.catalog_text())
+
     def build_exposure(self, *, prefer_deferred: bool = True) -> ToolExposureState:
         request: list[dict[str, Any]] = []
         deferred: dict[str, dict[str, Any]] = {}
@@ -81,16 +85,11 @@ class ToolRegistry:
             else:
                 request.append(schema)
                 callable_names.add(spec.name)
-        # tool_search always eager if present
         if "tool_search" in self.tools and not any(
             (t.get("function") or {}).get("name") == "tool_search" for t in request
         ):
             request.append(self.tools["tool_search"].openai_tool())
             callable_names.add("tool_search")
-        # deferred tools still callable after tool_search; mark search tool always callable
-        for name in deferred:
-            # not callable until loaded
-            pass
         return ToolExposureState(
             request_tools=request,
             deferred_tools=deferred,
@@ -98,15 +97,16 @@ class ToolRegistry:
         )
 
     def list_openai_tools(self) -> list[dict[str, Any]]:
-        # eager-only convenience
         return self.build_exposure(prefer_deferred=False).request_tools
+
+    def schema_chars_for(self, tools: list[dict[str, Any]]) -> int:
+        return len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")))
 
     async def invoke(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         spec = self.tools.get(name)
         if spec is None:
             raise AriadneError(app_error("ARIADNE_UNKNOWN_TOOL", f"Unknown tool: {name}", name=name))
         if ctx.exposure is not None and name not in ctx.exposure.callable_function_names:
-            # allow tool_search always if registered
             if name != "tool_search":
                 raise AriadneError(
                     app_error(
@@ -148,6 +148,7 @@ def build_default_registry(
             "stderr": result.stderr,
             "timed_out": result.timed_out,
             "truncated": result.truncated,
+            "compressed": result.compressed,
             "duration_ms": result.duration_ms,
             "cwd": result.cwd,
         }
@@ -158,29 +159,21 @@ def build_default_registry(
             catalog_description="run shell command in workspace",
             description=(
                 "Run a shell command in the local project sandbox. "
-                "Default cwd is the project root (/workspace). Prefer relative paths (e.g. NOTES.md). "
-                "Use cwd='/session' for ephemeral scratch ($ARIADNE_SESSION_DIR). "
-                "Shell state (cd/export) does not persist across calls; write files to persist. "
-                "Prefer non-interactive commands. Large outputs may be truncated with markers."
+                "Default cwd is the project root (/workspace). Prefer relative paths. "
+                "Use cwd='/session' for ephemeral scratch. "
+                "Shell state does not persist across calls."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "cmd": {"type": "string", "description": "Shell command to execute."},
-                    "cwd": {
-                        "type": "string",
-                        "description": "Virtual cwd: /workspace or /session (default /workspace).",
-                    },
-                    "timeout_seconds": {
-                        "type": "number",
-                        "description": "Timeout seconds (default 60).",
-                    },
+                    "cmd": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "number"},
                 },
                 "required": ["cmd"],
                 "additionalProperties": False,
             },
             handler=sandbox_exec,
-            tool_exposure="eager",
         )
     )
 
@@ -201,39 +194,21 @@ def build_default_registry(
             name="memory",
             catalog_description="durable curated memory",
             description=(
-                "Manage durable curated memory entries (add/update/remove/read). "
-                "Use for long-lived preferences and standing instructions. "
-                "Do NOT store ephemeral todos or temporary entity fields here when conversation state is available; "
-                "use conversation_state for current-session truth. "
-                "Capacity is hard-limited; full store returns a structured error."
+                "Manage durable curated memory (add/update/remove/read). "
+                "Use for long-lived preferences. Use conversation_state for current-session truth."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["add", "update", "remove", "read"],
-                        "description": "Memory action.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Entry text for add/update.",
-                    },
-                    "entry_ref": {
-                        "type": "string",
-                        "description": "Entry id or 1-based index for update/remove.",
-                    },
-                    "scope": {
-                        "type": "string",
-                        "enum": ["user", "session"],
-                        "description": "user=cross-session, session=this session only.",
-                    },
+                    "action": {"type": "string", "enum": ["add", "update", "remove", "read"]},
+                    "content": {"type": "string"},
+                    "entry_ref": {"type": "string"},
+                    "scope": {"type": "string", "enum": ["user", "session"]},
                 },
                 "required": ["action"],
                 "additionalProperties": False,
             },
             handler=memory_tool,
-            tool_exposure="eager",
         )
     )
 
@@ -243,7 +218,12 @@ def build_default_registry(
         action = str(args.get("action") or "read").lower()
         if action == "read":
             text, count = ctx.memory.state.render(ctx.session_id)
-            return {"action": "read", "entity_count": count, "text": text, "state": ctx.memory.state.get(ctx.session_id)}
+            return {
+                "action": "read",
+                "entity_count": count,
+                "text": text,
+                "state": ctx.memory.state.get(ctx.session_id),
+            }
         if action == "apply":
             ops = args.get("operations") or []
             if not isinstance(ops, list):
@@ -262,30 +242,20 @@ def build_default_registry(
             name="conversation_state",
             catalog_description="authoritative current session state",
             description=(
-                "Read or apply closed-set operations to authoritative conversation state. "
-                "apply operations each require evidence_quote found in the turn text. "
-                "Allowed ops: ensure_entity, set_alias, set_attribute, set_status, "
-                "ensure_collection, collection_append, collection_remove."
+                "Read or apply closed-set conversation state ops. "
+                "Each apply op requires evidence_quote found in turn text."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["read", "apply"]},
-                    "operations": {
-                        "type": "array",
-                        "description": "State operations for apply.",
-                        "items": {"type": "object"},
-                    },
-                    "evidence_text": {
-                        "type": "string",
-                        "description": "Text that must contain each evidence_quote (defaults to turn text).",
-                    },
+                    "operations": {"type": "array", "items": {"type": "object"}},
+                    "evidence_text": {"type": "string"},
                 },
                 "required": ["action"],
                 "additionalProperties": False,
             },
             handler=conversation_state_tool,
-            tool_exposure="eager",
         )
     )
 
@@ -294,19 +264,25 @@ def build_default_registry(
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "skill store not configured"))
         query = str(args.get("query") or "").strip()
         limit = int(args.get("limit") or 5)
-        hits = ctx.skills.search(query, limit=max(1, min(limit, 20)))
+        mode = str(args.get("mode") or "lexical").lower()
+        if mode == "hybrid":
+            hits = await ctx.skills.search_hybrid(query, limit=max(1, min(limit, 20)))
+        else:
+            hits = ctx.skills.search(query, limit=max(1, min(limit, 20)))
         if ctx.skill_events is not None:
             from ..types import SkillEvent
 
-            ctx.skill_events.append(SkillEvent(kind="search", detail=query))
+            ctx.skill_events.append(SkillEvent(kind="search", detail=f"{mode}:{query}"))
         return {
             "query": query,
+            "mode": mode,
             "results": [
                 {
                     "name": s.name,
                     "description": s.description,
                     "keywords": s.keywords,
                     "requires_tools": s.requires_tools,
+                    "namespace": s.namespace,
                 }
                 for s in hits
             ],
@@ -316,18 +292,18 @@ def build_default_registry(
         ToolSpec(
             name="search_skills",
             catalog_description="search installed skills",
-            description="Search installed procedural skills by query. Returns short metadata only.",
+            description="Search skills. mode=lexical|hybrid (hybrid blends lexical + embeddings).",
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
                     "limit": {"type": "integer"},
+                    "mode": {"type": "string", "enum": ["lexical", "hybrid"]},
                 },
                 "required": ["query"],
                 "additionalProperties": False,
             },
             handler=search_skills,
-            tool_exposure="eager",
         )
     )
 
@@ -348,6 +324,8 @@ def build_default_registry(
             "description": skill.description,
             "body": skill.body,
             "requires_tools": skill.requires_tools,
+            "namespace": skill.namespace,
+            "version": skill.version,
         }
         if include_refs:
             payload["references"] = skill.references
@@ -357,10 +335,7 @@ def build_default_registry(
         ToolSpec(
             name="load_skill",
             catalog_description="load full skill body",
-            description=(
-                "Load a skill body for this turn (tool result scope). "
-                "Call after search_skills or when skill index names a needed skill."
-            ),
+            description="Load skill body for this turn (tool result scope).",
             parameters={
                 "type": "object",
                 "properties": {
@@ -371,7 +346,43 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=load_skill,
-            tool_exposure="eager",
+        )
+    )
+
+    async def skill_manage(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if ctx.skills is None:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "skill store not configured"))
+        action = str(args.get("action") or "").lower()
+        name = str(args.get("name") or "")
+        keywords = args.get("keywords") or []
+        if not isinstance(keywords, list):
+            keywords = [str(keywords)]
+        return ctx.skills.manage(
+            action=action,
+            name=name,
+            description=str(args.get("description") or ""),
+            body=str(args.get("body") or ""),
+            keywords=[str(x) for x in keywords],
+        )
+
+    registry.register(
+        ToolSpec(
+            name="skill_manage",
+            catalog_description="create/update user skills",
+            description="Create, update, or delete versioned user skills under the user skills root.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "update", "delete"]},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "body": {"type": "string"},
+                    "keywords": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["action", "name"],
+                "additionalProperties": False,
+            },
+            handler=skill_manage,
         )
     )
 
@@ -385,6 +396,7 @@ def build_default_registry(
         return {
             "loaded": [(t.get("function") or {}).get("name") for t in loaded],
             "still_deferred": sorted(ctx.exposure.deferred_tools.keys() - ctx.exposure.loaded_tool_names),
+            "schema_chars_loaded": len(json.dumps(loaded, ensure_ascii=False, separators=(",", ":"))),
         }
 
     registry.register(
@@ -406,11 +418,9 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=tool_search,
-            tool_exposure="eager",
         )
     )
 
-    # Example deferred tool for schema-efficiency path
     if enable_deferred_demo:
         async def echo_note(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
             return {"note": str(args.get("note") or "")}
