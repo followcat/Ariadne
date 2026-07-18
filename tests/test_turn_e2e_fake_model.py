@@ -8,6 +8,7 @@ from typing import Any
 from ariadne.kernel.turn import TurnApplication
 from ariadne.memory.curated import CuratedStore
 from ariadne.memory.facade import MemoryFacade
+from ariadne.memory.projection import ProjectionWorker
 from ariadne.memory.semantic import SemanticIndex
 from ariadne.memory.state import ConversationStateStore
 from ariadne.memory.summary import TurnSummaryStore
@@ -50,12 +51,14 @@ Use sandbox_exec to inspect and write NOTES.md.
         encoding="utf-8",
     )
 
+    state_store = ConversationStateStore(data / "s.json")
     memory = MemoryFacade(
         transcript=TranscriptStore(data / "t.jsonl"),
         curated=CuratedStore(data / "c.json"),
-        state=ConversationStateStore(data / "s.json"),
+        state=state_store,
         summaries=TurnSummaryStore(data / "sum.json"),
         semantic=SemanticIndex(data / "sem.json"),
+        projection=ProjectionWorker(path=data / "projection_jobs.json", state_store=state_store),
     )
     skills = SkillStore.from_dir(skills_dir)
     tools = build_default_registry(memory=memory, skills=skills, enable_deferred_demo=True)
@@ -66,7 +69,6 @@ Use sandbox_exec to inspect and write NOTES.md.
     def script(messages: list[dict[str, Any]], model_tools: list[dict[str, Any]] | None) -> dict[str, Any]:
         n = step["n"]
         step["n"] += 1
-        # Ensure deferred echo_note is not in initial tools list
         tool_names = {
             (t.get("function") or {}).get("name")
             for t in (model_tools or [])
@@ -148,17 +150,64 @@ Use sandbox_exec to inspect and write NOTES.md.
     assert "sandbox_exec" in names
     assert "memory" in names
     assert "conversation_state" in names
-    # durable memory persisted
     snap, count = memory.curated.snapshot_text(session_id="sess1")
     assert count == 1
     assert "short bullets" in snap
     state_text, entities = memory.state.render("sess1")
     assert entities == 1
     assert "NOTES.md" in state_text
-    # skill events recorded
     kinds = {e.kind for e in result.skill_events}
     assert "search" in kinds or "load" in kinds or "index" in kinds
-    # L1/L4 written
     assert memory.summaries.list_ready("sess1")
     hits = memory.semantic.search(session_id="sess1", query="notes project", limit=3)
     assert hits
+    assert result.schema_metrics
+    assert result.schema_metrics[0].schema_chars > 0
+    assert result.schema_metrics[0].deferred_count >= 1
+    jobs = memory.projection.list_jobs(session_id="sess1") if memory.projection else []
+    assert jobs and jobs[-1]["status"] == "pending"
+
+
+def test_stream_events_fake_model(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    workspace = tmp_path / "proj"
+    workspace.mkdir()
+    memory = MemoryFacade(
+        transcript=TranscriptStore(data / "t.jsonl"),
+        curated=CuratedStore(data / "c.json"),
+        state=ConversationStateStore(data / "s.json"),
+        summaries=TurnSummaryStore(data / "sum.json"),
+        semantic=SemanticIndex(data / "sem.json"),
+    )
+    skills = SkillStore({})
+    tools = build_default_registry(memory=memory, skills=skills)
+    sandbox = LocalWorkdirSandbox(workspace=workspace, data_dir=data)
+
+    def script(messages, tools_payload):
+        return {"content": "hello streamed world"}
+
+    app = TurnApplication(
+        model=FakeModel(script=script),
+        tools=tools,
+        sandbox_backend=sandbox,
+        memory=memory,
+        skills=skills,
+        stream_model=True,
+    )
+
+    async def collect():
+        events = []
+        async for ev in app.run_events(prompt="hi", session_id="s1"):
+            events.append(ev)
+        return events
+
+    events = asyncio.run(collect())
+    kinds = [e.kind for e in events]
+    assert "turn_started" in kinds
+    assert "model_delta" in kinds
+    assert "turn_completed" in kinds
+    deltas = "".join(e.data.get("text", "") for e in events if e.kind == "model_delta")
+    assert "hello" in deltas
+    final = next(e.data["result"] for e in events if e.kind == "turn_completed")
+    assert final.status == "completed"
+    assert "streamed" in final.text

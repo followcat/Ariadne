@@ -3,10 +3,35 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..types import TurnResult
+from ..types import TurnEvent, TurnResult
 
 
-def render_human(result: TurnResult, *, verbose: bool = False) -> str:
+def render_event(event: TurnEvent, *, verbose: bool = False) -> str:
+    if event.kind == "model_delta":
+        return str(event.data.get("text") or "")
+    if not verbose:
+        return ""
+    if event.kind == "turn_started":
+        return f"[turn {event.data.get('turn_id')} started]\n"
+    if event.kind == "tool_started":
+        return f"• tool {event.data.get('name')} …\n"
+    if event.kind == "tool_completed":
+        status = event.data.get("status")
+        mark = "•" if status == "completed" else "×"
+        return f"{mark} tool {event.data.get('name')} {status}\n"
+    if event.kind == "skill_event":
+        return f"skill {event.data.get('kind')}: {event.data.get('skill_name') or event.data.get('detail')}\n"
+    if event.kind == "memory_layer":
+        return f"memory {event.data.get('name')}={event.data.get('status')}\n"
+    return ""
+
+
+def render_human(
+    result: TurnResult,
+    *,
+    verbose: bool = False,
+    skip_text: bool = False,
+) -> str:
     lines: list[str] = []
     if verbose or result.tool_calls:
         for call in result.tool_calls:
@@ -36,6 +61,8 @@ def render_human(result: TurnResult, *, verbose: bool = False) -> str:
                         extra.append("timed_out")
                     if out.get("truncated"):
                         extra.append("truncated")
+                    if out.get("compressed"):
+                        extra.append("compressed")
                     suffix = f" ({', '.join(extra)})" if extra else ""
                     lines.append(f"  exit {out['exit_code']}{suffix}")
             elif out is not None:
@@ -48,13 +75,19 @@ def render_human(result: TurnResult, *, verbose: bool = False) -> str:
             lines.append(f"ERROR {err.code}: {err.message}")
         else:
             lines.append("ERROR: turn failed")
-    else:
+    elif not skip_text:
         lines.append(result.text or "")
     if verbose and result.usage.total_tokens:
         lines.append("")
         lines.append(
             f"[usage prompt={result.usage.prompt_tokens} completion={result.usage.completion_tokens} "
             f"total={result.usage.total_tokens} reasoning={result.usage.reasoning_tokens}]"
+        )
+    if verbose and result.schema_metrics:
+        last = result.schema_metrics[-1]
+        lines.append(
+            f"[schema tools={last.tool_count} schema_chars={last.schema_chars} "
+            f"catalog_chars={last.catalog_chars} deferred={last.deferred_count}]"
         )
     return "\n".join(lines).rstrip() + "\n"
 
@@ -77,6 +110,17 @@ def render_json(result: TurnResult) -> str:
             "total_tokens": result.usage.total_tokens,
             "reasoning_tokens": result.usage.reasoning_tokens,
         },
+        "schema_metrics": [
+            {
+                "exchange_index": m.exchange_index,
+                "tool_count": m.tool_count,
+                "schema_chars": m.schema_chars,
+                "catalog_chars": m.catalog_chars,
+                "deferred_count": m.deferred_count,
+                "loaded_deferred": m.loaded_deferred,
+            }
+            for m in result.schema_metrics
+        ],
         "skill_events": [
             {"kind": e.kind, "skill_name": e.skill_name, "detail": e.detail}
             for e in result.skill_events
@@ -103,6 +147,7 @@ def render_json(result: TurnResult) -> str:
                 "arguments": c.arguments,
                 "output": c.output,
                 "status": c.status,
+                "schema_chars": c.schema_chars,
                 "error": None
                 if c.error is None
                 else {
@@ -121,4 +166,4 @@ def render_json(result: TurnResult) -> str:
             "details": result.error.details,
         },
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=default) + "\n"
