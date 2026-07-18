@@ -1,24 +1,36 @@
 # Roadmap
 
-## Implemented (v0.1 kernel)
+## Implemented (design coverage)
 
 The personal open-source kernel designs are implemented in `src/ariadne` with offline tests.
 
 | Design area | Status | Code | Tests |
 | --- | --- | --- | --- |
 | CLI shell agent host | done | `cli/`, `host/compose.py` | `test_cli_parser.py` |
+| Streaming tokens / turn events | done | `model/*`, `kernel/turn.py`, CLI `--stream` | `test_turn_e2e_fake_model.py` |
 | Callable turn / tool loop | done | `kernel/turn.py`, `agent.py` | `test_turn_e2e_fake_model.py` |
 | Sandbox port + LocalWorkdir | done | `sandbox/` | `test_local_sandbox.py` |
+| Sandbox FS API (`read_file`/`write_file`/`list_dir`) | done | `sandbox/port.py`, `local.py`, `docker.py`, `null.py` | `test_sandbox_acceptance.py` |
+| Sandbox acceptance scenarios 1–6 | done | — | `test_sandbox_acceptance.py` |
+| Public API types (`RunTurnCommand`, `TurnResult.messages`) | done | `types.py`, `kernel/turn.py`, `agent.py` | `test_public_api.py` |
+| Memory constructors (`Memory.local`/`in_memory`) + inspection helpers | done | `memory/facade.py`, `agent.py` | `test_public_api.py` |
+| `last_good_plus_delta` read mode | done | `memory/facade.py`, `state.py`, `transcript.py` | `test_public_api.py` |
+| Sandbox prestart (parallel with memory build) | done | `kernel/turn.py`, `config.py` | `test_public_api.py` |
+| Active session lifecycle | done | `sandbox/active.py` | `test_active_session.py` |
+| Docker sandbox backend | done | `sandbox/docker.py` | `test_docker_sandbox.py` (skip if no docker) |
+| Observation compression | done | `sandbox/compress.py` | `test_local_sandbox.py` |
+| Toolbox profiles | done | `sandbox/toolbox.py` | `test_toolbox.py` |
 | Tool registry + deferred exposure | done | `tools/` | `test_tool_exposure.py` |
-| Skills store/search/load | done | `skills/` | `test_skills_store.py` + e2e |
-| Memory L0 transcript | done | `memory/transcript.py` | e2e |
-| Memory L1 turn summary store | done | `memory/summary.py` | e2e |
-| Memory L2 conversation state | done | `memory/state.py` | `test_memory_layers.py` |
-| Memory L3 curated durable | done | `memory/curated.py` | `test_memory_layers.py` |
-| Memory L4 semantic index | done | `memory/semantic.py` | e2e |
-| Memory facade / layer reports | done | `memory/facade.py` | `test_memory_layers.py` |
-| OpenAI-compatible model adapter | done | `model/openai_chat.py` | live via `.env` / CLI |
-| FakeModel for offline verification | done | `model/fake.py` | e2e |
+| Schema size metrics | done | `types.SchemaMetrics`, turn traces | e2e |
+| Skills store/search/load/manage | done | `skills/` | `test_skills_store.py` + hybrid |
+| Hybrid/vector skill search | done | `skills/store.py` | `test_hybrid_search.py` |
+| Memory L0–L4 + facade | done | `memory/` | `test_memory_layers.py` |
+| Projection worker / leases | done | `memory/projection.py` | `test_projection_worker.py` |
+| Embedding providers | done | `memory/embeddings.py` | hybrid tests (hash) + OpenAI provider |
+| Memory lab cases | done | — | `test_memory_lab_cases.py` |
+| OpenAI-compatible model + stream | done | `model/openai_chat.py` | live via `.env` / CLI |
+| FakeModel offline verification | done | `model/fake.py` | e2e + stream |
+| CI packaging | done | `.github/workflows/ci.yml` | — |
 
 ### Phase 0 — Docs & repo skeleton
 - [x] Name: Ariadne
@@ -26,31 +38,32 @@ The personal open-source kernel designs are implemented in `src/ariadne` with of
 - [x] Package skeleton (`pyproject.toml`)
 
 ### Phase 0.5 / 1 — CLI + callable turn
-- [x] `ariadne run` / `chat` / `doctor` / `tools` / `skills`
+- [x] `ariadne run` / `chat` / `doctor` / `tools` / `skills` / `toolbox`
 - [x] LocalWorkdir sandbox + `sandbox_exec`
 - [x] OpenAI-compatible model via `.env`
 - [x] L0 transcript under `.ariadne/sessions/`
 - [x] Full tool loop with structured errors
-- [ ] Streaming tokens in CLI
-- [ ] `active_session` sandbox for chat
+- [x] Streaming tokens in CLI (`--stream`)
+- [x] `active_session` sandbox for chat
 
 ### Phase 2 — Skills runtime
 - [x] Filesystem skill packs + validation
 - [x] Skill index injection
-- [x] `search_skills` (lexical) + `load_skill` (turn-scoped tool result)
+- [x] `search_skills` (lexical|hybrid) + `load_skill`
+- [x] `skill_manage` for user skills
 - [x] Example builtin skill `shell_project_notes`
-- [ ] Hybrid/vector skill search
+- [x] Hybrid/vector skill search
 
 ### Phase 3 — Toolcall efficiency
 - [x] Deferred exposure + `tool_search`
 - [x] Catalog vs schema layering on builtins
 - [x] Deferred demo tool + unit test
-- [ ] Schema size metrics in production traces
+- [x] Schema size metrics in production traces
 
 ### Phase 4 — Memory depth
 - [x] Curated memory tool + store + caps/fastfail
 - [x] Async-ready turn summary store (written at turn end)
-- [x] Semantic multi-chunk lexical index
+- [x] Semantic multi-chunk index (lexical + hybrid embeddings)
 - [x] Layer budgets/metadata via `LayerReport`
 - [x] Conversation state closed ops + evidence quotes
 
@@ -58,19 +71,28 @@ The personal open-source kernel designs are implemented in `src/ariadne` with of
 - [x] `NullSandbox` + clear errors
 - [x] `LocalWorkdirSandbox` + truncation markers
 - [x] `/workspace` + `/session` contract
-- [ ] Docker backend
-- [ ] Observation compression beyond head/tail
-- [ ] Toolbox profiles
+- [x] Docker backend
+- [x] Observation compression beyond head/tail
+- [x] Toolbox profiles
+- [x] Session FS API (`read_file`/`write_file`/`list_dir`) + path-escape rejection
+- [x] per_turn `/session` cleanup on close + acceptance scenarios 1–6
+- [x] Optional sandbox prestart (bounded, parallel with memory build)
 
-### Phase 6 — Advanced memory (optional)
-- [ ] Background projection worker / leases
-- [ ] External embedding providers
-- [ ] Full memory lab case suite port
+Model-facing `sandbox.read_file`/`sandbox.write_file` tools are intentionally
+**not** added yet: sandbox-v1 §5.2 makes them conditional ("only if exec-based
+base64 loops prove too error-prone"). The session-level FS API exists for
+hosts and kernel code.
+
+### Phase 6 — Advanced memory
+- [x] Background projection worker / leases
+- [x] External embedding providers (hash + OpenAI-compatible)
+- [x] Memory lab case suite (lightweight port)
+- [x] `last_good_plus_delta` read mode (last-good state + newer raw delta, `stale_delta` report)
 
 ### Phase 7 — Polish for public 0.1
 - [x] Offline e2e verification test
-- [ ] CI packaging
-- [ ] Streaming + richer CLI UX
+- [x] CI packaging
+- [x] Streaming + richer CLI UX
 
 ## Design references
 
