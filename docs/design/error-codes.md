@@ -18,6 +18,7 @@ Stable enough for hosts to branch on.
 | `ARIADNE_UNKNOWN_TOOL` | tools | call name not registered/callable |
 | `ARIADNE_INVALID_TOOL_ARGS` | tools | schema validation failed |
 | `ARIADNE_TOOL_HANDLER_ERROR` | tools | handler raised / returned failure |
+| `ARIADNE_TOOL_DENIED` | tools | denied by host approval policy |
 | `ARIADNE_TOOL_LOOP_LIMIT` | turn | exceeded max iterations |
 | `ARIADNE_SKILL_NOT_FOUND` | skills | search/load target missing |
 | `ARIADNE_SKILL_INVALID` | skills | pack failed validation |

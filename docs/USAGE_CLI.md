@@ -58,7 +58,10 @@ Global flags work both before and after the subcommand
 --skills-dir PATH             extra skill packs
 --eager-tools                 send all schemas (disable deferred)
 --stream                      stream model deltas + turn events
+--no-stream                   disable streaming in chat (chat streams by default)
 --sandbox-prestart            start sandbox in parallel with memory build
+--approval-mode MODE          auto | on-request | readonly tool approval
+-c / --continue               resume the most recent session
 -v / --verbose                tool traces, usage, schema metrics
 --json                        print TurnResult JSON (includes schema_metrics);
                               with --stream, NDJSON events then final result
@@ -73,11 +76,33 @@ Global flags work both before and after the subcommand
 /workspace
 /tools
 /skills
+/model [name]               show or hot-swap model
 /memory read
-/reset-session              # new session id, keep workspace
+/usage                      cumulative tokens this REPL
+/compact                    archive transcript (summaries keep history)
+/resume [id]                list or switch sessions
+/reset-session              new session id, keep workspace
 /sandbox-status
 /clear-session-files
+/clear
 ```
+
+REPL notes: history persists under the data dir; `\` continuation and
+``` fences give multiline input; Ctrl+C cancels the running turn (the
+sandbox is still cleaned up), Ctrl+C at an empty prompt exits.
+
+## File tools
+
+Besides `sandbox_exec`, the model can use structured file tools:
+
+```text
+sandbox_read_file   {path}
+sandbox_write_file  {path, content}                 -> unified diff
+sandbox_edit_file   {path, old_string, new_string}  -> exact once, unified diff
+```
+
+Edits fastfail when `old_string` matches zero or multiple times; the CLI
+renders returned diffs with syntax highlighting.
 
 ## How it works
 

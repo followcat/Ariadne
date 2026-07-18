@@ -56,7 +56,9 @@ the model works mainly through `sandbox.exec` in that workspace.
 | Debuggable tool loop | print tool calls, exit codes, truncated outputs |
 | Same kernel as library | CLI only formats events / reads argv |
 
-Anti-goal: a TUI product platform. Keep CLI thin.
+Anti-goal: a TUI product platform. **Rich host, thin kernel** — the CLI may be
+a full-featured terminal agent (streaming, history, approvals, session
+management); the kernel stays free of terminal concerns.
 
 ## 4. Command surface (v1)
 
@@ -64,6 +66,7 @@ Anti-goal: a TUI product platform. Keep CLI thin.
 ariadne run   PROMPT...     # one turn
 ariadne chat                # multi-turn REPL
 ariadne tools               # list exposed tools
+ariadne sessions            # list recorded sessions
 ariadne doctor              # check .env model + sandbox backend
 ariadne version
 ```
@@ -71,14 +74,17 @@ ariadne version
 Global flags:
 
 ```text
---session ID          default: "default" or directory hash
+--session ID          default: "local-" + hash(workspace)
 --workspace PATH      default: cwd
 --sandbox local|null|docker   default: local
+--no-sandbox          force NullSandbox
 --model NAME          override .env MODEL
 --json                machine-readable TurnResult
 --verbose / -v        show tool traces and layer reports
 --tool-loop-limit N
---no-sandbox          force NullSandbox
+--approval-mode auto|on-request|readonly   tool approval policy
+-c / --continue       resume most recent session
+--stream / --no-stream (chat streams by default)
 ```
 
 REPL meta-commands:
@@ -89,10 +95,35 @@ REPL meta-commands:
 /session
 /workspace
 /tools
+/skills
+/model [name]         # show or hot-swap model
 /memory read
-/reset-session          # new session id, keep workspace
-/clear-session-files    # wipe /session scratch (not /workspace)
+/usage                # cumulative tokens this REPL
+/compact              # archive transcript, summaries keep history
+/resume [id]          # list or switch sessions
+/reset-session        # new session id, keep workspace
+/sandbox-status
+/clear-session-files  # wipe /session scratch (not /workspace)
+/clear                # clear screen
 ```
+
+REPL behavior: readline history persisted under the data dir; `\`
+continuation and ``` fences for multiline input; Ctrl+C cancels the
+current turn (sandbox cleanup guaranteed), only Ctrl+C at an empty
+prompt exits.
+
+## 4.1 Approval modes (host concern)
+
+The kernel exposes `ToolContext.approval_hook`; the CLI hosts the policy:
+
+| Mode | Behavior |
+| --- | --- |
+| `auto` (default) | all configured tools allowed |
+| `on-request` | write-class tools (sandbox_exec, sandbox_write_file, sandbox_edit_file, skill_manage) prompt the user; reads pass |
+| `readonly` | write-class tools always denied |
+
+Denial maps to `ARIADNE_TOOL_DENIED` as an **error tool result** so the
+model can explain or recover; the turn does not fail.
 
 ## 5. Host architecture
 

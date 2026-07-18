@@ -27,6 +27,10 @@ The personal open-source kernel designs are implemented in `src/ariadne` with of
 | Skill pack allowlist + agents yaml | done | `skills/store.py` | `test_skill_plan_and_redact.py` |
 | CLI hardening (flag order, /memory read, /reset-session, guards, validate, NDJSON) | done | `cli/main.py`, `config.py` | parser tests + live |
 | Memory acceptance suite (isolation, forget/update, multi-entity) | done | — | `test_memory_acceptance.py` |
+| rich terminal UX (REPL, streaming, history, spinner) | done | `cli/ui.py`, `cli/repl.py` | live + parser tests |
+| File editing tools with diffs | done | `tools/filetools.py` | `test_filetools.py` |
+| Tool approval modes | done | `cli/approval.py`, `tools/registry.py` | `test_approval.py` |
+| Session management (sessions, --continue, /resume) | done | `cli/sessions.py`, `cli/repl.py` | `test_sessions.py` |
 | Active session lifecycle | done | `sandbox/active.py` | `test_active_session.py` |
 | Docker sandbox backend | done | `sandbox/docker.py` | `test_docker_sandbox.py` (skip if no docker) |
 | Observation compression | done | `sandbox/compress.py` | `test_local_sandbox.py` |
@@ -114,6 +118,14 @@ hosts and kernel code.
 - [x] Offline e2e verification test
 - [x] CI packaging
 - [x] Streaming + richer CLI UX
+
+### Phase 8 — Terminal agent experience (codex/claude-code class)
+- [x] rich rendering (markdown, styled tool blocks, diff syntax, spinner)
+- [x] REPL: persistent history, multiline, Ctrl+C turn cancel, session:model prompt
+- [x] chat streams by default; no-delta provider fallback
+- [x] `sandbox_read_file` / `sandbox_write_file` / `sandbox_edit_file` + diffs
+- [x] `--approval-mode auto|on-request|readonly` (host policy, kernel hook)
+- [x] `ariadne sessions`, `--continue`, `/resume`, `/model`, `/usage`, `/compact`, `/clear`
 
 ## Design references
 
