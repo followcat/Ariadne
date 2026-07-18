@@ -4,11 +4,18 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..errors import AriadneError, app_error
 from ..memory.embeddings import EmbeddingProvider, HashEmbeddingProvider, cosine
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+# reference/skill-pack-schema.md: only these top-level entries are allowed
+ALLOWED_DIRS = {"references", "templates", "scripts", "assets", "agents"}
+
+# plan(): lexical score >= threshold means the query literally names the skill
+AUTO_LOAD_SCORE = 10
 
 
 @dataclass(slots=True)
@@ -22,26 +29,22 @@ class Skill:
     references: dict[str, str] = field(default_factory=dict)
     version: str = "1"
     namespace: str = "builtin"
+    display_name: str = ""
+    short_description: str = ""
 
     def index_line(self) -> str:
-        return f"- {self.name}: {self.description}"
+        return f"- {self.name}: {self.short_description or self.description}"
 
     def searchable_text(self) -> str:
         return " ".join([self.name, self.description, " ".join(self.keywords), self.body[:2000]])
 
 
-def _parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
-    if not text.startswith("---"):
-        raise ValueError("SKILL.md must start with YAML frontmatter ---")
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        raise ValueError("SKILL.md frontmatter not closed with ---")
-    meta_raw = parts[1]
-    body = parts[2].lstrip("\n")
+def _parse_simple_yaml(text: str) -> dict[str, object]:
+    """Flat key: value mapping with inline/indented lists (no nesting)."""
     meta: dict[str, object] = {}
     current_list_key: str | None = None
-    for line in meta_raw.splitlines():
-        if not line.strip():
+    for line in text.splitlines():
+        if not line.strip() or line.strip().startswith("#"):
             continue
         if current_list_key and line.strip().startswith("- "):
             item = line.strip()[2:].strip().strip('"').strip("'")
@@ -65,7 +68,16 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
             meta[key] = items
         else:
             meta[key] = value.strip('"').strip("'")
-    return meta, body
+    return meta
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
+    if not text.startswith("---"):
+        raise ValueError("SKILL.md must start with YAML frontmatter ---")
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        raise ValueError("SKILL.md frontmatter not closed with ---")
+    return _parse_simple_yaml(parts[1]), parts[2].lstrip("\n")
 
 
 class SkillStore:
@@ -129,6 +141,13 @@ class SkillStore:
 
     @staticmethod
     def _load_one(path: Path) -> Skill:
+        for entry in path.iterdir():
+            if entry.name.startswith("."):
+                continue
+            if entry.is_file() and entry.name != "SKILL.md":
+                raise ValueError(f"unknown file in skill pack: {entry.name}")
+            if entry.is_dir() and entry.name not in ALLOWED_DIRS:
+                raise ValueError(f"unknown directory in skill pack: {entry.name}")
         text = (path / "SKILL.md").read_text(encoding="utf-8")
         meta, body = _parse_frontmatter(text)
         name = str(meta.get("name") or path.name).strip()
@@ -154,6 +173,23 @@ class SkillStore:
         if ref_dir.is_dir():
             for ref in sorted(ref_dir.glob("*.md")):
                 refs[ref.name] = ref.read_text(encoding="utf-8")
+        # optional agents/ metadata files (reference/skill-pack-schema.md)
+        display_name = ""
+        short_description = ""
+        index_yaml = path / "agents" / "index.yaml"
+        if index_yaml.is_file():
+            imeta = _parse_simple_yaml(index_yaml.read_text(encoding="utf-8"))
+            display_name = str(imeta.get("display_name") or "")
+            short_description = str(imeta.get("short_description") or "")
+        runtime_yaml = path / "agents" / "runtime.yaml"
+        if runtime_yaml.is_file():
+            rmeta = _parse_simple_yaml(runtime_yaml.read_text(encoding="utf-8"))
+            for extra in rmeta.get("requires_tools") or []:
+                if str(extra) not in requires:
+                    requires.append(str(extra))
+            for extra in rmeta.get("keywords") or []:
+                if str(extra) not in keywords:
+                    keywords.append(str(extra))
         ns = "user" if "user" in path.parts[-3:] else "builtin"
         return Skill(
             name=name,
@@ -165,6 +201,8 @@ class SkillStore:
             references=refs,
             version=str(meta.get("version") or "1"),
             namespace=ns,
+            display_name=display_name,
+            short_description=short_description,
         )
 
     def list(self) -> list[Skill]:
@@ -179,7 +217,7 @@ class SkillStore:
             return "(no skills installed)"
         return "\n".join(s.index_line() for s in skills)
 
-    def search(self, query: str, *, limit: int = 5) -> list[Skill]:
+    def _score_lexical(self, query: str) -> list[tuple[int, "Skill"]]:
         q = (query or "").strip().lower()
         if not q:
             return []
@@ -202,7 +240,26 @@ class SkillStore:
             if score > 0:
                 scored.append((score, skill))
         scored.sort(key=lambda item: (-item[0], item[1].name))
-        return [s for _, s in scored[:limit]]
+        return scored
+
+    def search(self, query: str, *, limit: int = 5) -> list[Skill]:
+        return [s for _, s in self._score_lexical(query)[:limit]]
+
+    def search_scored(self, query: str, *, limit: int = 5) -> list[tuple[int, "Skill"]]:
+        return self._score_lexical(query)[:limit]
+
+    def plan(self, query: str, *, auto_load_limit: int = 1, recommended_limit: int = 5) -> dict[str, Any]:
+        """SKILLS §5 selection plan: auto_load / recommended / other, with scores."""
+        scored = self._score_lexical(query)
+        auto = [(skill, score) for score, skill in scored if score >= AUTO_LOAD_SCORE][
+            :auto_load_limit
+        ]
+        auto_names = {skill.name for skill, _ in auto}
+        recommended = [(skill, score) for score, skill in scored if skill.name not in auto_names][
+            :recommended_limit
+        ]
+        other = max(0, len(self._skills) - len(auto) - len(recommended))
+        return {"auto_load": auto, "recommended": recommended, "other": other}
 
     async def search_hybrid(self, query: str, *, limit: int = 5) -> list[Skill]:
         lexical = self.search(query, limit=max(limit * 3, 10))
