@@ -66,6 +66,14 @@ def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
         help="Start sandbox session in parallel with memory context build",
     )
     p.add_argument(
+        "-c",
+        "--continue",
+        dest="continue_last",
+        action="store_true",
+        default=b,
+        help="Continue the most recent session",
+    )
+    p.add_argument(
         "--approval-mode",
         choices=["auto", "on-request", "readonly"],
         default=s,
@@ -102,6 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["list", "validate"],
         help="list (default) or validate skill packs strictly",
     )
+    sub.add_parser("sessions", help="List recorded sessions")
     sub.add_parser("toolbox", help="List toolbox profiles")
     sub.add_parser("version", help="Print version")
     return parser
@@ -130,6 +139,15 @@ def _settings_from_args(args: argparse.Namespace, *, default_lifecycle: str | No
         force_workspace=getattr(args, "force_workspace", False),
         approval_mode=getattr(args, "approval_mode", None),
     )
+
+
+def _apply_continue(args: argparse.Namespace, settings) -> None:
+    if getattr(args, "continue_last", False):
+        from .sessions import most_recent
+
+        recent = most_recent(settings.resolved_data_dir)
+        if recent:
+            settings.session_id = recent
 
 
 def _compose_with_approval(settings):
@@ -197,6 +215,7 @@ async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) ->
 
 async def cmd_run(args: argparse.Namespace) -> int:
     settings = _settings_from_args(args)
+    _apply_continue(args, settings)
     agent = _compose_with_approval(settings)
     prompt = " ".join(args.prompt).strip()
     if not prompt:
@@ -218,6 +237,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
 def cmd_chat(args: argparse.Namespace) -> int:
     # chat defaults to active_session lifecycle when not specified
     settings = _settings_from_args(args, default_lifecycle="active_session")
+    _apply_continue(args, settings)
     agent = _compose_with_approval(settings)
     from .repl import run_repl
 
@@ -300,6 +320,26 @@ async def cmd_skills(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sessions(args: argparse.Namespace) -> int:
+    from datetime import datetime
+
+    from .sessions import list_sessions
+
+    settings = _settings_from_args(args)
+    sessions = list_sessions(settings.resolved_data_dir)
+    if not sessions:
+        ui.print_info("no sessions recorded")
+        return 0
+    ui.print_table(
+        ["session", "turns", "updated"],
+        [
+            [s.session_id, str(s.turns), datetime.fromtimestamp(s.mtime).strftime("%Y-%m-%d %H:%M")]
+            for s in sessions
+        ],
+    )
+    return 0
+
+
 async def cmd_toolbox(args: argparse.Namespace) -> int:
     for profile in list_profiles():
         d = profile_as_dict(profile)
@@ -325,6 +365,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(cmd_tools(args))
         elif args.command == "skills":
             code = asyncio.run(cmd_skills(args))
+        elif args.command == "sessions":
+            code = cmd_sessions(args)
         elif args.command == "toolbox":
             code = asyncio.run(cmd_toolbox(args))
         elif args.command == "version":

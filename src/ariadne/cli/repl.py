@@ -187,6 +187,42 @@ def run_repl(
             if line == "/clear":
                 ui.out.clear()
                 continue
+            if line.startswith("/resume"):
+                from datetime import datetime
+
+                from .approval import make_approval_hook
+                from .sessions import list_sessions
+
+                parts = line.split(maxsplit=1)
+                sessions = list_sessions(settings.resolved_data_dir)
+                if len(parts) == 1:
+                    if not sessions:
+                        ui.print_info("no sessions recorded")
+                        continue
+                    ui.print_table(
+                        ["session", "turns", "updated"],
+                        [
+                            [
+                                s.session_id,
+                                str(s.turns),
+                                datetime.fromtimestamp(s.mtime).strftime("%Y-%m-%d %H:%M"),
+                            ]
+                            for s in sessions
+                        ],
+                    )
+                    ui.print_info("usage: /resume <session-id>")
+                    continue
+                target = parts[1].strip()
+                if not any(s.session_id == target for s in sessions):
+                    ui.print_error("SESSION", f"unknown session: {target}")
+                    continue
+                if agent.active_sessions is not None:
+                    asyncio.run(agent.active_sessions.close(settings.session_id, reason="resume"))
+                settings.session_id = target
+                agent = compose_agent(settings)
+                agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
+                ui.print_info(f"resumed session: {target}")
+                continue
             if line == "/reset-session":
                 if agent.active_sessions is not None:
                     asyncio.run(agent.active_sessions.close(settings.session_id, reason="reset_session"))
