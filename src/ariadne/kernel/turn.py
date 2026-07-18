@@ -433,10 +433,16 @@ class TurnApplication:
                     raw_args = fn.get("arguments") or "{}"
                     started = datetime.now(timezone.utc)
                     yield TurnEvent("tool_started", {"call_id": call_id, "name": name})
+                    args: dict[str, Any] = {}
                     try:
                         args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
                         if not isinstance(args, dict):
-                            raise ValueError("tool arguments must be a JSON object")
+                            raise AriadneError(
+                                app_error(
+                                    "ARIADNE_INVALID_TOOL_ARGS",
+                                    "tool arguments must be a JSON object",
+                                )
+                            )
                         output = await self.tools.invoke(name, args, ctx)
                         if self.redact_traces:
                             output = redact_secrets(output)
@@ -482,7 +488,7 @@ class TurnApplication:
                             ToolCallTrace(
                                 call_id=call_id,
                                 name=name,
-                                arguments={},
+                                arguments=args,
                                 output=None,
                                 status="failed",
                                 error=err,
@@ -521,7 +527,7 @@ class TurnApplication:
                             ToolCallTrace(
                                 call_id=call_id,
                                 name=name,
-                                arguments={},
+                                arguments=args,
                                 output=None,
                                 status="failed",
                                 error=err,
