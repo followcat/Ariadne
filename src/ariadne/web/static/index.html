@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ariadne</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --fg:#e6e8ec; --dim:#8b93a1; --accent:#5b8def; --ok:#3fb27f; --err:#e06c60; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  .hidden { display:none !important; }
+  #auth { max-width:360px; margin:12vh auto; background:var(--panel); padding:28px; border-radius:12px; }
+  #auth h1 { margin:0 0 18px; font-size:22px; }
+  input, button { font:inherit; }
+  input { width:100%; padding:9px 10px; margin:5px 0; background:#0d0f13; color:var(--fg); border:1px solid #2a2f3a; border-radius:8px; }
+  button { padding:9px 16px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:#2a2f3a; }
+  .row { display:flex; gap:8px; }
+  #app { display:flex; flex-direction:column; height:100vh; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px; background:var(--panel); border-bottom:1px solid #232833; }
+  header .spacer { flex:1; }
+  header small { color:var(--dim); }
+  #settings { background:var(--panel); padding:14px 16px; border-bottom:1px solid #232833; }
+  #chat { flex:1; overflow-y:auto; padding:16px; }
+  .msg { margin:0 0 14px; max-width:78%; padding:10px 14px; border-radius:12px; white-space:pre-wrap; line-height:1.5; }
+  .user { background:#233553; margin-left:auto; }
+  .assistant { background:var(--panel); }
+  .tool { background:#10141b; color:var(--dim); font-family:ui-monospace,monospace; font-size:12px; max-width:78%; padding:6px 10px; border-radius:8px; margin:0 0 6px; }
+  .tool.fail { color:var(--err); }
+  #composer { display:flex; gap:8px; padding:12px 16px; background:var(--panel); }
+  #composer input { flex:1; }
+  .warn { color:#e0b45c; font-size:12px; }
+</style>
+</head>
+<body>
+<div id="auth">
+  <h1>Ariadne</h1>
+  <input id="u" placeholder="username" autocomplete="username">
+  <input id="p" type="password" placeholder="password (≥8)" autocomplete="current-password">
+  <div class="row">
+    <button id="login">登录</button>
+    <button id="register" class="ghost">注册</button>
+  </div>
+  <p class="warn" id="authmsg"></p>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <strong>Ariadne</strong>
+    <small id="who"></small>
+    <div class="spacer"></div>
+    <small id="provider"></small>
+    <button id="editprovider" class="ghost">Provider</button>
+    <button id="logout" class="ghost">退出</button>
+  </header>
+  <div id="settings" class="hidden">
+    <input id="baseurl" placeholder="BASE_URL e.g. https://api.example.com/v1">
+    <input id="apikey" placeholder="API_KEY" type="password">
+    <input id="model" placeholder="MODEL e.g. kimi-k2.7-code">
+    <button id="saveprovider">保存</button>
+    <span class="warn" id="provmsg"></span>
+  </div>
+  <div id="chat"></div>
+  <div id="composer">
+    <input id="input" placeholder="给 Ariadne 下达任务… (Enter 发送)">
+    <button id="send">发送</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let token = localStorage.getItem('ariadne_token') || '';
+let sessionId = localStorage.getItem('ariadne_session') || 'web-' + Math.random().toString(16).slice(2, 8);
+
+function authHeaders() { return {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}; }
+
+async function api(path, opts={}) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { logout(); throw new Error('unauthorized'); }
+  return r;
+}
+
+async function doAuth(path) {
+  const body = JSON.stringify({username: $('u').value.trim(), password: $('p').value});
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body});
+  if (!r.ok) { $('authmsg').textContent = (await r.json()).detail || 'failed'; return; }
+  const data = await r.json();
+  token = data.token;
+  localStorage.setItem('ariadne_token', token);
+  enter();
+}
+$('login').onclick = () => doAuth('/api/auth/login');
+$('register').onclick = () => doAuth('/api/auth/register');
+
+function logout() {
+  token = '';
+  localStorage.removeItem('ariadne_token');
+  $('app').classList.add('hidden');
+  $('auth').classList.remove('hidden');
+}
+$('logout').onclick = logout;
+
+async function enter() {
+  $('auth').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  const me = await (await api('/api/me', {headers: authHeaders()})).json();
+  $('who').textContent = me.username + ' · ' + sessionId;
+  $('provider').textContent = me.provider_configured ? (me.model + ' @ ' + me.base_url) : '未配置 provider';
+  if (!me.provider_configured) $('settings').classList.remove('hidden');
+}
+$('editprovider').onclick = () => $('settings').classList.toggle('hidden');
+$('saveprovider').onclick = async () => {
+  const r = await api('/api/me/provider', {method:'PUT', headers: authHeaders(),
+    body: JSON.stringify({base_url: $('baseurl').value, api_key: $('apikey').value, model: $('model').value})});
+  $('provmsg').textContent = r.ok ? '已保存' : (await r.json()).detail;
+  if (r.ok) { $('settings').classList.add('hidden'); enter(); }
+};
+
+function addMsg(cls, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  div.textContent = text;
+  $('chat').appendChild(div);
+  $('chat').scrollTop = $('chat').scrollHeight;
+  return div;
+}
+function addTool(name, status, detail) {
+  const div = document.createElement('div');
+  div.className = 'tool' + (status === 'failed' ? ' fail' : '');
+  div.textContent = (status === 'failed' ? '× ' : '• ') + name + (detail ? '  ' + detail : '');
+  $('chat').appendChild(div);
+}
+
+async function send() {
+  const text = $('input').value.trim();
+  if (!text) return;
+  $('input').value = '';
+  addMsg('user', text);
+  const reply = addMsg('assistant', '…');
+  const url = '/api/turns/stream?input=' + encodeURIComponent(text) + '&session_id=' + encodeURIComponent(sessionId);
+  const r = await fetch(url, {headers: {'Authorization': 'Bearer ' + token}});
+  if (!r.ok) { reply.textContent = 'ERROR ' + r.status + ': ' + ((await r.json()).detail || ''); return; }
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '', full = '';
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, {stream: true});
+    const parts = buf.split('\n\n');
+    buf = parts.pop();
+    for (const part of parts) {
+      if (!part.startsWith('data: ')) continue;
+      const ev = JSON.parse(part.slice(6));
+      if (ev.kind === 'model_delta') { full += ev.data.text; reply.textContent = full; $('chat').scrollTop = $('chat').scrollHeight; }
+      else if (ev.kind === 'tool_started') addTool(ev.data.name, 'started');
+      else if (ev.kind === 'tool_completed') addTool(ev.data.name, ev.data.status, (ev.data.error && ev.data.error.code) || '');
+      else if (ev.kind === 'guard_finding') addTool('guard:' + ev.data.direction, 'failed', ev.data.detail);
+      else if (ev.kind === 'turn_completed' || ev.kind === 'turn_failed') {
+        const res = ev.result;
+        if (res) {
+          if (!full) reply.textContent = res.text || '(no text)';
+          if (res.status !== 'completed') addTool('turn', 'failed', (res.error && res.error.code) || 'failed');
+        }
+      }
+    }
+  }
+  if (!full && reply.textContent === '…') reply.textContent = '(empty reply)';
+}
+$('send').onclick = send;
+$('input').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+
+if (token) enter();
+</script>
+</body>
+</html>

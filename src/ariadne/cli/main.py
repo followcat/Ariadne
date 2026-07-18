@@ -121,6 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
     plugin_p.add_argument("--database", default=None, help="Odoo database")
     plugin_p.add_argument("--login", default=None, help="Odoo login")
     plugin_p.add_argument("--password", default=None, help="Odoo password/API key")
+    serve_p = sub.add_parser("serve", help="Start the web UI (FastAPI + SSE)")
+    serve_p.add_argument("--host", default="127.0.0.1")
+    serve_p.add_argument("--port", type=int, default=8420)
     sub.add_parser("toolbox", help="List toolbox profiles")
     sub.add_parser("version", help="Print version")
     return parser
@@ -339,6 +342,18 @@ async def cmd_skills(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from ..web.app import create_app
+
+    settings = _settings_from_args(args)
+    app = create_app(settings)
+    ui.print_info(f"Ariadne web UI: http://{args.host}:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 def cmd_plugins(args: argparse.Namespace) -> int:
     from ..plugins import PLUGIN_REGISTRY, PluginStore
 
@@ -433,6 +448,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(cmd_tools(args))
         elif args.command == "skills":
             code = asyncio.run(cmd_skills(args))
+        elif args.command == "serve":
+            code = cmd_serve(args)
         elif args.command == "sessions":
             code = cmd_sessions(args)
         elif args.command == "plugins":
