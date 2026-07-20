@@ -33,6 +33,8 @@ const tools = ref<ToolEntry[]>([])
 const toolsOpenIds = ref(new Set<string>())
 const chatEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
+/** Wall-clock start of the in-flight turn (ms). */
+let turnStartedAt = 0
 
 const authed = computed(() => !!token.value)
 const sessionLabel = computed(() => {
@@ -276,6 +278,7 @@ async function send() {
   autoSize()
   busy.value = true
   clearTools()
+  turnStartedAt = performance.now()
 
   messages.value.push({ id: 'u-' + Date.now(), role: 'user', content: text })
   const asstId = 'a-' + Date.now()
@@ -380,8 +383,22 @@ function handleEvent(ev: StreamEvent, asstId: string) {
   } else if (ev.kind === 'turn_completed' || ev.kind === 'turn_failed') {
     if (ev.error?.message) {
       m.content = '**' + (ev.error.code || 'ERROR') + '**\n\n' + ev.error.message
+      pushTurnInfo({ status: 'failed' })
     } else if (ev.result && typeof ev.result === 'object') {
-      const res = ev.result as { text?: string; status?: string; error?: { code?: string } }
+      const res = ev.result as {
+        text?: string
+        status?: string
+        error?: { code?: string; message?: string }
+        usage?: {
+          prompt_tokens?: number
+          completion_tokens?: number
+          total_tokens?: number
+          reasoning_tokens?: number
+        }
+        tool_calls?: unknown[]
+        model?: string
+        turn_id?: string
+      }
       if (!m.content && res.text) m.content = res.text
       if (res.status && res.status !== 'completed') {
         upsertTool({
@@ -391,9 +408,89 @@ function handleEvent(ev: StreamEvent, asstId: string) {
           error: res.error || { code: 'failed', message: 'turn failed' },
         })
       }
+      pushTurnInfo(res)
+    } else {
+      pushTurnInfo({ status: ev.kind === 'turn_failed' ? 'failed' : 'completed' })
     }
     m.streaming = false
     m.thinkingLive = false
+  }
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  if (ms < 1000) return Math.round(ms) + ' ms'
+  const s = ms / 1000
+  if (s < 60) return s.toFixed(s < 10 ? 2 : 1) + ' s'
+  const m = Math.floor(s / 60)
+  const rem = s - m * 60
+  return m + 'm ' + rem.toFixed(1) + 's'
+}
+
+function pushTurnInfo(res: {
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+    reasoning_tokens?: number
+  }
+  tool_calls?: unknown[]
+  model?: string
+  turn_id?: string
+  status?: string
+}) {
+  const elapsedMs = turnStartedAt ? performance.now() - turnStartedAt : 0
+  const usage = res.usage || {}
+  const prompt = Number(usage.prompt_tokens || 0)
+  const completion = Number(usage.completion_tokens || 0)
+  const total = Number(usage.total_tokens || 0) || prompt + completion
+  const reasoning = Number(usage.reasoning_tokens || 0)
+  // Prefer server tool_calls length; fall back to local non-info tool entries.
+  const serverTools = Array.isArray(res.tool_calls) ? res.tool_calls.length : -1
+  const localTools = tools.value.filter((t) => t.status !== 'info').length
+  const nTools = serverTools >= 0 ? serverTools : localTools
+  const nFail = tools.value.filter((t) => t.status === 'failed').length
+
+  const tokenBits = [
+    `total ${total}`,
+    `prompt ${prompt}`,
+    `completion ${completion}`,
+  ]
+  if (reasoning > 0) tokenBits.push(`reasoning ${reasoning}`)
+
+  const summary =
+    `${formatDuration(elapsedMs)} · ${total} tokens · ${nTools} tool${nTools === 1 ? '' : 's'}` +
+    (nFail ? ` · ${nFail} failed` : '')
+
+  const details: Record<string, string | number> = {
+    duration: formatDuration(elapsedMs),
+    'duration_ms': Math.round(elapsedMs),
+    tokens_total: total,
+    tokens_prompt: prompt,
+    tokens_completion: completion,
+  }
+  if (reasoning > 0) details.tokens_reasoning = reasoning
+  details.tool_calls = nTools
+  if (nFail) details.tool_failed = nFail
+  if (res.model) details.model = res.model
+  if (res.turn_id) details.turn_id = String(res.turn_id)
+  if (res.status) details.status = res.status
+  details.token_breakdown = tokenBits.join(' · ')
+
+  const id = 'info-turn-' + (res.turn_id || Date.now())
+  upsertTool({
+    call_id: id,
+    name: 'info',
+    status: 'info',
+    summary,
+    details,
+  })
+  // Auto-open stats so it's visible without an extra click.
+  toolsOpenIds.value = new Set([...toolsOpenIds.value, id])
+  // Surface the panel briefly when there were tools or non-trivial usage.
+  if (nTools > 0 || total > 0) {
+    toolsCollapsed.value = false
+    localStorage.setItem('ariadne_tools_panel', '1')
   }
 }
 
@@ -551,8 +648,11 @@ onMounted(() => {
             :class="{ fail: tools.some((t) => t.status === 'failed') }"
             @click="toolsCollapsed = false"
           >
-            <span class="n">{{ tools.length }}</span>
-            工具调用 · 右侧详情
+            <span class="n">{{ tools.filter((t) => t.status !== 'info').length }}</span>
+            <template v-if="tools.some((t) => t.status === 'info')">
+              {{ tools.find((t) => t.status === 'info')?.summary || 'turn stats' }}
+            </template>
+            <template v-else>工具调用 · 右侧详情</template>
           </button>
         </div>
       </div>

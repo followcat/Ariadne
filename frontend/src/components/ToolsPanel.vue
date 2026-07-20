@@ -4,10 +4,13 @@ import { computed } from 'vue'
 export type ToolEntry = {
   call_id: string
   name: string
-  status: 'started' | 'completed' | 'failed'
+  status: 'started' | 'completed' | 'failed' | 'info'
   arguments?: unknown
   output?: unknown
   error?: { code?: string; message?: string }
+  /** Short one-line summary for info rows (duration / tokens / tools). */
+  summary?: string
+  details?: Record<string, string | number>
 }
 
 const props = defineProps<{
@@ -22,8 +25,11 @@ const emit = defineEmits<{
   (e: 'toggle-item', id: string): void
 }>()
 
-const count = computed(() => props.entries.length)
+const count = computed(
+  () => props.entries.filter((t) => t.status !== 'info').length,
+)
 const fails = computed(() => props.entries.filter((t) => t.status === 'failed').length)
+const infos = computed(() => props.entries.filter((t) => t.status === 'info'))
 
 function pretty(v: unknown): string {
   try {
@@ -57,38 +63,61 @@ const list = computed(() => [...props.entries].reverse())
           fail: t.status === 'failed',
           ok: t.status === 'completed',
           run: t.status === 'started',
+          info: t.status === 'info',
         }"
       >
-        <button type="button" class="tp-item-head" @click="emit('toggle-item', t.call_id)">
-          <span class="dot" />
-          <span class="body">
-            <div class="name">{{ t.name }}</div>
-            <div class="status-line">
-              <template v-if="t.status === 'failed'">
-                {{ t.error?.code || t.error?.message || 'failed' }}
-              </template>
-              <template v-else-if="t.status === 'completed'">completed</template>
-              <template v-else>running…</template>
-            </div>
-          </span>
-          <span class="chev">›</span>
-        </button>
-        <div v-if="openIds.has(t.call_id)" class="tp-item-body">
-          <div v-if="t.arguments && Object.keys(t.arguments as object).length" class="tp-sec">
-            <div class="tp-sec-label">arguments</div>
-            <pre class="tp-pre">{{ pretty(t.arguments) }}</pre>
-          </div>
-          <div v-if="t.status === 'failed' && t.error" class="tp-sec">
-            <div class="tp-sec-label">error</div>
-            <div class="tp-err">
-              {{ t.error.code || '' }}{{ t.error.message ? ' — ' + t.error.message : '' }}
+        <!-- Info row: turn stats -->
+        <template v-if="t.status === 'info'">
+          <button type="button" class="tp-item-head" @click="emit('toggle-item', t.call_id)">
+            <span class="dot" />
+            <span class="body">
+              <div class="name">{{ t.name }}</div>
+              <div class="status-line info-line">{{ t.summary || 'turn stats' }}</div>
+            </span>
+            <span class="chev">›</span>
+          </button>
+          <div v-if="openIds.has(t.call_id)" class="tp-item-body">
+            <div v-if="t.details" class="tp-kv">
+              <div v-for="(val, key) in t.details" :key="key" class="tp-kv-row">
+                <span class="k">{{ key }}</span>
+                <span class="v">{{ val }}</span>
+              </div>
             </div>
           </div>
-          <div v-if="t.output !== undefined && t.output !== null" class="tp-sec">
-            <div class="tp-sec-label">output</div>
-            <pre class="tp-pre">{{ pretty(t.output) }}</pre>
+        </template>
+        <!-- Tool call row -->
+        <template v-else>
+          <button type="button" class="tp-item-head" @click="emit('toggle-item', t.call_id)">
+            <span class="dot" />
+            <span class="body">
+              <div class="name">{{ t.name }}</div>
+              <div class="status-line">
+                <template v-if="t.status === 'failed'">
+                  {{ t.error?.code || t.error?.message || 'failed' }}
+                </template>
+                <template v-else-if="t.status === 'completed'">completed</template>
+                <template v-else>running…</template>
+              </div>
+            </span>
+            <span class="chev">›</span>
+          </button>
+          <div v-if="openIds.has(t.call_id)" class="tp-item-body">
+            <div v-if="t.arguments && Object.keys(t.arguments as object).length" class="tp-sec">
+              <div class="tp-sec-label">arguments</div>
+              <pre class="tp-pre">{{ pretty(t.arguments) }}</pre>
+            </div>
+            <div v-if="t.status === 'failed' && t.error" class="tp-sec">
+              <div class="tp-sec-label">error</div>
+              <div class="tp-err">
+                {{ t.error.code || '' }}{{ t.error.message ? ' — ' + t.error.message : '' }}
+              </div>
+            </div>
+            <div v-if="t.output !== undefined && t.output !== null" class="tp-sec">
+              <div class="tp-sec-label">output</div>
+              <pre class="tp-pre">{{ pretty(t.output) }}</pre>
+            </div>
           </div>
-        </div>
+        </template>
       </div>
     </div>
     <div v-if="fails" class="tp-foot">{{ fails }} 失败</div>
@@ -167,6 +196,39 @@ const list = computed(() => [...props.entries].reverse())
 }
 .tp-item.fail { border-color: rgba(244, 33, 46, 0.35); }
 .tp-item.run { border-color: rgba(29, 155, 240, 0.35); }
+.tp-item.info {
+  border-color: color-mix(in srgb, var(--blue) 35%, var(--line));
+  background: color-mix(in srgb, var(--blue) 6%, var(--bg-3));
+}
+.tp-item.info .dot { background: var(--muted); }
+.tp-item.info .name {
+  color: var(--dim);
+  font-family: var(--font);
+  font-weight: 650;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.info-line {
+  color: var(--fg-2) !important;
+  font-family: var(--mono);
+  font-size: 12px !important;
+  line-height: 1.45;
+}
+.tp-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tp-kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.tp-kv-row .k { color: var(--muted); }
+.tp-kv-row .v { color: var(--fg-2); text-align: right; word-break: break-all; }
 .tp-item-head {
   width: 100%;
   text-align: left;
