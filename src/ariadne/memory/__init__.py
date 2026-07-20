@@ -1,5 +1,12 @@
 from .facade import Memory, MemoryFacade
-from .transcript import TranscriptStore
 from .projection import ProjectionWorker
+from .transcript import TranscriptStore
+from .worker import MemoryWorker
 
-__all__ = ["Memory", "MemoryFacade", "TranscriptStore", "ProjectionWorker"]
+__all__ = [
+    "Memory",
+    "MemoryFacade",
+    "MemoryWorker",
+    "ProjectionWorker",
+    "TranscriptStore",
+]

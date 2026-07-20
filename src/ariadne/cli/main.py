@@ -238,6 +238,40 @@ def build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument("--port", type=int, default=8420)
     sub.add_parser("toolbox", help="List toolbox profiles")
     sub.add_parser("version", help="Print version")
+    mem_w = sub.add_parser(
+        "memory-worker",
+        help="Drain pending turn summaries and projection jobs (in-process)",
+    )
+    mem_w.add_argument(
+        "--once",
+        action="store_true",
+        default=False,
+        help="Process one batch and exit (default)",
+    )
+    mem_w.add_argument(
+        "--loop",
+        action="store_true",
+        default=False,
+        help="Keep draining on an interval until idle (with --stop-when-idle) or forever",
+    )
+    mem_w.add_argument(
+        "--interval",
+        type=float,
+        default=2.0,
+        help="Seconds between loop ticks (default 2)",
+    )
+    mem_w.add_argument(
+        "--stop-when-idle",
+        action="store_true",
+        default=False,
+        help="Exit the loop when a tick finds no pending work",
+    )
+    mem_w.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Cap loop iterations (default unlimited with --loop)",
+    )
     return parser
 
 
@@ -470,26 +504,32 @@ async def cmd_tools(args: argparse.Namespace) -> int:
 async def cmd_skills(args: argparse.Namespace) -> int:
     settings = _settings_from_args(args)
     skill_dirs: list[Path] = []
+    skill_namespaces: list[str] = []
     repo_root = Path(__file__).resolve().parents[3]
     user_skills = settings.resolved_data_dir / "skills" / "user"
-    for candidate in (
-        repo_root / "skills" / "builtin",
-        settings.workspace / "skills",
-        settings.skills_dir,
-        user_skills,
+    for candidate, ns in (
+        (repo_root / "skills" / "builtin", "builtin"),
+        (settings.workspace / "skills", "workspace"),
+        (settings.skills_dir, "local"),
+        (user_skills, "user"),
     ):
         if candidate is not None and Path(candidate).is_dir():
             skill_dirs.append(Path(candidate))
+            skill_namespaces.append(ns)
     from ..skills.store import SkillStore
 
     if args.action == "validate":
-        store = SkillStore.from_dirs(skill_dirs, strict=True, user_root=user_skills)
+        store = SkillStore.from_dirs(
+            skill_dirs, strict=True, user_root=user_skills, namespaces=skill_namespaces
+        )
         for skill in store.list():
             print(f"ok\t{skill.name}\t{skill.namespace}")
         print(f"valid: {len(store.list())} skill(s)")
         return 0
 
-    store = SkillStore.from_dirs(skill_dirs, strict=False, user_root=user_skills)
+    store = SkillStore.from_dirs(
+        skill_dirs, strict=False, user_root=user_skills, namespaces=skill_namespaces
+    )
     for skill in store.list():
         print(f"{skill.name}\t{skill.namespace}\t{skill.description}")
     return 0
@@ -594,6 +634,49 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_memory_worker(args: argparse.Namespace) -> int:
+    from ..memory.curated import CuratedStore
+    from ..memory.facade import MemoryFacade
+    from ..memory.projection import ProjectionWorker
+    from ..memory.semantic import SemanticIndex
+    from ..memory.state import ConversationStateStore
+    from ..memory.summary import TurnSummaryStore
+    from ..memory.transcript import TranscriptStore
+    from ..memory.worker import MemoryWorker
+
+    settings = _settings_from_args(args)
+    data = settings.resolved_data_dir
+    state = ConversationStateStore(path=data / "memory" / "state.json")
+    memory = MemoryFacade(
+        transcript=TranscriptStore(path=data / "sessions" / f"{settings.session_id}.jsonl"),
+        curated=CuratedStore(path=data / "memory" / "curated.json"),
+        state=state,
+        summaries=TurnSummaryStore(path=data / "memory" / "summaries.json"),
+        semantic=SemanticIndex(path=data / "memory" / "semantic.json"),
+        projection=ProjectionWorker(
+            path=data / "memory" / "projection_jobs.json", state_store=state
+        ),
+    )
+    worker = MemoryWorker(memory=memory)
+    if args.loop:
+        n = await worker.run_loop(
+            interval_seconds=args.interval,
+            max_iterations=args.max_iterations,
+            stop_when_idle=args.stop_when_idle,
+        )
+        print(f"memory-worker: iterations={n}")
+        return 0
+    result = await worker.run_once()
+    print(
+        "memory-worker: "
+        f"summaries={result['summaries_processed']} "
+        f"projection={result['projection_count']} "
+        f"pending_summaries={result['pending_summaries']} "
+        f"pending_projection={result['pending_projection']}"
+    )
+    return 0
+
+
 async def cmd_toolbox(args: argparse.Namespace) -> int:
     for profile in list_profiles():
         d = profile_as_dict(profile)
@@ -642,6 +725,8 @@ def main(argv: list[str] | None = None) -> None:
             code = asyncio.run(cmd_tools(args))
         elif args.command == "skills":
             code = asyncio.run(cmd_skills(args))
+        elif args.command == "memory-worker":
+            code = asyncio.run(cmd_memory_worker(args))
         elif args.command == "serve":
             code = cmd_serve(args)
         elif args.command == "sessions":
