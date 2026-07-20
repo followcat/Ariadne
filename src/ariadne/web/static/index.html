@@ -367,6 +367,28 @@
   .tool.fail::before { content: "×"; color: var(--err); }
   .tool .name { color: var(--fg-2); font-weight: 600; }
 
+
+  #attach-bar {
+    max-width: 760px; margin: 0 auto 8px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    min-height: 0;
+  }
+  .img-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--bg-3); border: 1px solid var(--line);
+    border-radius: 12px; padding: 4px 8px 4px 4px;
+    font-size: 12px; color: var(--dim);
+  }
+  .img-chip img {
+    width: 40px; height: 40px; object-fit: cover; border-radius: 8px;
+    background: var(--bg-hover);
+  }
+  .img-chip button {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--bg-hover); color: var(--fg); font-size: 12px;
+  }
+  .img-chip.warn-chip { border-color: var(--warn); color: var(--warn); }
+
   /* Composer — Grok-style floating bar */
   #composer-wrap {
     flex-shrink: 0;
@@ -546,6 +568,7 @@
     </div>
 
     <div id="composer-wrap">
+      <div id="attach-bar"></div>
       <div id="composer">
         <textarea id="input" rows="1" placeholder="给 Ariadne 下达任务…"></textarea>
         <button type="button" id="send" title="发送" aria-label="发送">↑</button>
@@ -718,6 +741,9 @@ let token = localStorage.getItem('ariadne_token') || '';
 let sessionId = localStorage.getItem('ariadne_session') || '';
 let busy = false;
 let username = '';
+/** @type {{mime:string,data_base64:string,name:string,preview:string}[]} */
+let pendingImages = [];
+
 let sidebarCollapsed = localStorage.getItem('ariadne_sidebar') === '0';
 
 function authHeaders() {
@@ -1120,10 +1146,20 @@ async function send() {
   const stream = createStreamRenderer(shell);
 
   try {
-    const url =
-      '/api/turns/stream?input=' + encodeURIComponent(text) +
-      '&session_id=' + encodeURIComponent(sessionId);
-    const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+    const payload = {
+      input: text,
+      session_id: sessionId,
+      images: pendingImages.map(img => ({
+        mime: img.mime,
+        data_base64: img.data_base64,
+        name: img.name,
+      })),
+    };
+    const r = await fetch('/api/turns/stream', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
     if (!r.ok) {
       let detail = '';
       try { detail = (await r.json()).detail || ''; } catch (_) {}
@@ -1154,18 +1190,28 @@ async function send() {
         } else if (ev.kind === 'guard_finding') {
           addTool('guard:' + ev.data.direction, 'failed', ev.data.detail);
         } else if (ev.kind === 'turn_completed' || ev.kind === 'turn_failed') {
-          const res = ev.result;
-          if (res) {
-            if (!stream.text && res.text) stream.set(res.text);
-            stream.finish(res.text || '');
-            if (res.status !== 'completed') {
-              addTool('turn', 'failed', (res.error && res.error.code) || 'failed');
+          if (ev.error && ev.error.message) {
+            stream.set('**' + (ev.error.code || 'ERROR') + '**\n\n' + ev.error.message);
+            stream.finish();
+            if (ev.error.code === 'ARIADNE_MULTIMODAL_UNSUPPORTED') {
+              addTool('multimodal', 'failed', '模型不支持图片 — 可移除附件或换 vision 模型 / ARIADNE_VISION=on');
             }
-          } else stream.finish();
+          } else {
+            const res = ev.result;
+            if (res) {
+              if (!stream.text && res.text) stream.set(res.text);
+              stream.finish(res.text || '');
+              if (res.status !== 'completed') {
+                addTool('turn', 'failed', (res.error && res.error.code) || 'failed');
+              }
+            } else stream.finish();
+          }
         }
       }
     }
     stream.finish();
+    pendingImages = [];
+    renderAttachBar();
     loadSessions();
   } catch (err) {
     stream.set('ERROR: ' + (err && err.message ? err.message : String(err)));
@@ -1175,6 +1221,73 @@ async function send() {
     $('send').disabled = false;
     $('input').focus();
   }
+}
+
+
+function modelLikelyVision(model) {
+  return /vision|gpt-4o|gpt-4\.1|gpt-5|claude-3|claude-4|gemini|llava|qwen|longcat|glm-4v|pixtral/i.test(model || '');
+}
+function renderAttachBar() {
+  const bar = $('attach-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  if (!pendingImages.length) return;
+  const model = ($('provider-status') && $('provider-status').textContent) || '';
+  if (!modelLikelyVision(model) && !pendingImages._warned) {
+    // soft client hint; server is authoritative
+  }
+  pendingImages.forEach((img, idx) => {
+    const chip = document.createElement('div');
+    chip.className = 'img-chip' + (modelLikelyVision(model) ? '' : ' warn-chip');
+    chip.innerHTML =
+      '<img alt="" src="' + img.preview + '">' +
+      '<span>' + MD.esc(img.name) + '</span>';
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.textContent = '×';
+    rm.title = '移除';
+    rm.onclick = () => { pendingImages.splice(idx, 1); renderAttachBar(); };
+    chip.appendChild(rm);
+    bar.appendChild(chip);
+  });
+  if (pendingImages.length && !modelLikelyVision(model)) {
+    const tip = document.createElement('div');
+    tip.className = 'img-chip warn-chip';
+    tip.textContent = '当前模型可能不支持图片；发送时将提示';
+    bar.appendChild(tip);
+  }
+}
+function addPendingImage(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !String(file.type || '').startsWith('image/')) {
+      reject(new Error('not an image'));
+      return;
+    }
+    if (pendingImages.length >= 4) {
+      reject(new Error('max 4 images'));
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      reject(new Error('image too large (max 8MB)'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) { reject(new Error('read failed')); return; }
+      pendingImages.push({
+        mime: m[1],
+        data_base64: m[2],
+        name: file.name || 'paste.png',
+        preview: dataUrl,
+      });
+      renderAttachBar();
+      resolve();
+    };
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function autoSizeInput() {
@@ -1191,6 +1304,37 @@ $('input').addEventListener('keydown', e => {
     send();
   }
 });
+$('input').addEventListener('paste', async e => {
+  const items = e.clipboardData && e.clipboardData.items;
+  if (!items) return;
+  let got = false;
+  for (const it of items) {
+    if (it.type && it.type.startsWith('image/')) {
+      const f = it.getAsFile();
+      if (!f) continue;
+      got = true;
+      try { await addPendingImage(f); }
+      catch (err) { alert(err.message || String(err)); }
+    }
+  }
+  if (got) e.preventDefault();
+});
+// drag-drop images onto composer
+const composer = $('composer');
+if (composer) {
+  composer.addEventListener('dragover', e => { e.preventDefault(); });
+  composer.addEventListener('drop', async e => {
+    e.preventDefault();
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files) return;
+    for (const f of files) {
+      if (!String(f.type || '').startsWith('image/')) continue;
+      try { await addPendingImage(f); }
+      catch (err) { alert(err.message || String(err)); }
+    }
+  });
+}
+
 
 if (token) enter().catch(() => logout());
 </script>

@@ -37,6 +37,18 @@ class TurnBody(BaseModel):
     session_id: str | None = None
 
 
+class ImagePart(BaseModel):
+    mime: str
+    data_base64: str
+    name: str | None = None
+
+
+class TurnStreamBody(BaseModel):
+    input: str = ""
+    session_id: str | None = None
+    images: list[ImagePart] = []
+
+
 class PluginBody(BaseModel):
     config: dict[str, str]
 
@@ -102,18 +114,40 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=400, detail=exc.error.message) from exc
         return {"status": "ok"}
 
+    def _parse_images(parts: list[ImagePart] | None) -> list[Any]:
+        from ..multimodal import image_from_base64
+
+        if not parts:
+            return []
+        out = []
+        for part in parts:
+            out.append(
+                image_from_base64(
+                    part.mime,
+                    part.data_base64,
+                    name=part.name or "image.png",
+                )
+            )
+        return out
+
     @app.post("/api/turns")
     async def run_turn(body: TurnBody, username: str = Depends(current_user)) -> Any:
         user_settings = _settings_for(username)
         if body.session_id:
             user_settings = dataclasses.replace(user_settings, session_id=body.session_id)
         agent = compose_agent(user_settings)
-        result = await agent.run(body.input)
+        try:
+            result = await agent.run(body.input)
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
         return json.loads(render_json(result))
 
-    @app.get("/api/turns/stream")
-    async def stream_turn(
-        input: str, session_id: str | None = None, username: str = Depends(current_user)
+    async def _sse_for_turn(
+        *,
+        username: str,
+        text: str,
+        session_id: str | None,
+        images: list[Any] | None,
     ) -> StreamingResponse:
         user_settings = _settings_for(username)
         if session_id:
@@ -121,19 +155,56 @@ def create_app(settings: Settings) -> FastAPI:
         agent = compose_agent(user_settings)
 
         async def events():
-            async for event in agent.run_stream(input):
-                if event.kind in {"turn_completed", "turn_failed"}:
-                    result = event.data.get("result")
-                    payload = {
-                        "kind": event.kind,
-                        "result": json.loads(render_json(result)) if result else None,
-                    }
-                else:
-                    payload = {"kind": event.kind, "data": event.data}
+            try:
+                async for event in agent.run_stream(text, images=images or None):
+                    if event.kind in {"turn_completed", "turn_failed"}:
+                        result = event.data.get("result")
+                        payload = {
+                            "kind": event.kind,
+                            "result": json.loads(render_json(result)) if result else None,
+                        }
+                    else:
+                        payload = {"kind": event.kind, "data": event.data}
+                    yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+                    await asyncio.sleep(0)
+            except AriadneError as exc:
+                # Surface multimodal / config failures as a terminal SSE event
+                payload = {
+                    "kind": "turn_failed",
+                    "error": {
+                        "code": exc.error.code,
+                        "message": exc.error.message,
+                        "details": exc.error.details,
+                    },
+                    "result": None,
+                }
                 yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
-                await asyncio.sleep(0)
 
         return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.get("/api/turns/stream")
+    async def stream_turn(
+        input: str, session_id: str | None = None, username: str = Depends(current_user)
+    ) -> StreamingResponse:
+        # Text-only GET (kept for simple clients / e2e)
+        return await _sse_for_turn(
+            username=username, text=input, session_id=session_id, images=None
+        )
+
+    @app.post("/api/turns/stream")
+    async def stream_turn_post(
+        body: TurnStreamBody, username: str = Depends(current_user)
+    ) -> StreamingResponse:
+        try:
+            images = _parse_images(body.images)
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return await _sse_for_turn(
+            username=username,
+            text=body.input or "",
+            session_id=body.session_id,
+            images=images,
+        )
 
     def _user_data(username: str) -> Path:
         return settings.resolved_data_dir / "web" / "users" / username
