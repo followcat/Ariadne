@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 
 from ariadne.cli.main import build_parser
-from ariadne.cli.sessions import list_sessions, most_recent
+from ariadne.cli.sessions import (
+    delete_session,
+    list_sessions,
+    load_session_messages,
+    most_recent,
+)
 
 
 def _write_session(path: Path, users: int) -> None:
@@ -25,7 +30,13 @@ def test_list_sessions_counts_user_turns(tmp_path: Path) -> None:
     by_id = {s.session_id: s for s in sessions}
     assert by_id["alpha"].turns == 3
     assert by_id["beta"].turns == 1
+    assert by_id["alpha"].preview.startswith("q0")
     assert most_recent(tmp_path) in {"alpha", "beta"}
+    msgs = load_session_messages(tmp_path, "alpha", limit=10)
+    assert msgs[0] == {"role": "user", "content": "q0"}
+    assert msgs[-1] == {"role": "assistant", "content": "a2"}
+    assert delete_session(tmp_path, "beta") is True
+    assert delete_session(tmp_path, "beta") is False
 
 
 def test_list_sessions_empty(tmp_path: Path) -> None:
