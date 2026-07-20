@@ -159,11 +159,32 @@ def test_sessions_api(tmp_path: Path) -> None:
             assert row["turns"] == 1
             assert "hello" in row["preview"]
             r = await client.get(f"/api/sessions/{sid}", headers=headers)
-            msgs = r.json()["messages"]
+            body = r.json()
+            msgs = body["messages"]
             assert msgs == [
                 {"role": "user", "content": "hello session"},
                 {"role": "assistant", "content": "hi there"},
             ]
+            # auto title summary
+            r = await client.patch(
+                f"/api/sessions/{sid}",
+                json={"refresh_title": True},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert r.json()["title"]
+            assert r.json()["title_source"] == "auto"
+            # user title override
+            r = await client.patch(
+                f"/api/sessions/{sid}",
+                json={"title": "我的会话主题"},
+                headers=headers,
+            )
+            assert r.status_code == 200 and r.json()["title"] == "我的会话主题"
+            r = await client.get("/api/sessions", headers=headers)
+            row = next(s for s in r.json() if s["session_id"] == sid)
+            assert row["title"] == "我的会话主题"
+            assert row["title_source"] == "user"
             # isolation: other user sees no sessions
             r2 = await client.post(
                 "/api/auth/register", json={"username": "other", "password": "password123"}

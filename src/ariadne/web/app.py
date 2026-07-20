@@ -49,6 +49,12 @@ class TurnStreamBody(BaseModel):
     images: list[ImagePart] = []
 
 
+class SessionPatchBody(BaseModel):
+    title: str | None = None
+    refresh_title: bool = False
+    force: bool = False  # force auto-refresh even if user-set title
+
+
 class PluginBody(BaseModel):
     config: dict[str, str]
 
@@ -220,6 +226,8 @@ def create_app(settings: Settings) -> FastAPI:
                 "turns": s.turns,
                 "mtime": s.mtime,
                 "preview": s.preview,
+                "title": s.title,
+                "title_source": s.title_source,
             }
             for s in list_sessions(user_data)
         ]
@@ -230,18 +238,69 @@ def create_app(settings: Settings) -> FastAPI:
         import secrets
 
         sid = f"web-{secrets.token_hex(4)}"
-        return {"session_id": sid}
+        return {"session_id": sid, "title": "", "title_source": ""}
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str, username: str = Depends(current_user)) -> Any:
-        from ..cli.sessions import load_session_messages, session_exists
+        from ..cli.sessions import get_session_title, load_session_messages, session_exists
 
         user_data = _user_data(username)
+        title, source = get_session_title(user_data, session_id)
         if not session_exists(user_data, session_id):
             # Brand-new id (not yet written) — empty history is fine for UI
-            return {"session_id": session_id, "messages": [], "exists": False}
+            return {
+                "session_id": session_id,
+                "messages": [],
+                "exists": False,
+                "title": title,
+                "title_source": source,
+            }
         messages = load_session_messages(user_data, session_id, limit=200)
-        return {"session_id": session_id, "messages": messages, "exists": True}
+        return {
+            "session_id": session_id,
+            "messages": messages,
+            "exists": True,
+            "title": title,
+            "title_source": source,
+        }
+
+    @app.patch("/api/sessions/{session_id}")
+    def patch_session(
+        session_id: str, body: SessionPatchBody, username: str = Depends(current_user)
+    ) -> Any:
+        """Set or auto-refresh the session topic title."""
+        from ..cli.sessions import (
+            get_session_title,
+            refresh_session_title,
+            session_exists,
+            set_session_title,
+        )
+
+        user_data = _user_data(username)
+        if body.refresh_title:
+            if not session_exists(user_data, session_id):
+                raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+            meta = refresh_session_title(user_data, session_id, force=body.force)
+            if meta is None:
+                raise HTTPException(status_code=400, detail="cannot title an empty session")
+            return {
+                "session_id": session_id,
+                "title": meta.get("title", ""),
+                "title_source": meta.get("source", "auto"),
+                "skipped": bool(meta.get("skipped")),
+            }
+        if body.title is not None:
+            try:
+                meta = set_session_title(user_data, session_id, body.title, source="user")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {
+                "session_id": session_id,
+                "title": meta["title"],
+                "title_source": meta["source"],
+            }
+        title, source = get_session_title(user_data, session_id)
+        return {"session_id": session_id, "title": title, "title_source": source}
 
     @app.delete("/api/sessions/{session_id}")
     def remove_session(session_id: str, username: str = Depends(current_user)) -> Any:
