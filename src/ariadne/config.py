@@ -47,6 +47,7 @@ class Settings:
     data_dir: Path | None = None
     sandbox_prestart: bool = False
     approval_mode: str = "auto"  # auto | on-request | readonly
+    merge_home_plugins: bool = True  # CLI: merge ~/.ariadne/plugins.json; web: off
 
     @property
     def resolved_data_dir(self) -> Path:

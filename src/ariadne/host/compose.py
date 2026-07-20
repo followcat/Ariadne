@@ -122,8 +122,16 @@ def compose_agent(settings: Settings) -> Agent:
     tools = build_default_registry(memory=memory, skills=skills)
     from ..plugins import PluginStore, build_plugin_tools
 
-    plugin_store = PluginStore(settings.resolved_data_dir / "plugins.json")
-    for plugin_name, plugin_config in plugin_store.enabled().items():
+    # plugin configs are user attributes: user-level store first,
+    # workspace-level store overrides per plugin name
+    plugin_configs: dict[str, dict[str, str]] = {}
+    store_paths = []
+    if settings.merge_home_plugins:
+        store_paths.append(Path.home() / ".ariadne" / "plugins.json")
+    store_paths.append(settings.resolved_data_dir / "plugins.json")
+    for store_path in store_paths:
+        plugin_configs.update(PluginStore(store_path).enabled())
+    for plugin_name, plugin_config in plugin_configs.items():
         for spec in build_plugin_tools(plugin_name, plugin_config):
             tools.register(spec)
     turn_app = TurnApplication(

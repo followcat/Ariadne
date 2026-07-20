@@ -137,12 +137,79 @@ def test_missing_config_fastfails() -> None:
 
 
 def test_plugin_store_enable_disable(tmp_path: Path) -> None:
-    store = PluginStore(tmp_path / "plugins.json")
+    path = tmp_path / "plugins.json"
+    store = PluginStore(path)
+    assert not path.exists(), "list/read must not create the file"
+    assert store.list() == {}
     store.enable("gitlab", {"url": "http://x", "token": "t"})
     assert store.enabled() == {"gitlab": {"url": "http://x", "token": "t"}}
-    mode = (tmp_path / "plugins.json").stat().st_mode & 0o777
+    mode = path.stat().st_mode & 0o777
     assert mode == 0o600
     store.disable("gitlab")
     assert store.enabled() == {}
     with pytest.raises(AriadneError):
         store.disable("gitlab")
+
+
+def test_compose_merges_user_then_workspace_plugins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI: ~/.ariadne/plugins.json is a user attribute; workspace overrides."""
+    from ariadne.config import Settings
+    from ariadne.host.compose import compose_agent
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    data = tmp_path / "data"
+    data.mkdir()
+
+    PluginStore(home / ".ariadne" / "plugins.json").enable(
+        "gitlab", {"url": "http://user-gitlab", "token": "user-tok"}
+    )
+    PluginStore(data / "plugins.json").enable(
+        "gitlab", {"url": "http://ws-gitlab", "token": "ws-tok"}
+    )
+    PluginStore(home / ".ariadne" / "plugins.json").enable(
+        "redmine", {"url": "http://user-redmine", "api_key": "rk"}
+    )
+
+    settings = Settings(
+        workspace=workspace,
+        data_dir=data,
+        base_url="http://example.invalid",
+        api_key="k",
+        model="m",
+        sandbox="null",
+        merge_home_plugins=True,
+    )
+    agent = compose_agent(settings)
+
+    async def names(a) -> set[str]:
+        return {t["name"] for t in await a.list_tools()}
+
+    tools = asyncio.run(names(agent))
+    assert "gitlab_request" in tools
+    assert "redmine_list_issues" in tools
+
+    # workspace config wins for gitlab on name clash:
+    merged: dict[str, dict[str, str]] = {}
+    merged.update(PluginStore(home / ".ariadne" / "plugins.json").enabled())
+    merged.update(PluginStore(data / "plugins.json").enabled())
+    assert merged["gitlab"]["url"] == "http://ws-gitlab"
+    assert merged["redmine"]["url"] == "http://user-redmine"
+
+    # web path: no home merge
+    settings_web = Settings(
+        workspace=workspace,
+        data_dir=data,
+        base_url="http://example.invalid",
+        api_key="k",
+        model="m",
+        sandbox="null",
+        merge_home_plugins=False,
+    )
+    agent_web = compose_agent(settings_web)
+    tools_web = asyncio.run(names(agent_web))
+    assert "gitlab_request" in tools_web
+    assert "redmine_list_issues" not in tools_web

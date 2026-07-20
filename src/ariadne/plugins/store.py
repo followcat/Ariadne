@@ -15,15 +15,13 @@ from ..errors import AriadneError, app_error
 class PluginStore:
     path: Path
 
-    def __post_init__(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._write({"plugins": {}})
-
     def _read(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"plugins": {}}
         return json.loads(self.path.read_text(encoding="utf-8"))
 
     def _write(self, data: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.chmod(self.path, 0o600)
 
