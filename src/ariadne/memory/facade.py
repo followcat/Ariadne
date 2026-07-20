@@ -107,9 +107,20 @@ class MemoryFacade:
             ),
         )
 
-    def recent_messages(self, *, session_id: str | None = None) -> list[dict[str, str]]:
+    def recent_messages(
+        self,
+        *,
+        session_id: str | None = None,
+        before_turn_id: str | None = None,
+    ) -> list[dict[str, str]]:
         """L0 recent raw window honoring the facade's configured limit."""
-        return self.transcript.recent_messages(limit=self.recent_limit, session_id=session_id)
+        if before_turn_id is None:
+            return self.transcript.recent_messages(
+                limit=self.recent_limit, session_id=session_id
+            )
+        return self.transcript.recent_messages_before(
+            before_turn_id, limit=self.recent_limit, session_id=session_id
+        )
 
     def get_curated(self, *, session_id: str) -> dict[str, object]:
         """Convenience read for hosts: user-scope + session-scope curated entries."""
@@ -117,13 +128,24 @@ class MemoryFacade:
         session = self.curated.apply(action="read", scope="session", session_id=session_id)
         return {"user": user["entries"], "session": session["entries"]}
 
-    def _state_delta(self, session_id: str) -> tuple[str, list[str]] | None:
+    def _allowed_turns(
+        self, session_id: str, before_turn_id: str | None
+    ) -> set[str] | None:
+        return self.transcript.turn_ids_before(before_turn_id, session_id=session_id)
+
+    def _state_delta(
+        self, session_id: str, *, before_turn_id: str | None = None
+    ) -> tuple[str, list[str]] | None:
         """last_good_plus_delta read mode: raw turns newer than the state watermark.
 
         Rendered state is always the last succeeded projection (last-good). Raw
         turns after the watermark are appended as a bounded delta block that
         takes precedence on conflict, so projection lag never blocks or lies.
+        When ``before_turn_id`` is set, delta turns must also be before the cutoff.
         """
+        if before_turn_id is not None:
+            # Point-in-time reads freeze state; skip live delta past the cutoff.
+            return None
         watermark = self.state.watermark(session_id)
         if watermark is None:
             return None
@@ -149,26 +171,33 @@ class MemoryFacade:
         lines.append("(delta is newer than conversation_state; prefer it when they conflict)")
         return "\n".join(lines), [str(m.get("turn_id") or "") for m in kept]
 
-    def _aliases_from_state(self, session_id: str) -> list[str]:
-        state = self.state.get(session_id)
+    def _aliases_from_state(
+        self, session_id: str, *, allowed_turn_ids: set[str] | None = None
+    ) -> list[str]:
+        state = self.state.get_as_of(session_id, allowed_turn_ids=allowed_turn_ids)
         aliases: list[str] = []
         for ent in (state.get("entities") or {}).values():
             for a in ent.get("aliases") or []:
                 aliases.append(str(a))
         return aliases
 
-    def _demote_entities(self, session_id: str) -> set[str]:
-        """Entities that have attributes (authoritative L2 values may supersede old hits).
-
-        Only these should demote chunks that *mention* them — not every entity id.
-        """
-        state = self.state.get(session_id)
-        out: set[str] = set()
+    def _authoritative_fields(
+        self, session_id: str, *, allowed_turn_ids: set[str] | None = None
+    ) -> dict[str, dict[str, object]]:
+        """entity_id → attributes dict for field-level demotion."""
+        state = self.state.get_as_of(session_id, allowed_turn_ids=allowed_turn_ids)
+        out: dict[str, dict[str, object]] = {}
         for eid, ent in (state.get("entities") or {}).items():
             attrs = ent.get("attributes") or {}
             if attrs:
-                out.add(str(eid))
+                out[str(eid)] = dict(attrs)
         return out
+
+    def _demote_entities(
+        self, session_id: str, *, allowed_turn_ids: set[str] | None = None
+    ) -> set[str]:
+        """Entities that have attributes (legacy entity-level demote set)."""
+        return set(self._authoritative_fields(session_id, allowed_turn_ids=allowed_turn_ids))
 
     def entities_mentioned_in_text(self, session_id: str, text: str) -> list[str]:
         """Entity ids referenced in text via id, alias, or string attribute values.
@@ -223,13 +252,17 @@ class MemoryFacade:
         require_ready: bool | None = None,
     ) -> tuple[str, MemoryContextSummary]:
         # Sync path: lexical only (no await). Note hybrid_skipped for hosts.
-        _ = before_turn_id  # reserved for point-in-time reads
         self._check_require_ready(session_id, require_ready=require_ready)
+        allowed = self._allowed_turns(session_id, before_turn_id)
         layers: list[LayerReport] = []
         blocks: list[str] = []
+        pit_note = f"before_turn_id:{before_turn_id}" if before_turn_id else ""
 
-        state_text, entity_count = self.state.render(session_id)
+        state_text, entity_count = self.state.render(
+            session_id, allowed_turn_ids=allowed
+        )
         state_text, state_note = self._apply_budget("conversation_state", state_text)
+        notes = ", ".join(x for x in (state_note, pit_note) if x)
         if state_text:
             blocks.append(state_text)
             layers.append(
@@ -238,13 +271,19 @@ class MemoryFacade:
                     status="used",
                     token_chars=len(state_text),
                     item_ids=[f"entities:{entity_count}"],
-                    notes=state_note,
+                    notes=notes,
                 )
             )
         else:
-            layers.append(LayerReport(name="conversation_state", status="skipped"))
+            layers.append(
+                LayerReport(
+                    name="conversation_state",
+                    status="skipped",
+                    notes=pit_note,
+                )
+            )
 
-        delta = self._state_delta(session_id)
+        delta = self._state_delta(session_id, before_turn_id=before_turn_id)
         if delta is not None:
             delta_text, delta_ids = delta
             blocks.append(delta_text)
@@ -272,7 +311,9 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="curated", status="skipped"))
 
-        summary_text = self.summaries.render(session_id, limit=8)
+        summary_text = self.summaries.render(
+            session_id, limit=8, allowed_turn_ids=allowed
+        )
         summary_text, _ = self._apply_budget("turn_summary", summary_text)
         if summary_text:
             blocks.append(summary_text)
@@ -280,12 +321,17 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="turn_summary", status="skipped"))
 
+        auth_fields = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
         hits = self.semantic.search(
             session_id=session_id,
             query=query,
             limit=5,
-            expand_aliases=self._aliases_from_state(session_id),
-            demote_entity_ids=self._demote_entities(session_id),
+            expand_aliases=self._aliases_from_state(
+                session_id, allowed_turn_ids=allowed
+            ),
+            demote_entity_ids=set(auth_fields),
+            authoritative_fields=auth_fields,
+            allowed_turn_ids=allowed,
         )
         semantic_text = self.semantic.render(hits)
         semantic_text, _ = self._apply_budget("semantic", semantic_text)
@@ -297,12 +343,21 @@ class MemoryFacade:
                     status="used",
                     token_chars=len(semantic_text),
                     item_ids=[h["turn_id"] for h in hits],
+                    notes="field_demote; hybrid_skipped: sync_path",
                 )
             )
         else:
-            layers.append(LayerReport(name="semantic", status="skipped"))
+            layers.append(
+                LayerReport(
+                    name="semantic",
+                    status="skipped",
+                    notes="hybrid_skipped: sync_path",
+                )
+            )
 
-        recent = self.recent_messages(session_id=session_id)
+        recent = self.recent_messages(
+            session_id=session_id, before_turn_id=before_turn_id
+        )
         if recent:
             layers.append(
                 LayerReport(
@@ -319,10 +374,6 @@ class MemoryFacade:
                     name="recent_raw", status="skipped", notes="hybrid_skipped: sync_path"
                 )
             )
-        # Note lexical semantic above; hybrid was skipped because this is the sync path.
-        for layer in layers:
-            if layer.name == "semantic" and not layer.notes:
-                layer.notes = "lexical; hybrid_skipped: sync_path"
 
         memory_system = "\n\n".join(b for b in blocks if b)
         summary = MemoryContextSummary(
@@ -343,7 +394,6 @@ class MemoryFacade:
         require_ready: bool | None = None,
     ) -> tuple[str, MemoryContextSummary]:
         _ = user_id
-        _ = before_turn_id
         if not self.hybrid_semantic:
             return self._build_context_sync(
                 session_id=session_id,
@@ -352,14 +402,18 @@ class MemoryFacade:
                 require_ready=require_ready,
             )
         self._check_require_ready(session_id, require_ready=require_ready)
+        allowed = self._allowed_turns(session_id, before_turn_id)
         layers: list[LayerReport] = []
         blocks: list[str] = []
+        pit_note = f"before_turn_id:{before_turn_id}" if before_turn_id else ""
 
-        state_text, entity_count = self.state.render(session_id)
+        state_text, entity_count = self.state.render(
+            session_id, allowed_turn_ids=allowed
+        )
         state_text, state_note = self._apply_budget("conversation_state", state_text)
         lag = self.projection.pending_lag(session_id) if self.projection else 0
         lag_note = f"projection_lag:{lag}" if lag else ""
-        notes = ", ".join(x for x in (state_note, lag_note) if x)
+        notes = ", ".join(x for x in (state_note, lag_note, pit_note) if x)
         if state_text:
             blocks.append(state_text)
             layers.append(
@@ -376,11 +430,11 @@ class MemoryFacade:
                 LayerReport(
                     name="conversation_state",
                     status="skipped",
-                    notes=lag_note or "",
+                    notes=", ".join(x for x in (lag_note, pit_note) if x),
                 )
             )
 
-        delta = self._state_delta(session_id)
+        delta = self._state_delta(session_id, before_turn_id=before_turn_id)
         if delta is not None:
             delta_text, delta_ids = delta
             blocks.append(delta_text)
@@ -408,7 +462,9 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="curated", status="skipped"))
 
-        summary_text = self.summaries.render(session_id, limit=8)
+        summary_text = self.summaries.render(
+            session_id, limit=8, allowed_turn_ids=allowed
+        )
         summary_text, _ = self._apply_budget("turn_summary", summary_text)
         if summary_text:
             blocks.append(summary_text)
@@ -416,13 +472,18 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="turn_summary", status="skipped"))
 
+        auth_fields = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
         try:
             hits = await self.semantic.search_hybrid(
                 session_id=session_id,
                 query=query,
                 limit=5,
-                expand_aliases=self._aliases_from_state(session_id),
-                demote_entity_ids=self._demote_entities(session_id),
+                expand_aliases=self._aliases_from_state(
+                    session_id, allowed_turn_ids=allowed
+                ),
+                demote_entity_ids=set(auth_fields),
+                authoritative_fields=auth_fields,
+                allowed_turn_ids=allowed,
             )
             semantic_text = self.semantic.render(hits)
             semantic_text, _ = self._apply_budget("semantic", semantic_text)
@@ -434,7 +495,7 @@ class MemoryFacade:
                         status="used",
                         token_chars=len(semantic_text),
                         item_ids=[h["turn_id"] for h in hits],
-                        notes="hybrid",
+                        notes="hybrid; field_demote",
                     )
                 )
             else:
@@ -448,7 +509,9 @@ class MemoryFacade:
                 )
             )
 
-        recent = self.recent_messages(session_id=session_id)
+        recent = self.recent_messages(
+            session_id=session_id, before_turn_id=before_turn_id
+        )
         if recent:
             layers.append(
                 LayerReport(

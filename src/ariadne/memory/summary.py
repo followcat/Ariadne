@@ -104,30 +104,54 @@ class TurnSummaryStore:
             self._write(data)
         return n
 
-    def list_ready(self, session_id: str, *, limit: int = 8) -> list[dict[str, str]]:
+    def list_ready(
+        self,
+        session_id: str,
+        *,
+        limit: int = 8,
+        allowed_turn_ids: set[str] | None = None,
+    ) -> list[dict[str, str]]:
         data = self._read()
         sess = data.get(session_id) or {}
         items = []
         for turn_id, payload in sess.items():
             if not isinstance(payload, dict):
                 continue
+            if allowed_turn_ids is not None and turn_id not in allowed_turn_ids:
+                continue
             if payload.get("status") == "ready" and payload.get("summary_text"):
                 items.append({"turn_id": turn_id, "summary_text": str(payload["summary_text"])})
         return items[-limit:]
 
-    def pending_count(self, session_id: str) -> int:
+    def pending_count(self, session_id: str | None = None) -> int:
         data = self._read()
-        sess = data.get(session_id) or {}
-        return sum(
-            1
-            for p in sess.values()
-            if isinstance(p, dict) and p.get("status") == "pending"
-        )
+        n = 0
+        for sid, sess in data.items():
+            if session_id is not None and sid != session_id:
+                continue
+            if not isinstance(sess, dict):
+                continue
+            n += sum(
+                1
+                for p in sess.values()
+                if isinstance(p, dict) and p.get("status") == "pending"
+            )
+        return n
 
-    def render(self, session_id: str, *, limit: int = 8) -> str:
+    def render(
+        self,
+        session_id: str,
+        *,
+        limit: int = 8,
+        allowed_turn_ids: set[str] | None = None,
+        process_inline: bool = True,
+    ) -> str:
         # Process pending inline so personal v1 stays usable without a worker.
-        self.process_pending(session_id=session_id, max_jobs=limit * 2)
-        items = self.list_ready(session_id, limit=limit)
+        if process_inline:
+            self.process_pending(session_id=session_id, max_jobs=limit * 2)
+        items = self.list_ready(
+            session_id, limit=limit, allowed_turn_ids=allowed_turn_ids
+        )
         if not items:
             return ""
         lines = ["[HISTORICAL_CONTEXT: MAY BE SUPERSEDED BY CONVERSATION_STATE]"]

@@ -75,3 +75,55 @@ class TranscriptStore:
             if str(rec.get("turn_id") or "") == turn_id:
                 last_idx = idx
         return records[last_idx + 1 :]
+
+    def ordered_turn_ids(self, *, session_id: str | None = None) -> list[str]:
+        """Unique turn ids in transcript order (first appearance wins)."""
+        seen: list[str] = []
+        found: set[str] = set()
+        for rec in self.all_records(session_id=session_id):
+            tid = str(rec.get("turn_id") or "").strip()
+            if not tid or tid in found:
+                continue
+            found.add(tid)
+            seen.append(tid)
+        return seen
+
+    def turn_ids_before(
+        self, before_turn_id: str | None, *, session_id: str | None = None
+    ) -> set[str] | None:
+        """Turn ids strictly before ``before_turn_id`` (point-in-time filter).
+
+        Returns None when no filter applies (before_turn_id is None).
+        If the cutoff turn is unknown, returns all known turn ids (cannot
+        prove anything is after an unseen id).
+        """
+        if before_turn_id is None:
+            return None
+        order = self.ordered_turn_ids(session_id=session_id)
+        if before_turn_id not in order:
+            return set(order)
+        idx = order.index(before_turn_id)
+        return set(order[:idx])
+
+    def recent_messages_before(
+        self,
+        before_turn_id: str | None,
+        *,
+        limit: int | None = None,
+        session_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """L0 window restricted to turns strictly before ``before_turn_id``."""
+        allowed = self.turn_ids_before(before_turn_id, session_id=session_id)
+        window = limit if limit is not None else self.recent_limit
+        if allowed is None:
+            return self.recent_messages(limit=window, session_id=session_id)
+        messages: list[dict[str, str]] = []
+        for rec in self.all_records(session_id=session_id):
+            tid = str(rec.get("turn_id") or "")
+            if tid and tid not in allowed:
+                continue
+            role = str(rec.get("role") or "")
+            content = str(rec.get("content") or "")
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        return messages[-window:] if window else messages

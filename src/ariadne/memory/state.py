@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 from dataclasses import dataclass
@@ -50,6 +51,42 @@ class ConversationStateStore:
             return empty_state()
         return dict(doc.get("state") or empty_state())
 
+    def get_as_of(
+        self, session_id: str, *, allowed_turn_ids: set[str] | None = None
+    ) -> dict[str, Any]:
+        """Point-in-time state: drop attributes sourced after the cutoff turns.
+
+        When ``allowed_turn_ids`` is None, returns current state. Attributes
+        without ``source_turn_id`` are kept (conservative). Entities that end
+        up with no attributes remain if they still have aliases or type.
+        """
+        state = self.get(session_id)
+        if allowed_turn_ids is None:
+            return state
+        filtered = copy.deepcopy(state)
+        entities = filtered.get("entities") or {}
+        for _eid, ent in list(entities.items()):
+            attrs = ent.get("attributes") or {}
+            kept: dict[str, Any] = {}
+            for key, payload in attrs.items():
+                if isinstance(payload, dict):
+                    src = str(payload.get("source_turn_id") or "").strip()
+                    if src and src not in allowed_turn_ids:
+                        continue
+                kept[key] = payload
+            ent["attributes"] = kept
+        return filtered
+
+    def render(
+        self, session_id: str, *, allowed_turn_ids: set[str] | None = None
+    ) -> tuple[str, int]:
+        state = (
+            self.get(session_id)
+            if allowed_turn_ids is None
+            else self.get_as_of(session_id, allowed_turn_ids=allowed_turn_ids)
+        )
+        return self.render_state(state)
+
     def version(self, session_id: str) -> int:
         """Current document version (0 when never projected)."""
         data = self._read()
@@ -72,8 +109,7 @@ class ConversationStateStore:
         wm = doc.get("watermark_turn_id")
         return str(wm) if wm else None
 
-    def render(self, session_id: str) -> tuple[str, int]:
-        state = self.get(session_id)
+    def render_state(self, state: dict[str, Any]) -> tuple[str, int]:
         entities = state.get("entities") or {}
         if not entities and not (state.get("collections") or {}) and not (state.get("relations") or {}):
             return "", 0

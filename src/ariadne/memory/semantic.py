@@ -108,6 +108,51 @@ class SemanticIndex:
         self._write(data)
         return len(pending)
 
+    @staticmethod
+    def demote_multiplier(
+        chunk: dict[str, Any],
+        *,
+        demote_entity_ids: set[str] | None = None,
+        authoritative_fields: dict[str, dict[str, Any]] | None = None,
+    ) -> float:
+        """Field-level stale-trap demotion (MEMORY design L4).
+
+        - If ``authoritative_fields`` is provided: for each overlapping entity,
+          demote when the chunk does **not** contain any current field value
+          (chunk is likely pre-update / stale relative to L2).
+        - Else fall back to entity-id demotion (×0.2 when entity has attrs).
+        """
+        ents = {str(e) for e in (chunk.get("entity_ids") or [])}
+        if not ents:
+            return 1.0
+        text = str(chunk.get("text") or "").lower()
+        mult = 1.0
+        if authoritative_fields:
+            for eid in ents:
+                fields = authoritative_fields.get(eid)
+                if not fields:
+                    continue
+                current_vals: list[str] = []
+                for payload in fields.values():
+                    if isinstance(payload, dict):
+                        val = payload.get("value")
+                    else:
+                        val = payload
+                    if val is None:
+                        continue
+                    s = str(val).strip().lower()
+                    if len(s) >= 2:
+                        current_vals.append(s)
+                if not current_vals:
+                    continue
+                if any(v in text for v in current_vals):
+                    continue  # chunk reflects current L2 binding
+                mult *= 0.2
+            return mult
+        if demote_entity_ids and ents & demote_entity_ids:
+            return 0.2
+        return 1.0
+
     def search(
         self,
         *,
@@ -116,6 +161,8 @@ class SemanticIndex:
         limit: int = 5,
         expand_aliases: list[str] | None = None,
         demote_entity_ids: set[str] | None = None,
+        authoritative_fields: dict[str, dict[str, Any]] | None = None,
+        allowed_turn_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         q = query or ""
         if expand_aliases:
@@ -126,14 +173,16 @@ class SemanticIndex:
         for chunk in data.get("chunks") or []:
             if chunk.get("session_id") != session_id:
                 continue
+            tid = str(chunk.get("turn_id") or "")
+            if allowed_turn_ids is not None and tid and tid not in allowed_turn_ids:
+                continue
             text = str(chunk.get("text") or "")
             score = _cosine_bow(qv_bow, _vector(text))
-            emb = chunk.get("embedding")
-            # hybrid: if embeddings present on chunk, blend later via optional query emb sync path
-            if demote_entity_ids:
-                ents = set(chunk.get("entity_ids") or [])
-                if ents & demote_entity_ids:
-                    score *= 0.2
+            score *= self.demote_multiplier(
+                chunk,
+                demote_entity_ids=demote_entity_ids,
+                authoritative_fields=authoritative_fields,
+            )
             if score > 0:
                 scored.append((score, chunk))
         scored.sort(key=lambda item: -item[0])
@@ -164,6 +213,8 @@ class SemanticIndex:
         limit: int = 5,
         expand_aliases: list[str] | None = None,
         demote_entity_ids: set[str] | None = None,
+        authoritative_fields: dict[str, dict[str, Any]] | None = None,
+        allowed_turn_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         await self.ensure_embeddings(session_id=session_id)
         q = query or ""
@@ -177,16 +228,20 @@ class SemanticIndex:
         for chunk in data.get("chunks") or []:
             if chunk.get("session_id") != session_id:
                 continue
+            tid = str(chunk.get("turn_id") or "")
+            if allowed_turn_ids is not None and tid and tid not in allowed_turn_ids:
+                continue
             text = str(chunk.get("text") or "")
             bow = _cosine_bow(q_bow, _vector(text))
             emb_score = 0.0
             if chunk.get("embedding"):
                 emb_score = cosine(q_emb, list(map(float, chunk["embedding"])))
             score = 0.45 * bow + 0.55 * emb_score
-            if demote_entity_ids:
-                ents = set(chunk.get("entity_ids") or [])
-                if ents & demote_entity_ids:
-                    score *= 0.2
+            score *= self.demote_multiplier(
+                chunk,
+                demote_entity_ids=demote_entity_ids,
+                authoritative_fields=authoritative_fields,
+            )
             if score > 0:
                 scored.append((score, chunk))
         scored.sort(key=lambda item: -item[0])
