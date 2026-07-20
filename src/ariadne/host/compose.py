@@ -112,9 +112,10 @@ def compose_agent(settings: Settings) -> Agent:
         if candidate is not None and Path(candidate).is_dir():
             skill_dirs.append(Path(candidate))
 
+    # Strict skill load: invalid packs fail composition (DESIGN_PRINCIPLES fastfail).
     skills = SkillStore.from_dirs(
         skill_dirs,
-        strict=False,
+        strict=True,
         user_root=user_skills,
         embedder=embedder,
     )

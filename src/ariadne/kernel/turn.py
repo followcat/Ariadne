@@ -37,9 +37,12 @@ Filesystem contract for sandbox_exec:
 - Shell variables (cd/export) do NOT persist across sandbox_exec calls.
 
 Skills:
-- A short skill index may be provided. Use search_skills / load_skill when needed.
-- skill_manage can create/update user skills.
-- Skills teach; tools act.
+- Skills teach procedures; tools act. Skills do not replace tools.
+- Prefer skills listed under recommended / auto_load when they match the user goal.
+- If none match, call search_skills with the user intent before inventing multi-step domain workflows.
+- Call load_skill before relying on a skill body; do not invent domain runbooks from memory alone.
+- Do not paste entire skill references unless needed; load targeted content via load_skill.
+- skill_manage can create/update user skills (not builtin packs).
 
 Memory:
 - conversation_state is authoritative for current-session facts/todos.
@@ -52,6 +55,7 @@ Rules:
 3. After tools finish, give a concise final answer.
 4. Never invent tool results.
 5. If a command fails, recover or explain.
+6. Cross-tool: do not batch durable memory writes with unrelated sandbox side effects in one step.
 """
 
 
@@ -294,42 +298,56 @@ class TurnApplication:
         exposure = self.tools.build_exposure(prefer_deferred=self.prefer_deferred_tools)
         catalog = self.tools.catalog_text()
 
+        # Prompt assembly (design: policy → user → high-signal memory → skills
+        # → history → runtime; tools catalog is short discovery only).
+        # Chat models still get the user message near the end for recency —
+        # skill plan is placed immediately before recent_raw + user (strong region).
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_POLICY},
-            {"role": "system", "content": "Available tools (catalog):\n" + (catalog or "(none)")},
         ]
         if memory_system:
             messages.append({"role": "system", "content": memory_system})
 
-        # skill selection plan sits in a strong attention region near user input
-        if skill_plan["auto_load"] or skill_plan["recommended"]:
-            lines = ["[SKILL_SELECTION]"]
-            if skill_plan["auto_load"]:
-                names = ", ".join(s.name for s, _ in skill_plan["auto_load"])
-                lines.append(f"auto_load: {names} (call load_skill now)")
-            if skill_plan["recommended"]:
-                names = ", ".join(
-                    f"{s.name} (score {score})" for s, score in skill_plan["recommended"]
-                )
-                lines.append(f"recommended: {names}")
-            if skill_plan["other"]:
-                lines.append(f"other: {skill_plan['other']} more installed — use search_skills")
-            plan_text = "\n".join(lines)
-            detail = (
-                f"plan: {len(skill_plan['auto_load'])} auto, "
-                f"{len(skill_plan['recommended'])} recommended, {skill_plan['other']} other"
+        # Always emit compact SKILL_SELECTION (never dump full linear index).
+        n_skills = len(self.skills.list())
+        lines = ["[SKILL_SELECTION]"]
+        if skill_plan["auto_load"]:
+            names = ", ".join(
+                f"{s.name} (score {score})" for s, score in skill_plan["auto_load"]
             )
-            messages.append({"role": "system", "content": plan_text})
-            skill_events.append(SkillEvent(kind="index", detail=detail))
-            yield TurnEvent("skill_event", {"kind": "index", "detail": detail})
+            lines.append(f"auto_load: {names} (call load_skill now)")
+        if skill_plan["recommended"]:
+            names = ", ".join(
+                f"{s.name} (score {score})" for s, score in skill_plan["recommended"]
+            )
+            lines.append(f"recommended: {names}")
+        if n_skills == 0:
+            lines.append("other: 0 skills installed")
         else:
-            skill_index = self.skills.index_text()
-            if skill_index and skill_index != "(no skills installed)":
-                messages.append({"role": "system", "content": "Skill index:\n" + skill_index})
-                skill_events.append(
-                    SkillEvent(kind="index", detail=f"{len(self.skills.list())} skills")
+            other = int(skill_plan.get("other") or 0)
+            if not skill_plan["auto_load"] and not skill_plan["recommended"]:
+                lines.append(
+                    f"other: {n_skills} installed — none auto-matched; use search_skills"
                 )
-                yield TurnEvent("skill_event", {"kind": "index", "detail": skill_events[-1].detail})
+            else:
+                lines.append(f"other: {other} more installed — use search_skills if needed")
+        plan_text = "\n".join(lines)
+        detail = (
+            f"plan: {len(skill_plan['auto_load'])} auto, "
+            f"{len(skill_plan['recommended'])} recommended, "
+            f"{skill_plan.get('other', 0)} other; scores in plan"
+        )
+        messages.append({"role": "system", "content": plan_text})
+        skill_events.append(SkillEvent(kind="index", detail=detail))
+        yield TurnEvent("skill_event", {"kind": "index", "detail": detail})
+
+        # Short tool catalog (discovery); full schemas go on the wire separately.
+        messages.append(
+            {
+                "role": "system",
+                "content": "Available tools (catalog):\n" + (catalog or "(none)"),
+            }
+        )
 
         messages.append(
             {
@@ -343,14 +361,19 @@ class TurnApplication:
             }
         )
 
-        for prior in self.memory.recent_messages():
+        for prior in self.memory.recent_messages(session_id=session_id):
             messages.append(prior)
 
         user_content = build_user_message_content(prompt, image_list or None)
         user_transcript = transcript_user_line(prompt, image_list or None)
         messages.append({"role": "user", "content": user_content})
         self.memory.transcript.append(
-            {"role": "user", "content": user_transcript, "turn_id": turn_id}
+            {
+                "role": "user",
+                "content": user_transcript,
+                "turn_id": turn_id,
+                "session_id": session_id,
+            }
         )
 
         evidence_parts = [user_transcript]
@@ -426,7 +449,12 @@ class TurnApplication:
                                 {"direction": "out", "kind": finding.kind, "detail": finding.detail},
                             )
                     self.memory.transcript.append(
-                        {"role": "assistant", "content": text, "turn_id": turn_id}
+                        {
+                            "role": "assistant",
+                            "content": text,
+                            "turn_id": turn_id,
+                            "session_id": session_id,
+                        }
                     )
                     summary = text[:400] if text else f"user asked: {prompt[:200]}"
                     self.memory.summaries.put(
@@ -490,6 +518,7 @@ class TurnApplication:
                                 )
                             )
                         output = await self.tools.invoke(name, args, ctx)
+                        trace_args = redact_secrets(args) if self.redact_traces else args
                         if self.redact_traces:
                             output = redact_secrets(output)
                         finished = datetime.now(timezone.utc)
@@ -497,7 +526,7 @@ class TurnApplication:
                         trace = ToolCallTrace(
                             call_id=call_id,
                             name=name,
-                            arguments=args,
+                            arguments=trace_args if isinstance(trace_args, dict) else args,
                             output=output,
                             status="completed",
                             started_at=started,
@@ -530,11 +559,12 @@ class TurnApplication:
                     except AriadneError as exc:
                         finished = datetime.now(timezone.utc)
                         err = exc.error
+                        fail_args = redact_secrets(args) if self.redact_traces else args
                         tool_calls.append(
                             ToolCallTrace(
                                 call_id=call_id,
                                 name=name,
-                                arguments=args,
+                                arguments=fail_args if isinstance(fail_args, dict) else args,
                                 output=None,
                                 status="failed",
                                 error=err,
