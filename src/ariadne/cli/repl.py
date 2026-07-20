@@ -47,6 +47,11 @@ images
   Non-vision models refuse with ARIADNE_MULTIMODAL_UNSUPPORTED
   (override with ARIADNE_VISION=on).
 
+title (session topic summary)
+  /title                show current session title
+  /title <text>         set user title (won’t auto-overwrite)
+  /title --refresh      re-summarize topic from recent messages
+
 workspace / tools
   /workspace            show workspace path
   /tools                list tools
@@ -225,6 +230,17 @@ def run_repl(
             usage_totals["prompt"] += result.usage.prompt_tokens
             usage_totals["completion"] += result.usage.completion_tokens
             usage_totals["total"] += result.usage.total_tokens
+            # Auto topic title after successful turns (does not overwrite user titles)
+            try:
+                from .sessions import refresh_session_title
+
+                meta = refresh_session_title(
+                    settings.resolved_data_dir, settings.session_id, force=False
+                )
+                if meta and not meta.get("skipped") and usage_totals["turns"] <= 2:
+                    ui.print_info(f"title -> {meta.get('title')} (auto)")
+            except Exception:  # noqa: BLE001 — title is best-effort
+                pass
         if code != 0:
             exit_code = 1
 
@@ -251,10 +267,42 @@ def run_repl(
                 continue
             if line == "/status":
                 _print_status(settings, agent)
+                from .sessions import get_session_title
+
+                t, src = get_session_title(settings.resolved_data_dir, settings.session_id)
+                ui.out.print(f"title:      {t or '(none)'} ({src or 'unset'})")
                 if pending_images:
                     ui.out.print(f"pending_images: {len(pending_images)}")
                     for i, img in enumerate(pending_images, 1):
                         ui.out.print(f"  {i}. {img.name} ({img.mime}, {len(img.data)} bytes)")
+                continue
+            if line.startswith("/title"):
+                from .sessions import get_session_title, refresh_session_title, set_session_title
+
+                parts = line.split(maxsplit=1)
+                data_dir = settings.resolved_data_dir
+                if len(parts) == 1:
+                    t, src = get_session_title(data_dir, settings.session_id)
+                    ui.out.print(t or "(no title yet — send a turn or /title --refresh)")
+                    if src:
+                        ui.print_info(f"source={src}")
+                    continue
+                arg = parts[1].strip()
+                if arg in {"--refresh", "-r", "refresh"}:
+                    meta = refresh_session_title(data_dir, settings.session_id, force=True)
+                    if meta is None:
+                        ui.print_error("TITLE", "empty session — nothing to summarize")
+                    elif meta.get("skipped"):
+                        ui.print_info(f"title kept (user): {meta.get('title')}")
+                    else:
+                        ui.print_info(f"title -> {meta.get('title')} (auto)")
+                    continue
+                try:
+                    meta = set_session_title(data_dir, settings.session_id, arg, source="user")
+                except ValueError as exc:
+                    ui.print_error("TITLE", str(exc))
+                    continue
+                ui.print_info(f"title -> {meta['title']} (user)")
                 continue
             if line == "/images":
                 if not pending_images:
