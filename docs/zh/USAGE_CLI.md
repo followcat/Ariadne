@@ -133,6 +133,25 @@ ariadne plugin enable gitlab --workspace-scope --url ... --token ...
 --json                        输出 TurnResult JSON（含 schema_metrics）；
                               配合 --stream 时先 NDJSON 事件再最终结果
 ```
+## 图片（CLI + Web）
+
+在**模型支持视觉/多模态**时可粘贴或附加图片。
+
+| 宿主 | 用法 |
+| --- | --- |
+| **CLI** | `/image`（剪贴板，需 `xclip`/`wl-paste`）或 `/image ./shot.png`；`/images` 查看待发送；`/clear-images` 清空。有附件时提示符显示 `[N img]`。 |
+| **Web** | 在输入框 **Ctrl+V** 粘贴截图，或拖拽图片到输入区；上方 chip 预览。 |
+
+策略环境变量：**`ARIADNE_VISION`**
+
+| 值 | 行为 |
+| --- | --- |
+| `auto`（默认） | 仅当模型名像常见 vision 模型时允许发图（如 `gpt-4o`、`claude-3`、`gemini`、`LongCat` 等） |
+| `on` | 始终尝试多模态请求（上游仍可能拒绝） |
+| `off` | 发图前一律拒绝 |
+
+若带图且策略判定不支持，会 **fastfail**：错误码 **`ARIADNE_MULTIMODAL_UNSUPPORTED`** 与明确提示（不会静默丢图）。
+
 ## 交互元命令
 
 ```text

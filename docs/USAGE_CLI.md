@@ -134,6 +134,25 @@ Global flags work both before and after the subcommand
                               with --stream, NDJSON events then final result
 ```
 
+## Images (CLI + Web)
+
+Paste or attach images when the **model supports vision/multimodal**.
+
+| Host | How |
+| --- | --- |
+| **CLI** | `/image` (clipboard via `xclip`/`wl-paste`) or `/image ./shot.png`; `/images` lists pending; `/clear-images` clears. Prompt shows `[N img]` while pending. |
+| **Web** | `Ctrl+V` paste image into the composer, or drag-and-drop onto the input bar. Chips preview pending images. |
+
+Policy env: **`ARIADNE_VISION`**
+
+| Value | Behavior |
+| --- | --- |
+| `auto` (default) | Allow images only if the model name matches common vision heuristics (e.g. `gpt-4o`, `claude-3`, `gemini`, `LongCat`, …) |
+| `on` | Always attempt multimodal request (provider may still reject) |
+| `off` | Always refuse images before calling the API |
+
+If images are present and the model is not multimodal under the active policy, Ariadne fails fast with **`ARIADNE_MULTIMODAL_UNSUPPORTED`** and a clear message (no silent strip of images).
+
 ## Interactive meta-commands
 
 ```text
