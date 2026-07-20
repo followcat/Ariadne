@@ -6,37 +6,58 @@ Related: [../SKILLS.md](../SKILLS.md), [../TOOLCALL.md](../TOOLCALL.md), [../MEM
 ## Method
 
 Compared normative docs against `src/ariadne/skills`, `tools`, `memory`, and `kernel/turn.py`.  
-This note records **gaps that remain** and **what was fixed in the alignment pass**.
+This note records **gaps that remain** and **what was fixed**.
 
-## Landed (summary)
-
-Earlier P0/P1/P2 landings are preserved. Latest **P2 close-out**:
+## Landed (including P3)
 
 | Area | Fix |
 | --- | --- |
-| Skills G08 | **`SkillPlanBudgets`** (auto/recommended limits, body max/chars, plan_chars); plan **`report`** + `format_plan_text` budget line |
-| Skills G11–14 | **tags** in frontmatter; **targeted `references=`** on load_skill; **version bump** on manage update; **requires_tools** missing report + auto_load skip |
-| Toolcall TC-03+ | **`session_visible`** filter on exposure/catalog; **`load_exact_report` not_found**; **title/kind** filled via `ensure_titles` |
-| Memory M07+ | **prompt-assembly.md** matches turn order; **grounded_compress** summarizer; **relation/collection caps** + edge dedupe |
-| Memory worker | **`make_projector`** plug-in hook for sync/async LLM projectors |
+| Skills | Strict load, hybrid `plan_async`, auto_load bodies, namespaces, builtin protect |
+| Skills P3 | **Host `SkillPlanBudgets`** via Settings / env / CLI (`--skill-auto-load`, …) |
+| Toolcall | Deferred large tools, CapabilitySpec alias, schema-cost report, visibility, not_found |
+| Toolcall P3 | **`client_search_mode`**: `function` \| `native` (auto-materialize) \| `none` |
+| Memory | Status machine, ordered claim, field demotion, before_turn_id, MemoryContext |
+| Memory P3 | **`summary_mode=grounded|llm`**, **`spawn_worker_process`** + `python -m ariadne.memory.worker_main` |
 
-Full historical landed table lives in git history of this file; focus remaining gaps below.
+## Configuration (P3 host)
 
-## Remaining gaps (post P2)
-
-| ID | Severity | Topic |
+| Setting | Env | CLI |
 | --- | --- | --- |
-| SKILL+ | P3 | Configurable host settings for SkillPlanBudgets via CLI flags |
-| TC+ | P3 | Provider-native deferred search mode |
-| M+ | P3 | Out-of-process worker binary; LLM summarizer (beyond grounded extract) |
+| skill auto_load limit | `ARIADNE_SKILL_AUTO_LOAD_LIMIT` | `--skill-auto-load` |
+| skill recommended limit | `ARIADNE_SKILL_RECOMMENDED_LIMIT` | `--skill-recommended` |
+| auto body max / chars | `ARIADNE_SKILL_AUTO_BODY_MAX` / `_CHARS` | `--skill-body-max` / `--skill-body-chars` |
+| plan chars | `ARIADNE_SKILL_PLAN_CHARS` | `--skill-plan-chars` |
+| tool search mode | `ARIADNE_TOOL_SEARCH_MODE` | `--tool-search-mode` |
+| summary mode | `ARIADNE_SUMMARY_MODE` | `--summary-mode` |
+
+### tool_search_mode
+
+- **function** (default): offer `tool_search`; deferred schemas off-wire until load
+- **native**: no `tool_search` on wire; first invoke of a deferred name auto-materializes
+- **none**: deferred tools not loadable (eager-only wire)
+
+### Out-of-process memory worker
+
+```bash
+ariadne memory-worker --once
+ariadne memory-worker --subprocess --once   # separate OS process
+python -m ariadne.memory.worker_main --data-dir ./.ariadne --once
+```
+
+## Remaining (optional later)
+
+| Topic | Notes |
+| --- | --- |
+| Provider-native API field | Wire deferred catalog into vendor-specific “tools search” fields when a provider documents them |
+| LLM projector default | Hosts plug in via `make_projector`; no cloud dependency in core |
+| Skill budget CLI UX | Already flags; TUI knobs optional |
 
 ## Explicit non-goals
 
-- Full TUI / web redesign  
 - Company-pack namespaces  
-- Mandatory separate OS process for memory workers  
+- Mandatory cloud LLM for summaries (llm mode always falls back to grounded)  
 
 ## Related notes
 
-- [prompt-assembly.md](prompt-assembly.md) — block order + budgets  
-- [memory-v1.md](memory-v1.md) — layer semantics  
+- [prompt-assembly.md](prompt-assembly.md)  
+- [memory-v1.md](memory-v1.md)  
