@@ -14,8 +14,11 @@ an LLM projector later without changing the queue protocol.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .facade import MemoryFacade
@@ -120,3 +123,38 @@ class MemoryWorker:
                 break
             await asyncio.sleep(max(0.05, interval_seconds))
         return n
+
+
+def spawn_worker_process(
+    *,
+    data_dir: str | Path,
+    once: bool = True,
+    interval: float = 2.0,
+    stop_when_idle: bool = True,
+    max_iterations: int | None = None,
+    python: str | None = None,
+) -> subprocess.Popen[str]:
+    """Spawn an out-of-process memory worker (P3).
+
+    The child runs ``python -m ariadne.memory.worker_main`` against ``data_dir``
+    so summary/projection drain does not share the agent process GIL or event
+    loop. Returns the Popen handle (caller may wait/poll).
+    """
+    data = str(Path(data_dir).resolve())
+    exe = python or sys.executable
+    cmd = [exe, "-m", "ariadne.memory.worker_main", "--data-dir", data]
+    if once:
+        cmd.append("--once")
+    else:
+        cmd.append("--loop")
+        cmd.extend(["--interval", str(interval)])
+        if stop_when_idle:
+            cmd.append("--stop-when-idle")
+        if max_iterations is not None:
+            cmd.extend(["--max-iterations", str(max_iterations)])
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
