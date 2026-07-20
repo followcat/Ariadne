@@ -249,19 +249,54 @@ class SkillStore:
         return self._score_lexical(query)[:limit]
 
     def plan(self, query: str, *, auto_load_limit: int = 1, recommended_limit: int = 5) -> dict[str, Any]:
-        """SKILLS §5 selection plan: auto_load / recommended / other, with scores."""
-        scored = self._score_lexical(query)
-        auto = [(skill, score) for score, skill in scored if score >= AUTO_LOAD_SCORE][
+        """SKILLS §5 selection plan (lexical). Prefer plan_async for hybrid ranking."""
+        return self._plan_from_scored(
+            [(float(score), skill) for score, skill in self._score_lexical(query)],
+            auto_load_limit=auto_load_limit,
+            recommended_limit=recommended_limit,
+            auto_threshold=float(AUTO_LOAD_SCORE),
+        )
+
+    def _plan_from_scored(
+        self,
+        scored: list[tuple[float, "Skill"]],
+        *,
+        auto_load_limit: int,
+        recommended_limit: int,
+        auto_threshold: float,
+    ) -> dict[str, Any]:
+        auto = [(skill, score) for score, skill in scored if score >= auto_threshold][
             :auto_load_limit
         ]
         auto_names = {skill.name for skill, _ in auto}
-        recommended = [(skill, score) for score, skill in scored if skill.name not in auto_names][
-            :recommended_limit
-        ]
+        recommended = [
+            (skill, score) for score, skill in scored if skill.name not in auto_names
+        ][:recommended_limit]
         other = max(0, len(self._skills) - len(auto) - len(recommended))
         return {"auto_load": auto, "recommended": recommended, "other": other}
 
-    async def search_hybrid(self, query: str, *, limit: int = 5) -> list[Skill]:
+    async def plan_async(
+        self, query: str, *, auto_load_limit: int = 1, recommended_limit: int = 5
+    ) -> dict[str, Any]:
+        """Hybrid selection plan (lexical + embeddings) — design target for ranking."""
+        scored = await self.search_hybrid_scored(
+            query, limit=max(recommended_limit + auto_load_limit + 5, 12)
+        )
+        if not scored:
+            return self.plan(
+                query, auto_load_limit=auto_load_limit, recommended_limit=recommended_limit
+            )
+        # Hybrid scores are ~0-1; map high-confidence band to auto_load.
+        return self._plan_from_scored(
+            scored,
+            auto_load_limit=auto_load_limit,
+            recommended_limit=recommended_limit,
+            auto_threshold=0.72,
+        )
+
+    async def search_hybrid_scored(
+        self, query: str, *, limit: int = 5
+    ) -> list[tuple[float, Skill]]:
         lexical = self.search(query, limit=max(limit * 3, 10))
         if not lexical:
             return []
@@ -273,11 +308,13 @@ class SkillStore:
                 emb = (await self.embedder.embed([skill.searchable_text()]))[0]
                 self._emb_cache[key] = emb
             emb_score = cosine(q_emb, self._emb_cache[key])
-            # blend rank position with embedding
             lex_score = 1.0 / (1 + i)
             scored.append((0.4 * lex_score + 0.6 * emb_score, skill))
         scored.sort(key=lambda item: -item[0])
-        return [s for _, s in scored[:limit]]
+        return scored[:limit]
+
+    async def search_hybrid(self, query: str, *, limit: int = 5) -> list[Skill]:
+        return [s for _, s in await self.search_hybrid_scored(query, limit=limit)]
 
     def manage(
         self,
