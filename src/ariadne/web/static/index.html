@@ -46,6 +46,7 @@
     --gold: #c9a227;
     --radius: 24px;
     --sidebar-w: 280px;
+    --tools-w: 340px;
     --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     color-scheme: dark;
@@ -255,6 +256,7 @@
     font-weight: 600; font-size: 15px; letter-spacing: -.01em;
   }
   .topbar .spacer { flex: 1; }
+  #tools-toggle:hover { background: var(--bg-hover); color: var(--fg); }
   #session-chip {
     font-size: 12px; color: var(--muted); font-family: var(--mono);
     padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line);
@@ -369,18 +371,141 @@
   .md th, .md td { border: 1px solid var(--line); padding: 8px 10px; }
   .md th { background: var(--bg-3); color: var(--dim); }
 
-  .tool {
+  /* Inline chat only keeps a compact tools summary chip */
+  .tool-inline-summary {
     align-self: flex-start;
     display: inline-flex; align-items: center; gap: 8px;
-    font-family: var(--mono); font-size: 12px; color: var(--dim);
+    font-size: 12px; color: var(--dim);
     background: var(--bg-3); border: 1px solid var(--line);
     border-radius: 999px; padding: 6px 12px;
+    cursor: pointer;
   }
-  .tool::before { content: "•"; color: var(--blue); }
-  .tool.fail { color: var(--err); border-color: rgba(244,33,46,.35); }
-  .tool.fail::before { content: "×"; color: var(--err); }
-  .tool .name { color: var(--fg-2); font-weight: 600; }
+  .tool-inline-summary:hover { background: var(--bg-hover); color: var(--fg); }
+  .tool-inline-summary .n { color: var(--fg-2); font-weight: 600; font-family: var(--mono); }
+  .tool-inline-summary.has-fail { border-color: rgba(244,33,46,.35); color: var(--err); }
 
+  /* Right tools panel (collapsible) */
+  #tools-panel {
+    width: var(--tools-w); flex-shrink: 0;
+    background: var(--bg-2);
+    border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    transition: margin .2s ease, opacity .2s, width .2s ease;
+    min-width: 0;
+  }
+  #tools-panel.collapsed {
+    width: 0; margin-right: 0; opacity: 0; pointer-events: none;
+    border-left: 0; overflow: hidden;
+  }
+  .tp-head {
+    height: 52px; flex-shrink: 0;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tp-head h2 {
+    margin: 0; flex: 1; font-size: 13px; font-weight: 650;
+    letter-spacing: -.01em; color: var(--fg);
+  }
+  .tp-head .tp-count {
+    font-size: 11px; color: var(--muted); font-family: var(--mono);
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
+  }
+  .tp-head button {
+    width: 32px; height: 32px; border-radius: 8px;
+    display: grid; place-items: center; color: var(--dim); font-size: 14px;
+  }
+  .tp-head button:hover { background: var(--bg-hover); color: var(--fg); }
+  #tools-list {
+    flex: 1; overflow-y: auto; padding: 10px 10px 16px;
+  }
+  #tools-list::-webkit-scrollbar { width: 6px; }
+  #tools-list::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: 3px; }
+  .tp-empty {
+    padding: 24px 12px; color: var(--muted); font-size: 13px; line-height: 1.45; text-align: center;
+  }
+  .tp-item {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg-3);
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .tp-item.fail { border-color: rgba(244,33,46,.35); }
+  .tp-item.run { border-color: rgba(29,155,240,.35); }
+  .tp-item-head {
+    width: 100%; text-align: left;
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 10px 12px;
+    color: var(--fg-2); font-size: 13px;
+  }
+  .tp-item-head:hover { background: var(--bg-hover); }
+  .tp-item-head .dot {
+    width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0;
+    background: var(--blue);
+  }
+  .tp-item.ok .dot { background: var(--ok); }
+  .tp-item.fail .dot { background: var(--err); }
+  .tp-item.run .dot { background: var(--blue); animation: blink 1s step-end infinite; }
+  .tp-item-head .body { flex: 1; min-width: 0; }
+  .tp-item-head .name {
+    font-family: var(--mono); font-weight: 650; font-size: 12.5px;
+    word-break: break-all;
+  }
+  .tp-item-head .status-line {
+    font-size: 11px; color: var(--muted); margin-top: 3px;
+  }
+  .tp-item.fail .status-line { color: var(--err); }
+  .tp-item-head .chev {
+    color: var(--muted); font-size: 12px; margin-top: 2px; transition: transform .15s;
+  }
+  .tp-item.open .tp-item-head .chev { transform: rotate(90deg); }
+  .tp-item-body {
+    display: none;
+    border-top: 1px solid var(--line);
+    padding: 10px 12px 12px;
+    font-size: 12px;
+  }
+  .tp-item.open .tp-item-body { display: block; }
+  .tp-sec { margin: 0 0 10px; }
+  .tp-sec:last-child { margin-bottom: 0; }
+  .tp-sec-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 650; margin-bottom: 4px;
+  }
+  .tp-pre {
+    margin: 0; padding: 8px 10px;
+    background: var(--pre-bg); border: 1px solid var(--line);
+    border-radius: 8px; overflow-x: auto;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.45;
+    color: var(--fg-2); white-space: pre-wrap; word-break: break-word;
+    max-height: 220px; overflow-y: auto;
+  }
+  .tp-err {
+    color: var(--err);
+    font-family: var(--mono); font-size: 12px; line-height: 1.4;
+  }
+  #tools-rail {
+    display: none;
+    width: 36px; flex-shrink: 0;
+    border-left: 1px solid var(--line);
+    background: var(--bg-2);
+    align-items: flex-start; justify-content: center;
+    padding-top: 10px;
+  }
+  #tools-rail.visible { display: flex; }
+  #tools-rail button {
+    width: 28px; height: 28px; border-radius: 8px;
+    color: var(--dim); font-size: 14px;
+  }
+  #tools-rail button:hover { background: var(--bg-hover); color: var(--fg); }
+  #tools-rail .badge {
+    position: absolute; margin-top: 22px; margin-left: 14px;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 999px; background: var(--blue); color: #fff;
+    font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  }
+  #tools-rail .badge.fail { background: var(--err); }
 
   #attach-bar {
     max-width: 760px; margin: 0 auto 8px;
@@ -498,12 +623,21 @@
   #theme-toggle:hover { background: var(--bg-hover); color: var(--fg); }
   .sb-item#theme-toggle-sb { /* sidebar theme control uses sb-item */ }
 
+  @media (max-width: 1100px) {
+    :root { --tools-w: 300px; }
+  }
   @media (max-width: 800px) {
     #sidebar {
       position: fixed; z-index: 30; height: 100%;
       box-shadow: 8px 0 40px rgba(0,0,0,.5);
     }
     #sidebar.collapsed { margin-left: calc(-1 * var(--sidebar-w)); }
+    #tools-panel {
+      position: fixed; z-index: 31; right: 0; top: 0; height: 100%;
+      box-shadow: -8px 0 40px rgba(0,0,0,.45);
+    }
+    #tools-panel.collapsed { width: 0; }
+    #tools-rail.visible { display: flex; }
   }
 </style>
 </head>
@@ -567,6 +701,9 @@
       <span class="title">Ariadne</span>
       <div class="spacer"></div>
       <button type="button" id="theme-toggle" title="切换浅色/深色主题" aria-label="切换主题">☀</button>
+      <button type="button" id="tools-toggle" title="工具调用" aria-label="工具面板" style="width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:var(--dim);position:relative;">
+        ▤<span id="tools-badge" class="hidden" style="position:absolute;top:4px;right:2px;min-width:14px;height:14px;padding:0 3px;border-radius:999px;background:var(--blue);color:#fff;font-size:9px;font-weight:700;line-height:14px;"></span>
+      </button>
       <span id="session-chip" title="当前 session"><span id="session-label">—</span></span>
       <span id="provider-chip" class="off"><span class="dot"></span><span id="provider-status">未配置</span></span>
     </div>
@@ -590,6 +727,25 @@
       <div class="foot">Ariadne 可能出错，请核对重要信息 · open-source agent kernel</div>
     </div>
   </div>
+
+  <!-- Collapsed tools rail (shows when panel is collapsed) -->
+  <div id="tools-rail" title="展开工具面板">
+    <button type="button" id="tools-rail-btn" aria-label="展开工具">▤</button>
+    <span id="tools-rail-badge" class="badge hidden">0</span>
+  </div>
+
+  <!-- Right tools panel: calls + details, collapsible -->
+  <aside id="tools-panel" class="collapsed" aria-label="工具调用">
+    <div class="tp-head">
+      <h2>工具调用</h2>
+      <span class="tp-count" id="tools-count">0</span>
+      <button type="button" id="tools-clear" title="清空本轮列表">↺</button>
+      <button type="button" id="tools-collapse" title="折叠">›</button>
+    </div>
+    <div id="tools-list">
+      <div class="tp-empty">本轮工具调用会显示在这里。<br>点击条目可展开参数与结果。</div>
+    </div>
+  </aside>
 
   <!-- Provider modal (keep #settings for e2e) -->
   <div id="settings" class="modal-backdrop hidden">
@@ -759,6 +915,11 @@ let username = '';
 let pendingImages = [];
 
 let sidebarCollapsed = localStorage.getItem('ariadne_sidebar') === '0';
+// tools panel: default open on desktop when there are tools; persist user preference
+let toolsCollapsed = localStorage.getItem('ariadne_tools_panel') !== '1';
+/** @type {{call_id:string,name:string,status:string,arguments?:any,output?:any,error?:any,open?:boolean,ts:number}[]} */
+let toolEntries = [];
+let toolsOpenIds = new Set(); // call_ids user expanded
 
 function authHeaders() {
   return { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
@@ -773,6 +934,185 @@ async function api(path, opts = {}) {
 function applySidebar() {
   $('sidebar').classList.toggle('collapsed', sidebarCollapsed);
   localStorage.setItem('ariadne_sidebar', sidebarCollapsed ? '0' : '1');
+}
+
+function applyToolsPanel() {
+  const panel = $('tools-panel');
+  const rail = $('tools-rail');
+  if (!panel) return;
+  panel.classList.toggle('collapsed', toolsCollapsed);
+  if (rail) rail.classList.toggle('visible', toolsCollapsed);
+  localStorage.setItem('ariadne_tools_panel', toolsCollapsed ? '0' : '1');
+  updateToolsBadges();
+}
+
+function updateToolsBadges() {
+  const n = toolEntries.length;
+  const fails = toolEntries.filter(t => t.status === 'failed').length;
+  const countEl = $('tools-count');
+  if (countEl) countEl.textContent = String(n);
+  const badge = $('tools-badge');
+  if (badge) {
+    if (n > 0) {
+      badge.classList.remove('hidden');
+      badge.textContent = String(n);
+      badge.style.background = fails ? 'var(--err)' : 'var(--blue)';
+    } else {
+      badge.classList.add('hidden');
+    }
+  }
+  const railBadge = $('tools-rail-badge');
+  if (railBadge) {
+    if (n > 0 && toolsCollapsed) {
+      railBadge.classList.remove('hidden');
+      railBadge.textContent = String(n);
+      railBadge.classList.toggle('fail', fails > 0);
+    } else {
+      railBadge.classList.add('hidden');
+    }
+  }
+  // compact chip in chat for current turn tools
+  const chip = document.getElementById('tools-inline-chip');
+  if (chip) {
+    chip.classList.toggle('has-fail', fails > 0);
+    chip.querySelector('.n').textContent = String(n);
+    chip.querySelector('.lab').textContent =
+      n === 0 ? '无工具' : (fails ? n + ' 工具 · ' + fails + ' 失败' : n + ' 工具调用');
+  }
+}
+
+function prettyJson(v) {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch (_) {
+    return String(v);
+  }
+}
+
+function renderToolsPanel() {
+  const root = $('tools-list');
+  if (!root) return;
+  if (!toolEntries.length) {
+    root.innerHTML =
+      '<div class="tp-empty">本轮工具调用会显示在这里。<br>点击条目可展开参数与结果。</div>';
+    updateToolsBadges();
+    return;
+  }
+  root.innerHTML = '';
+  // newest first for quick glance
+  const list = toolEntries.slice().reverse();
+  for (const t of list) {
+    const open = toolsOpenIds.has(t.call_id);
+    const st = t.status || 'started';
+    const cls =
+      'tp-item' +
+      (open ? ' open' : '') +
+      (st === 'failed' ? ' fail' : st === 'completed' ? ' ok' : ' run');
+    const statusText =
+      st === 'failed'
+        ? ((t.error && (t.error.code || t.error.message)) || 'failed')
+        : st === 'completed'
+          ? 'completed'
+          : 'running…';
+    const item = document.createElement('div');
+    item.className = cls;
+    item.dataset.id = t.call_id;
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'tp-item-head';
+    head.innerHTML =
+      '<span class="dot"></span>' +
+      '<span class="body">' +
+      '<div class="name">' + MD.esc(t.name || '?') + '</div>' +
+      '<div class="status-line">' + MD.esc(statusText) + '</div>' +
+      '</span>' +
+      '<span class="chev">›</span>';
+    head.onclick = () => {
+      if (toolsOpenIds.has(t.call_id)) toolsOpenIds.delete(t.call_id);
+      else toolsOpenIds.add(t.call_id);
+      renderToolsPanel();
+    };
+    item.appendChild(head);
+    const body = document.createElement('div');
+    body.className = 'tp-item-body';
+    let html = '';
+    if (t.arguments && Object.keys(t.arguments).length) {
+      html +=
+        '<div class="tp-sec"><div class="tp-sec-label">arguments</div>' +
+        '<pre class="tp-pre">' + MD.esc(prettyJson(t.arguments)) + '</pre></div>';
+    }
+    if (st === 'failed' && t.error) {
+      html +=
+        '<div class="tp-sec"><div class="tp-sec-label">error</div>' +
+        '<div class="tp-err">' +
+        MD.esc((t.error.code || '') + (t.error.message ? ' — ' + t.error.message : '')) +
+        '</div></div>';
+    }
+    if (t.output !== undefined && t.output !== null) {
+      html +=
+        '<div class="tp-sec"><div class="tp-sec-label">output</div>' +
+        '<pre class="tp-pre">' + MD.esc(prettyJson(t.output)) + '</pre></div>';
+    }
+    if (!html) {
+      html = '<div class="tp-sec"><div class="tp-sec-label">status</div><div class="tp-err" style="color:var(--muted)">' +
+        MD.esc(statusText) + '</div></div>';
+    }
+    body.innerHTML = html;
+    item.appendChild(body);
+    root.appendChild(item);
+  }
+  updateToolsBadges();
+}
+
+function ensureToolsInlineChip() {
+  let chip = document.getElementById('tools-inline-chip');
+  if (chip) return chip;
+  chip = document.createElement('button');
+  chip.type = 'button';
+  chip.id = 'tools-inline-chip';
+  chip.className = 'tool-inline-summary';
+  chip.innerHTML = '<span class="n">0</span> <span class="lab">工具调用</span> · 右侧详情';
+  chip.onclick = () => {
+    toolsCollapsed = false;
+    applyToolsPanel();
+  };
+  const shell = document.querySelector('.msg.assistant:last-of-type');
+  if (shell && shell.parentNode) {
+    shell.parentNode.insertBefore(chip, shell.nextSibling);
+  } else {
+    $('chat-inner').appendChild(chip);
+  }
+  return chip;
+}
+
+function upsertTool(entry) {
+  const id = entry.call_id || entry.name + '-' + String(toolEntries.length);
+  entry.call_id = id;
+  const idx = toolEntries.findIndex(t => t.call_id === id);
+  if (idx >= 0) {
+    toolEntries[idx] = { ...toolEntries[idx], ...entry };
+  } else {
+    toolEntries.push({ ts: Date.now(), ...entry });
+  }
+  ensureToolsInlineChip();
+  // auto-open panel on first tool of a turn
+  if (toolEntries.length === 1 && localStorage.getItem('ariadne_tools_panel') == null) {
+    toolsCollapsed = false;
+  }
+  if (entry.status === 'failed') {
+    toolsCollapsed = false; // surface failures
+    toolsOpenIds.add(id);
+  }
+  applyToolsPanel();
+  renderToolsPanel();
+}
+
+function clearToolsPanel() {
+  toolEntries = [];
+  toolsOpenIds = new Set();
+  const chip = document.getElementById('tools-inline-chip');
+  if (chip) chip.remove();
+  renderToolsPanel();
 }
 
 function updateTopTitle(title) {
@@ -814,6 +1154,7 @@ function clearChat() {
     '<div class="thread-art">A</div>' +
     '<h2>今天想做什么？</h2>' +
     '<p>在左侧新建或切换会话，在下方输入任务。支持 Markdown 流式回复。</p></div>';
+  clearToolsPanel();
 }
 
 function renderHistory(messages) {
@@ -956,6 +1297,8 @@ async function enter() {
   $('auth').classList.add('hidden');
   $('app').classList.remove('hidden');
   applySidebar();
+  applyToolsPanel();
+  renderToolsPanel();
   const me = await (await api('/api/me', { headers: authHeaders() })).json();
   username = me.username;
   $('who').textContent = username;
@@ -989,6 +1332,18 @@ $('sidebar-toggle').onclick = () => {
   sidebarCollapsed = !sidebarCollapsed;
   applySidebar();
 };
+function toggleToolsPanel() {
+  toolsCollapsed = !toolsCollapsed;
+  applyToolsPanel();
+}
+const toolsToggle = $('tools-toggle');
+if (toolsToggle) toolsToggle.onclick = toggleToolsPanel;
+const toolsCollapse = $('tools-collapse');
+if (toolsCollapse) toolsCollapse.onclick = () => { toolsCollapsed = true; applyToolsPanel(); };
+const toolsRailBtn = $('tools-rail-btn');
+if (toolsRailBtn) toolsRailBtn.onclick = () => { toolsCollapsed = false; applyToolsPanel(); };
+const toolsClear = $('tools-clear');
+if (toolsClear) toolsClear.onclick = () => clearToolsPanel();
 $('session-new').onclick = () => createNewSession({ load: true });
 $('editprovider').onclick = () => openModal('settings');
 $('editplugins').onclick = () => { openModal('plugins'); loadPlugins(); };
@@ -1141,15 +1496,21 @@ function setAssistantMarkdown(shell, text, { streaming = true } = {}) {
   scrollChat();
 }
 
-function addTool(name, status, detail) {
+function addTool(name, status, detail, extra) {
+  // Tools live in the right panel; chat only shows a compact summary chip.
   hideEmpty();
-  const div = document.createElement('div');
-  div.className = 'tool' + (status === 'failed' ? ' fail' : '');
-  div.innerHTML =
-    '<span class="name">' + MD.esc(name) + '</span>' +
-    (detail ? '<span>' + MD.esc(detail) + '</span>' : '');
-  $('chat-inner').appendChild(div);
-  scrollChat();
+  const payload = {
+    call_id: (extra && extra.call_id) || (name + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)),
+    name: name,
+    status: status === 'started' ? 'started' : (status === 'failed' ? 'failed' : 'completed'),
+    arguments: extra && extra.arguments,
+    output: extra && extra.output,
+    error: extra && extra.error,
+  };
+  if (status === 'failed' && detail && !payload.error) {
+    payload.error = { code: detail, message: detail };
+  }
+  upsertTool(payload);
 }
 
 function createStreamRenderer(shell) {
@@ -1195,6 +1556,7 @@ async function send() {
   $('send').disabled = true;
 
   addUserMsg(text);
+  clearToolsPanel();
   const shell = addAssistantShell();
   const stream = createStreamRenderer(shell);
 
@@ -1237,17 +1599,36 @@ async function send() {
         if (ev.kind === 'model_delta') {
           stream.append(String((ev.data && ev.data.text) || ''));
         } else if (ev.kind === 'tool_started') {
-          addTool(ev.data.name, 'started');
+          addTool(ev.data.name, 'started', '', {
+            call_id: ev.data.call_id || '',
+          });
         } else if (ev.kind === 'tool_completed') {
-          addTool(ev.data.name, ev.data.status, (ev.data.error && ev.data.error.code) || '');
+          addTool(
+            ev.data.name,
+            ev.data.status || 'completed',
+            (ev.data.error && ev.data.error.code) || '',
+            {
+              call_id: ev.data.call_id || '',
+              arguments: ev.data.arguments,
+              output: ev.data.output,
+              error: ev.data.error,
+            }
+          );
         } else if (ev.kind === 'guard_finding') {
-          addTool('guard:' + ev.data.direction, 'failed', ev.data.detail);
+          addTool('guard:' + ev.data.direction, 'failed', ev.data.detail, {
+            error: { code: 'GUARD', message: ev.data.detail || '' },
+          });
         } else if (ev.kind === 'turn_completed' || ev.kind === 'turn_failed') {
           if (ev.error && ev.error.message) {
             stream.set('**' + (ev.error.code || 'ERROR') + '**\n\n' + ev.error.message);
             stream.finish();
             if (ev.error.code === 'ARIADNE_MULTIMODAL_UNSUPPORTED') {
-              addTool('multimodal', 'failed', '模型不支持图片 — 可移除附件或换 vision 模型 / ARIADNE_VISION=on');
+              addTool('multimodal', 'failed', '模型不支持图片', {
+                error: {
+                  code: ev.error.code,
+                  message: '模型不支持图片 — 可移除附件或换 vision 模型 / ARIADNE_VISION=on',
+                },
+              });
             }
           } else {
             const res = ev.result;
@@ -1255,7 +1636,9 @@ async function send() {
               if (!stream.text && res.text) stream.set(res.text);
               stream.finish(res.text || '');
               if (res.status !== 'completed') {
-                addTool('turn', 'failed', (res.error && res.error.code) || 'failed');
+                addTool('turn', 'failed', (res.error && res.error.code) || 'failed', {
+                  error: res.error || { code: 'failed', message: 'turn failed' },
+                });
               }
             } else stream.finish();
           }

@@ -617,7 +617,13 @@ class TurnApplication:
                         ctx.evidence_text = "\n".join(evidence_parts)
                         yield TurnEvent(
                             "tool_completed",
-                            {"call_id": call_id, "name": name, "status": "completed", "output": output},
+                            {
+                                "call_id": call_id,
+                                "name": name,
+                                "status": "completed",
+                                "arguments": trace_args if isinstance(trace_args, dict) else args,
+                                "output": output,
+                            },
                         )
                         if name in {"search_skills", "load_skill"} and skill_events:
                             yield TurnEvent(
@@ -665,6 +671,7 @@ class TurnApplication:
                                 "call_id": call_id,
                                 "name": name,
                                 "status": "failed",
+                                "arguments": fail_args if isinstance(fail_args, dict) else args,
                                 "error": {"code": err.code, "message": err.message},
                             },
                         )
@@ -698,6 +705,7 @@ class TurnApplication:
                                 "call_id": call_id,
                                 "name": name,
                                 "status": "failed",
+                                "arguments": args,
                                 "error": {"code": err.code, "message": err.message},
                             },
                         )
