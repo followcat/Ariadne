@@ -105,6 +105,27 @@ def main() -> int:
             page.reload()
             page.wait_for_selector("#app:not(.hidden)", timeout=10_000)
             print("ok: session persists across reload")
+            # enable a plugin through the web UI (user attribute)
+            page.click("#editplugins")
+            page.wait_for_selector("#plugins:not(.hidden)", timeout=5_000)
+            cards = page.query_selector_all("#plugins > div")
+            gitlab_card = None
+            for card in cards:
+                if "gitlab" in (card.text_content() or ""):
+                    gitlab_card = card
+                    break
+            assert gitlab_card is not None, "gitlab plugin card not found"
+            inputs = gitlab_card.query_selector_all("input")
+            assert len(inputs) == 2, "gitlab should need url+token"
+            inputs[0].fill("http://gitlab.example.com")
+            inputs[1].fill("e2e-token")
+            gitlab_card.query_selector("button").click()
+            page.wait_for_function(
+                """() => [...document.querySelectorAll('#plugins > div')].some(
+                    d => d.textContent.includes('gitlab') && d.textContent.includes('已启用'))""",
+                timeout=10_000,
+            )
+            print("ok: gitlab plugin enabled via web UI")
             browser.close()
         print("WEB E2E PASS")
         return 0
