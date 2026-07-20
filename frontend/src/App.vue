@@ -104,6 +104,34 @@ async function loadSessions() {
   sessions.value = await r.json()
 }
 
+/** Auto topic title after turns (same as legacy web UI PATCH refresh_title). */
+async function refreshSessionTitle(force = false) {
+  if (!sessionId.value) return
+  try {
+    const r = await api(
+      '/api/sessions/' + encodeURIComponent(sessionId.value),
+      token.value,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ refresh_title: true, force: !!force }),
+      },
+    )
+    if (!r.ok) return
+    const data = await r.json()
+    // Update sidebar + topbar from server even when skipped (keeps title in sync).
+    if (data.title) {
+      const sid = sessionId.value
+      const row = sessions.value.find((s) => s.session_id === sid)
+      if (row) row.title = data.title
+      else await loadSessions()
+    } else {
+      await loadSessions()
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
+
 async function loadHistory() {
   if (!sessionId.value) {
     messages.value = []
@@ -204,6 +232,35 @@ function clearTools() {
   toolsOpenIds.value = new Set()
 }
 
+async function editTitle() {
+  if (!sessionId.value) return
+  const cur = topTitle.value === 'Ariadne' ? '' : topTitle.value
+  const next = window.prompt('会话标题（主题总结）\n留空并确定可自动重总结', cur)
+  if (next === null) return
+  if (!String(next).trim()) {
+    await refreshSessionTitle(true)
+    await loadSessions()
+    return
+  }
+  const r = await api(
+    '/api/sessions/' + encodeURIComponent(sessionId.value),
+    token.value,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ title: String(next).trim() }),
+    },
+  )
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}))
+    window.alert(d.detail || '改标题失败')
+    return
+  }
+  const data = await r.json()
+  const row = sessions.value.find((s) => s.session_id === sessionId.value)
+  if (row && data.title) row.title = data.title
+  await loadSessions()
+}
+
 function autoSize() {
   const el = inputEl.value
   if (!el) return
@@ -284,6 +341,8 @@ async function send() {
       if (!m.content) m.content = '(empty reply)'
     }
     busy.value = false
+    // Refresh topic title then reload session list so sidebar shows the new name.
+    await refreshSessionTitle(false)
     await loadSessions()
     inputEl.value?.focus()
   }
@@ -437,7 +496,11 @@ onMounted(() => {
     <div class="main">
       <div class="topbar">
         <button type="button" class="icon-btn" title="侧栏" @click="toggleSidebar">☰</button>
-        <span class="title">{{ topTitle }}</span>
+        <span
+          class="title"
+          title="点击可重命名；留空确定则自动重总结主题"
+          @click="editTitle"
+        >{{ topTitle }}</span>
         <div class="spacer" />
         <button type="button" class="icon-btn" title="主题" @click="toggleTheme">
           {{ theme === 'light' ? '☾' : '☀' }}
