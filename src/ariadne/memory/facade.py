@@ -28,7 +28,14 @@ class MemoryFacade:
     recent_limit: int = 4
     hybrid_semantic: bool = True
     # per-layer char budgets (config, not vibes); truncation is always marked
-    layer_budgets: dict[str, int] = field(default_factory=dict)
+    layer_budgets: dict[str, int] = field(
+        default_factory=lambda: {
+            "conversation_state": 2500,
+            "curated": 1500,
+            "turn_summary": 2000,
+            "semantic": 1500,
+        }
+    )
 
     def _apply_budget(self, name: str, text: str) -> tuple[str, str]:
         """Clamp a layer block to its configured budget with an explicit marker."""
@@ -51,9 +58,9 @@ class MemoryFacade:
         # if already in loop, fall back to lexical path without await hybrid
         return self._build_context_sync(session_id=session_id, query=query)
 
-    def recent_messages(self) -> list[dict[str, str]]:
+    def recent_messages(self, *, session_id: str | None = None) -> list[dict[str, str]]:
         """L0 recent raw window honoring the facade's configured limit."""
-        return self.transcript.recent_messages(limit=self.recent_limit)
+        return self.transcript.recent_messages(limit=self.recent_limit, session_id=session_id)
 
     def get_curated(self, *, session_id: str) -> dict[str, object]:
         """Convenience read for hosts: user-scope + session-scope curated entries."""
@@ -71,7 +78,7 @@ class MemoryFacade:
         watermark = self.state.watermark(session_id)
         if watermark is None:
             return None
-        records = self.transcript.records_after(watermark)
+        records = self.transcript.records_after(watermark, session_id=session_id)
         msgs = [
             r
             for r in records
@@ -107,6 +114,7 @@ class MemoryFacade:
         return set((state.get("entities") or {}).keys())
 
     def _build_context_sync(self, *, session_id: str, query: str) -> tuple[str, MemoryContextSummary]:
+        # Sync path: lexical only (no await). Note hybrid_skipped for hosts.
         layers: list[LayerReport] = []
         blocks: list[str] = []
 
@@ -184,7 +192,7 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="semantic", status="skipped"))
 
-        recent = self.recent_messages()
+        recent = self.recent_messages(session_id=session_id)
         if recent:
             layers.append(
                 LayerReport(
@@ -192,10 +200,19 @@ class MemoryFacade:
                     status="used",
                     token_chars=sum(len(m["content"]) for m in recent),
                     item_ids=[str(i) for i in range(len(recent))],
+                    notes="hybrid_skipped: sync_path",
                 )
             )
         else:
-            layers.append(LayerReport(name="recent_raw", status="skipped"))
+            layers.append(
+                LayerReport(
+                    name="recent_raw", status="skipped", notes="hybrid_skipped: sync_path"
+                )
+            )
+        # Note lexical semantic above; hybrid was skipped because this is the sync path.
+        for layer in layers:
+            if layer.name == "semantic" and not layer.notes:
+                layer.notes = "lexical; hybrid_skipped: sync_path"
 
         memory_system = "\n\n".join(b for b in blocks if b)
         summary = MemoryContextSummary(
@@ -264,30 +281,39 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="turn_summary", status="skipped"))
 
-        hits = await self.semantic.search_hybrid(
-            session_id=session_id,
-            query=query,
-            limit=5,
-            expand_aliases=self._aliases_from_state(session_id),
-            demote_entity_ids=self._demote_entities(session_id),
-        )
-        semantic_text = self.semantic.render(hits)
-        semantic_text, _ = self._apply_budget("semantic", semantic_text)
-        if semantic_text:
-            blocks.append(semantic_text)
+        try:
+            hits = await self.semantic.search_hybrid(
+                session_id=session_id,
+                query=query,
+                limit=5,
+                expand_aliases=self._aliases_from_state(session_id),
+                demote_entity_ids=self._demote_entities(session_id),
+            )
+            semantic_text = self.semantic.render(hits)
+            semantic_text, _ = self._apply_budget("semantic", semantic_text)
+            if semantic_text:
+                blocks.append(semantic_text)
+                layers.append(
+                    LayerReport(
+                        name="semantic",
+                        status="used",
+                        token_chars=len(semantic_text),
+                        item_ids=[h["turn_id"] for h in hits],
+                        notes="hybrid",
+                    )
+                )
+            else:
+                layers.append(LayerReport(name="semantic", status="skipped"))
+        except Exception as exc:  # noqa: BLE001 — layer-local fail (MEMORY fail-visible)
             layers.append(
                 LayerReport(
                     name="semantic",
-                    status="used",
-                    token_chars=len(semantic_text),
-                    item_ids=[h["turn_id"] for h in hits],
-                    notes="hybrid",
+                    status="failed",
+                    notes=f"{type(exc).__name__}: {exc}"[:200],
                 )
             )
-        else:
-            layers.append(LayerReport(name="semantic", status="skipped"))
 
-        recent = self.recent_messages()
+        recent = self.recent_messages(session_id=session_id)
         if recent:
             layers.append(
                 LayerReport(
