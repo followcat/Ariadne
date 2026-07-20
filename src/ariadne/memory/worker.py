@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .facade import MemoryFacade
 from .projection import ProjectorFn
@@ -25,6 +26,26 @@ async def _default_projector(evidence: str, turn_id: str) -> list[dict[str, Any]
     _ = evidence
     _ = turn_id
     return []
+
+
+def make_projector(
+    fn: Callable[[str, str], Awaitable[list[dict[str, Any]]] | list[dict[str, Any]]],
+) -> ProjectorFn:
+    """Wrap a sync or async callable as a :data:`ProjectorFn` (LLM plug-in hook).
+
+    Hosts can pass an LLM client that returns closed-schema ops with evidence
+    quotes; the worker never invents a default LLM dependency.
+    """
+
+    async def _wrapped(evidence: str, turn_id: str) -> list[dict[str, Any]]:
+        result = fn(evidence, turn_id)
+        if asyncio.iscoroutine(result):
+            result = await result
+        if not isinstance(result, list):
+            raise TypeError("projector must return a list of ops")
+        return result
+
+    return _wrapped
 
 
 @dataclass

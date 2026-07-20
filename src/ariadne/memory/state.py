@@ -23,6 +23,10 @@ ALLOWED_OPS = {
 }
 
 MAX_ENTITIES = 256
+MAX_RELATIONS_PER_TYPE = 64
+MAX_RELATION_TYPES = 32
+MAX_COLLECTION_MEMBERS = 64
+MAX_COLLECTIONS = 32
 
 
 def empty_state() -> dict[str, Any]:
@@ -174,6 +178,35 @@ class ConversationStateStore:
             self._apply_one(state, op, source_turn_id=source_turn_id)
         if len(state.get("entities") or {}) > MAX_ENTITIES:
             raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "entity capacity exceeded"))
+        relations = state.get("relations") or {}
+        if len(relations) > MAX_RELATION_TYPES:
+            raise AriadneError(
+                app_error("ARIADNE_INVALID_TOOL_ARGS", "relation type capacity exceeded")
+            )
+        for rel_name, edges in relations.items():
+            if len(edges or []) > MAX_RELATIONS_PER_TYPE:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_INVALID_TOOL_ARGS",
+                        f"relation capacity exceeded for {rel_name!r}",
+                        relation=rel_name,
+                    )
+                )
+        collections = state.get("collections") or {}
+        if len(collections) > MAX_COLLECTIONS:
+            raise AriadneError(
+                app_error("ARIADNE_INVALID_TOOL_ARGS", "collection capacity exceeded")
+            )
+        for cname, coll in collections.items():
+            members = (coll or {}).get("members") or []
+            if len(members) > MAX_COLLECTION_MEMBERS:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_INVALID_TOOL_ARGS",
+                        f"collection member capacity exceeded for {cname!r}",
+                        collection=cname,
+                    )
+                )
         data = self._read()
         docs = data.setdefault("documents", {})
         new_version = current_version + 1
@@ -209,6 +242,7 @@ class ConversationStateStore:
             rel = str(op["relation"])
             edge = {"from": str(op["from"]), "to": str(op["to"])}
             edges = relations.setdefault(rel, [])
+            # Dedupe identical edges (M08).
             if edge not in edges:
                 edges.append(edge)
         elif name == "remove_relation":

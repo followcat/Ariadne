@@ -3,12 +3,64 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 SummaryStatus = Literal["pending", "ready", "failed", "not_applicable"]
+CompressorFn = Callable[[str], str]
+
+_SENT_SPLIT = re.compile(r"(?<=[.!?。！？])\s+|\n+")
+
+
+def grounded_compress(source_text: str, *, max_chars: int = 400) -> str:
+    """Grounded multi-sentence compressor (no free invention).
+
+    Picks leading + trailing sentences and high-signal middle lines that
+    already appear in the source (bullet lines, quoted values, key:value).
+    Falls back to head truncate when structure is flat.
+    """
+    src = (source_text or "").strip()
+    if not src:
+        return ""
+    if len(src) <= max_chars:
+        return src
+    sentences = [s.strip() for s in _SENT_SPLIT.split(src) if s and s.strip()]
+    if len(sentences) <= 1:
+        return src[:max_chars]
+    picked: list[str] = []
+    used: set[str] = set()
+
+    def add(s: str) -> None:
+        key = s[:80]
+        if key in used:
+            return
+        used.add(key)
+        picked.append(s)
+
+    add(sentences[0])
+    # Prefer mid lines that look like facts (bullets, numbers, paths, assignments).
+    mid = sentences[1:-1]
+    signal = [
+        s
+        for s in mid
+        if re.search(r"(^[-*]|\d|[/\\:=]|`|\b[A-Z]{2,}\b)", s)
+    ]
+    for s in signal[:3]:
+        add(s)
+    if sentences[-1] != sentences[0]:
+        add(sentences[-1])
+    out = " ".join(picked)
+    if len(out) > max_chars:
+        # Prefer head+tail of the assembled grounded text.
+        head = max_chars // 2 - 10
+        tail = max_chars - head - 5
+        out = out[:head] + " … " + out[-tail:]
+    if not out:
+        return src[:max_chars]
+    return out
 
 
 @dataclass
@@ -16,11 +68,17 @@ class TurnSummaryStore:
     """L1 store: enqueue → process → ready (design: no invent; raw fallback when missing)."""
 
     path: Path
+    compressor: CompressorFn | None = None
+    max_summary_chars: int = 400
 
     def __post_init__(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.path.write_text("{}\n", encoding="utf-8")
+        if self.compressor is None:
+            self.compressor = lambda t: grounded_compress(
+                t, max_chars=self.max_summary_chars
+            )
 
     def _read(self) -> dict[str, Any]:
         return json.loads(self.path.read_text(encoding="utf-8"))
@@ -70,12 +128,15 @@ class TurnSummaryStore:
     def process_pending(
         self, *, session_id: str | None = None, max_jobs: int = 32
     ) -> int:
-        """Compress pending entries to ready (stub compressor: grounded truncate).
+        """Compress pending entries to ready via grounded compressor.
 
         Never invents facts beyond the source_text. Returns number processed.
         """
         data = self._read()
         n = 0
+        compress = self.compressor or (
+            lambda t: grounded_compress(t, max_chars=self.max_summary_chars)
+        )
         for sid, sess in list(data.items()):
             if session_id is not None and sid != session_id:
                 continue
@@ -93,9 +154,9 @@ class TurnSummaryStore:
                     payload["status"] = "not_applicable"
                     payload["summary_text"] = ""
                 else:
-                    # Grounded stub: first 400 chars of source (no free invention).
-                    payload["summary_text"] = src[:400]
+                    payload["summary_text"] = compress(src)
                     payload["status"] = "ready"
+                    payload["compressor"] = "grounded_compress"
                 payload["updated_at"] = time.time()
                 n += 1
             if n >= max_jobs:
@@ -154,7 +215,13 @@ class TurnSummaryStore:
         )
         if not items:
             return ""
+        # Dedupe by turn_id (last write wins; list_ready already unique keys).
+        seen: set[str] = set()
         lines = ["[HISTORICAL_CONTEXT: MAY BE SUPERSEDED BY CONVERSATION_STATE]"]
         for item in items:
-            lines.append(f"- turn {item['turn_id']}: {item['summary_text']}")
+            tid = item["turn_id"]
+            if tid in seen:
+                continue
+            seen.add(tid)
+            lines.append(f"- turn {tid}: {item['summary_text']}")
         return "\n".join(lines)
