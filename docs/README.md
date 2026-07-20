@@ -35,4 +35,6 @@ Normative design documents for the Ariadne personal open-source agent kernel.
 
 ## Status
 
-Phase 0: documentation complete for kickoff. Implementation has not started.
+**v0.2 usable** — kernel + CLI + web + plugins implemented under `src/ariadne`
+with offline tests. Product overview and screenshots: [../README.md](../README.md).
+Host usage: [USAGE_CLI.md](USAGE_CLI.md). Delivery checklist: [ROADMAP.md](ROADMAP.md).
