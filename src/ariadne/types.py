@@ -52,6 +52,16 @@ class MemoryContextSummary:
 
 
 @dataclass(slots=True)
+class MemoryContext:
+    """Structured memory build result (MEMORY §4 Read API)."""
+
+    system_text: str
+    summary: MemoryContextSummary
+    before_turn_id: str | None = None
+    require_ready: bool = False
+
+
+@dataclass(slots=True)
 class SkillEvent:
     kind: Literal["search", "load", "index"]
     skill_name: str = ""

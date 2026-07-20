@@ -4,7 +4,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..types import LayerReport, MemoryContextSummary
+from ..errors import AriadneError, app_error
+from ..types import LayerReport, MemoryContext, MemoryContextSummary
 from .curated import CuratedStore
 from .embeddings import HashEmbeddingProvider
 from .projection import ProjectionWorker
@@ -27,6 +28,7 @@ class MemoryFacade:
     projection: ProjectionWorker | None = None
     recent_limit: int = 4
     hybrid_semantic: bool = True
+    require_ready: bool = False  # if True, pending projection lag fails the build
     # per-layer char budgets (config, not vibes); truncation is always marked
     layer_budgets: dict[str, int] = field(
         default_factory=lambda: {
@@ -47,16 +49,63 @@ class MemoryFacade:
             f"budget:{budget}",
         )
 
-    def build_context(self, *, session_id: str, query: str, user_id: str | None = None) -> tuple[str, MemoryContextSummary]:
+    def build_context(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        user_id: str | None = None,
+        before_turn_id: str | None = None,
+        require_ready: bool | None = None,
+    ) -> tuple[str, MemoryContextSummary]:
         # sync wrapper for simple callers
         import asyncio
 
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self.build_context_async(session_id=session_id, user_id=user_id, query=query))
+            return asyncio.run(
+                self.build_context_async(
+                    session_id=session_id,
+                    user_id=user_id,
+                    query=query,
+                    before_turn_id=before_turn_id,
+                    require_ready=require_ready,
+                )
+            )
         # if already in loop, fall back to lexical path without await hybrid
-        return self._build_context_sync(session_id=session_id, query=query)
+        return self._build_context_sync(
+            session_id=session_id,
+            query=query,
+            before_turn_id=before_turn_id,
+            require_ready=require_ready,
+        )
+
+    async def build_memory_context(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        user_id: str | None = None,
+        before_turn_id: str | None = None,
+        require_ready: bool | None = None,
+    ) -> MemoryContext:
+        """Normative Read API: structured MemoryContext (MEMORY §4)."""
+        text, summary = await self.build_context_async(
+            session_id=session_id,
+            query=query,
+            user_id=user_id,
+            before_turn_id=before_turn_id,
+            require_ready=require_ready,
+        )
+        return MemoryContext(
+            system_text=text,
+            summary=summary,
+            before_turn_id=before_turn_id,
+            require_ready=bool(
+                self.require_ready if require_ready is None else require_ready
+            ),
+        )
 
     def recent_messages(self, *, session_id: str | None = None) -> list[dict[str, str]]:
         """L0 recent raw window honoring the facade's configured limit."""
@@ -109,12 +158,73 @@ class MemoryFacade:
         return aliases
 
     def _demote_entities(self, session_id: str) -> set[str]:
-        # demote semantic hits for entities that already have attributes (stale trap mitigation)
-        state = self.state.get(session_id)
-        return set((state.get("entities") or {}).keys())
+        """Entities that have attributes (authoritative L2 values may supersede old hits).
 
-    def _build_context_sync(self, *, session_id: str, query: str) -> tuple[str, MemoryContextSummary]:
+        Only these should demote chunks that *mention* them — not every entity id.
+        """
+        state = self.state.get(session_id)
+        out: set[str] = set()
+        for eid, ent in (state.get("entities") or {}).items():
+            attrs = ent.get("attributes") or {}
+            if attrs:
+                out.add(str(eid))
+        return out
+
+    def entities_mentioned_in_text(self, session_id: str, text: str) -> list[str]:
+        """Entity ids referenced in text via id, alias, or string attribute values.
+
+        Used for semantic index tagging so demotion/hits stay turn-grounded
+        (not the entire state entity set).
+        """
+        hay = (text or "").lower()
+        if not hay:
+            return []
+        state = self.state.get(session_id)
+        found: list[str] = []
+        for eid, ent in (state.get("entities") or {}).items():
+            surface: list[str] = [str(eid)] + [str(a) for a in (ent.get("aliases") or [])]
+            for attr in (ent.get("attributes") or {}).values():
+                if isinstance(attr, dict):
+                    val = attr.get("value")
+                else:
+                    val = attr
+                if isinstance(val, (str, int, float)):
+                    surface.append(str(val))
+            for name in surface:
+                n = name.strip()
+                if len(n) < 2:
+                    continue
+                if n.lower() in hay:
+                    found.append(str(eid))
+                    break
+        return found
+
+    def _check_require_ready(self, session_id: str, *, require_ready: bool | None) -> None:
+        flag = self.require_ready if require_ready is None else require_ready
+        if not flag or self.projection is None:
+            return
+        lag = self.projection.pending_lag(session_id)
+        if lag > 0:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_NOT_READY",
+                    f"conversation_state projection lag: {lag} pending job(s)",
+                    session_id=session_id,
+                    pending_jobs=lag,
+                )
+            )
+
+    def _build_context_sync(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        before_turn_id: str | None = None,
+        require_ready: bool | None = None,
+    ) -> tuple[str, MemoryContextSummary]:
         # Sync path: lexical only (no await). Note hybrid_skipped for hosts.
+        _ = before_turn_id  # reserved for point-in-time reads
+        self._check_require_ready(session_id, require_ready=require_ready)
         layers: list[LayerReport] = []
         blocks: list[str] = []
 
@@ -223,14 +333,33 @@ class MemoryFacade:
         )
         return memory_system, summary
 
-    async def build_context_async(self, *, session_id: str, query: str, user_id: str | None = None) -> tuple[str, MemoryContextSummary]:
+    async def build_context_async(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        user_id: str | None = None,
+        before_turn_id: str | None = None,
+        require_ready: bool | None = None,
+    ) -> tuple[str, MemoryContextSummary]:
+        _ = user_id
+        _ = before_turn_id
         if not self.hybrid_semantic:
-            return self._build_context_sync(session_id=session_id, query=query)
+            return self._build_context_sync(
+                session_id=session_id,
+                query=query,
+                before_turn_id=before_turn_id,
+                require_ready=require_ready,
+            )
+        self._check_require_ready(session_id, require_ready=require_ready)
         layers: list[LayerReport] = []
         blocks: list[str] = []
 
         state_text, entity_count = self.state.render(session_id)
         state_text, state_note = self._apply_budget("conversation_state", state_text)
+        lag = self.projection.pending_lag(session_id) if self.projection else 0
+        lag_note = f"projection_lag:{lag}" if lag else ""
+        notes = ", ".join(x for x in (state_note, lag_note) if x)
         if state_text:
             blocks.append(state_text)
             layers.append(
@@ -239,11 +368,17 @@ class MemoryFacade:
                     status="used",
                     token_chars=len(state_text),
                     item_ids=[f"entities:{entity_count}"],
-                    notes=state_note,
+                    notes=notes,
                 )
             )
         else:
-            layers.append(LayerReport(name="conversation_state", status="skipped"))
+            layers.append(
+                LayerReport(
+                    name="conversation_state",
+                    status="skipped",
+                    notes=lag_note or "",
+                )
+            )
 
         delta = self._state_delta(session_id)
         if delta is not None:

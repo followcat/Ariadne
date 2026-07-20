@@ -73,13 +73,45 @@ class ProjectionWorker:
         self._write(data)
         return job_id
 
-    def claim(self, *, worker_id: str) -> dict[str, Any] | None:
+    def claim(self, *, worker_id: str, session_id: str | None = None) -> dict[str, Any] | None:
+        """Claim next job in per-session enqueue order (turn pipeline order).
+
+        Within a session, only the earliest unfinished job is claimable — later
+        turns wait until earlier ones succeed/fail/no_change.
+        """
         now = time.time()
         data = self._read()
-        for job in data.get("jobs") or []:
-            if job.get("status") not in {"pending", "leased"}:
+        jobs: list[dict[str, Any]] = list(data.get("jobs") or [])
+
+        def unfinished(job: dict[str, Any]) -> bool:
+            st = job.get("status")
+            if st == "pending":
+                return True
+            if st == "leased":
+                return True  # including expired; reclaimable
+            return False
+
+        def claimable(job: dict[str, Any]) -> bool:
+            st = job.get("status")
+            if st == "pending":
+                return True
+            if st == "leased" and float(job.get("lease_until") or 0) <= now:
+                return True
+            return False
+
+        # Per session: first unfinished job in list order is the only candidate
+        first_unfinished_by_session: dict[str, dict[str, Any]] = {}
+        for job in jobs:
+            sid = str(job.get("session_id") or "")
+            if session_id is not None and sid != session_id:
                 continue
-            if job.get("status") == "leased" and float(job.get("lease_until") or 0) > now:
+            if not unfinished(job):
+                continue
+            if sid not in first_unfinished_by_session:
+                first_unfinished_by_session[sid] = job
+
+        for job in first_unfinished_by_session.values():
+            if not claimable(job):
                 continue
             job["status"] = "leased"
             job["lease_owner"] = worker_id
@@ -88,6 +120,18 @@ class ProjectionWorker:
             self._write(data)
             return dict(job)
         return None
+
+    def pending_lag(self, session_id: str) -> int:
+        """Number of unfinished jobs (pending/active lease) for a session."""
+        now = time.time()
+        n = 0
+        for job in self.list_jobs(session_id=session_id):
+            st = job.get("status")
+            if st == "pending":
+                n += 1
+            elif st == "leased" and float(job.get("lease_until") or 0) > now:
+                n += 1
+        return n
 
     def complete(self, job_id: str, *, status: str, error: str = "") -> None:
         data = self._read()
