@@ -146,6 +146,7 @@ def compose_agent(settings: Settings) -> Agent:
         sandbox_mode=settings.sandbox_lifecycle,
         stream_model=settings.stream,
         sandbox_prestart=settings.sandbox_prestart,
+        vision_mode=settings.vision,
     )
     return Agent(
         turn_app=turn_app,

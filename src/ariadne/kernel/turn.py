@@ -134,6 +134,7 @@ class TurnApplication:
     redact_traces: bool = True
     guardrails_enabled: bool = True
     approval_hook: ApprovalHook | None = None
+    vision_mode: str = "auto"  # auto | on | off — see multimodal.model_supports_vision
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -151,6 +152,7 @@ class TurnApplication:
         tool_loop_limit: int | None = None,
         metadata: dict[str, Any] | None = None,
         on_event: EventSink | None = None,
+        images: list[Any] | None = None,
     ) -> TurnResult:
         events: AsyncIterator[TurnEvent] = self.run_events(
             prompt=prompt,
@@ -159,6 +161,7 @@ class TurnApplication:
             user_id=user_id,
             tool_loop_limit=tool_loop_limit,
             metadata=metadata,
+            images=images,
         )
         final: TurnResult | None = None
         async for event in events:
@@ -193,6 +196,7 @@ class TurnApplication:
         user_id: str | None = None,
         tool_loop_limit: int | None = None,
         metadata: dict[str, Any] | None = None,
+        images: list[Any] | None = None,
     ) -> AsyncIterator[TurnEvent]:
         guard = _SandboxGuard(self, session_id=session_id)
         try:
@@ -203,6 +207,7 @@ class TurnApplication:
                 user_id=user_id,
                 tool_loop_limit=tool_loop_limit,
                 metadata=metadata,
+                images=images,
                 guard=guard,
             ):
                 yield event
@@ -218,14 +223,32 @@ class TurnApplication:
         user_id: str | None = None,
         tool_loop_limit: int | None = None,
         metadata: dict[str, Any] | None = None,
+        images: list[Any] | None = None,
         guard: _SandboxGuard,
     ) -> AsyncIterator[TurnEvent]:
+        from ..multimodal import (
+            ImageAttachment,
+            build_user_message_content,
+            ensure_vision_allowed,
+            transcript_user_line,
+        )
+
+        image_list: list[ImageAttachment] = list(images or [])
+        model_name = model or getattr(self.model, "model", None) or "unknown"
+        if image_list:
+            ensure_vision_allowed(str(model_name), image_list, vision_mode=self.vision_mode)
+
         turn_id = uuid.uuid4().hex[:12]
         loop_limit = tool_loop_limit if tool_loop_limit is not None else self.tool_loop_limit
         started_at = datetime.now(timezone.utc)
         yield TurnEvent(
             "turn_started",
-            {"turn_id": turn_id, "session_id": session_id, "metadata": dict(metadata or {})},
+            {
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "metadata": dict(metadata or {}),
+                "image_count": len(image_list),
+            },
         )
 
         if self.guardrails_enabled:
@@ -323,10 +346,14 @@ class TurnApplication:
         for prior in self.memory.recent_messages():
             messages.append(prior)
 
-        messages.append({"role": "user", "content": prompt})
-        self.memory.transcript.append({"role": "user", "content": prompt, "turn_id": turn_id})
+        user_content = build_user_message_content(prompt, image_list or None)
+        user_transcript = transcript_user_line(prompt, image_list or None)
+        messages.append({"role": "user", "content": user_content})
+        self.memory.transcript.append(
+            {"role": "user", "content": user_transcript, "turn_id": turn_id}
+        )
 
-        evidence_parts = [prompt]
+        evidence_parts = [user_transcript]
         ctx = ToolContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -335,7 +362,7 @@ class TurnApplication:
             skills=self.skills,
             exposure=exposure,
             skill_events=skill_events,
-            evidence_text=prompt,
+            evidence_text=user_transcript,
             approval_hook=self.approval_hook,
         )
 

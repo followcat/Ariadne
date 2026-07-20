@@ -48,6 +48,7 @@ class Settings:
     sandbox_prestart: bool = False
     approval_mode: str = "auto"  # auto | on-request | readonly
     merge_home_plugins: bool = True  # CLI: merge ~/.ariadne/plugins.json; web: off
+    vision: str = "auto"  # auto | on | off — multimodal image send policy
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -76,6 +77,7 @@ def load_settings(
     sandbox_prestart: bool = False,
     force_workspace: bool = False,
     approval_mode: str | None = None,
+    vision: str | None = None,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
     if workspace in {Path("/"), Path.home()} and not force_workspace:
@@ -143,6 +145,9 @@ def load_settings(
         raise AriadneError(
             app_error("ARIADNE_CONFIG_INVALID", f"unknown approval mode: {approval!r}")
         )
+    from .multimodal import normalize_vision_mode
+
+    vision_mode = normalize_vision_mode(vision or pick("ARIADNE_VISION", default="auto"))
 
     return Settings(
         base_url=base_url,
@@ -166,4 +171,5 @@ def load_settings(
         max_ttl_seconds=maxt,
         sandbox_prestart=prestart_flag,
         approval_mode=approval,
+        vision=vision_mode,
     )

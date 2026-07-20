@@ -26,6 +26,7 @@ class Agent:
         tool_loop_limit: int | None = None,
         metadata: dict[str, Any] | None = None,
         on_event: Any = None,
+        images: list[Any] | None = None,
     ) -> TurnResult:
         if isinstance(input, RunTurnCommand):
             return await self.turn_app.run_command(input)
@@ -37,6 +38,7 @@ class Agent:
             tool_loop_limit=tool_loop_limit,
             metadata=metadata,
             on_event=on_event,
+            images=images,
         )
 
     async def run_stream(
@@ -45,6 +47,7 @@ class Agent:
         *,
         session_id: str | None = None,
         model: str | None = None,
+        images: list[Any] | None = None,
     ) -> AsyncIterator[TurnEvent]:
         if isinstance(input, RunTurnCommand):
             command = input
@@ -53,14 +56,17 @@ class Agent:
             )
             sid = command.session_id
             mdl = command.model
+            imgs = images
         else:
             prompt = input
             sid = session_id or self.session_id
             mdl = model or self.model
+            imgs = images
         async for event in self.turn_app.run_events(
             prompt=prompt,
             session_id=sid,
             model=mdl,
+            images=imgs,
         ):
             yield event
 

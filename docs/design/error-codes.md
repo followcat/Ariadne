@@ -29,6 +29,7 @@ Stable enough for hosts to branch on.
 | `ARIADNE_MODEL_ERROR` | model | provider/API failure |
 | `ARIADNE_PLUGIN_ERROR` | plugins | plugin config/call failure |
 | `ARIADNE_CONFIG_INVALID` | bootstrap | bad construction config |
+| `ARIADNE_MULTIMODAL_UNSUPPORTED` | model/host | images attached but model/vision policy rejects multimodal |
 
 ## Rules
 
