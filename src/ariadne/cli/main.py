@@ -121,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     plugin_p.add_argument("--database", default=None, help="Odoo database")
     plugin_p.add_argument("--login", default=None, help="Odoo login")
     plugin_p.add_argument("--password", default=None, help="Odoo password/API key")
+    plugin_p.add_argument(
+        "--workspace-scope",
+        action="store_true",
+        help="Store config at workspace level instead of user level (~/.ariadne)",
+    )
     serve_p = sub.add_parser("serve", help="Start the web UI (FastAPI + SSE)")
     serve_p.add_argument("--host", default="127.0.0.1")
     serve_p.add_argument("--port", type=int, default=8420)
@@ -354,12 +359,30 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _plugin_store(args: argparse.Namespace, settings) -> "object":
+    from pathlib import Path as _P
+
+    from ..plugins import PluginStore
+
+    if getattr(args, "workspace_scope", False):
+        return PluginStore(settings.resolved_data_dir / "plugins.json")
+    return PluginStore(_P.home() / ".ariadne" / "plugins.json")
+
+
 def cmd_plugins(args: argparse.Namespace) -> int:
+    from pathlib import Path as _P
+
     from ..plugins import PLUGIN_REGISTRY, PluginStore
 
     settings = _settings_from_args(args)
-    store = PluginStore(settings.resolved_data_dir / "plugins.json")
-    configured = store.list()
+    # Merge user-level then workspace-level (workspace wins on name clash).
+    configured: dict = {}
+    for candidate in (
+        _P.home() / ".ariadne" / "plugins.json",
+        settings.resolved_data_dir / "plugins.json",
+    ):
+        for name, entry in PluginStore(candidate).list().items():
+            configured[name] = entry
     rows = []
     for name, plugin in sorted(PLUGIN_REGISTRY.items()):
         entry = configured.get(name) or {}
@@ -370,10 +393,10 @@ def cmd_plugins(args: argparse.Namespace) -> int:
 
 
 def cmd_plugin(args: argparse.Namespace) -> int:
-    from ..plugins import PLUGIN_REGISTRY, PluginStore
+    from ..plugins import PLUGIN_REGISTRY
 
     settings = _settings_from_args(args)
-    store = PluginStore(settings.resolved_data_dir / "plugins.json")
+    store = _plugin_store(args, settings)
     if args.name not in PLUGIN_REGISTRY:
         ui.print_error("PLUGIN", f"unknown plugin: {args.name} (see: ariadne plugins)")
         return 2
