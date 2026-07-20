@@ -133,6 +133,21 @@ ariadne plugin enable gitlab --workspace-scope --url ... --token ...
 --json                        输出 TurnResult JSON（含 schema_metrics）；
                               配合 --stream 时先 NDJSON 事件再最终结果
 ```
+## 会话标题（主题总结）
+
+每个会话可有 **标题**（短主题总结），存在 `data_dir/sessions/meta/<id>.json`。
+
+| 操作 | CLI | Web |
+| --- | --- | --- |
+| 查看 | `/title` | 顶栏标题 + 侧栏列表 |
+| 手动设置 | `/title 部署脚本` | 点顶栏标题，或双击侧栏会话 |
+| 自动刷新 | `/title --refresh` | 对话后自动；改名时留空确定=强制重总结 |
+
+- **auto**：由前几轮用户话启发式生成（不额外调 LLM）  
+- **user**：手动标题不会被 auto 覆盖（除非 force）  
+- 列表接口返回 `title`、`title_source`  
+- `PATCH /api/sessions/{id}`：`{ "title": "…" }` 或 `{ "refresh_title": true }`
+
 ## 图片（CLI + Web）
 
 在**模型支持视觉/多模态**时可粘贴或附加图片。

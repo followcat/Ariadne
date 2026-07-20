@@ -134,6 +134,22 @@ Global flags work both before and after the subcommand
                               with --stream, NDJSON events then final result
 ```
 
+## Session titles (topic summary)
+
+Each session can have a **title** (short topic summary), stored under
+`data_dir/sessions/meta/<id>.json`.
+
+| Action | CLI | Web |
+| --- | --- | --- |
+| Show | `/title` | Top bar + sidebar label |
+| Set (user) | `/title 部署脚本` | Click top title or double-click sidebar row |
+| Auto refresh | `/title --refresh` | After turns (auto); empty prompt rename = force refresh |
+
+- **auto**: derived heuristically from early user messages (no extra LLM call).  
+- **user**: manual title is not overwritten by auto refresh unless forced.  
+- List APIs include `title` + `title_source` (`auto` \| `user`).  
+- `PATCH /api/sessions/{id}` with `{ "title": "…" }` or `{ "refresh_title": true, "force": false }`.
+
 ## Images (CLI + Web)
 
 Paste or attach images when the **model supports vision/multimodal**.
