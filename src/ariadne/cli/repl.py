@@ -34,11 +34,18 @@ session
   /session              show session id
   /resume [id]          list or switch sessions
   /new | /reset-session new session id (workspace kept)
-  /status               host status (model, workspace, approval, …)
+  /status               host status (model, workspace, approval, vision, …)
   /mode [auto|on-request|readonly]
   /model [name]         show or hot-swap model
   /usage                cumulative tokens this REPL
   /compact              archive transcript (summaries remain)
+
+images
+  /image [path]         attach from path, or clipboard if omitted
+  /images               list pending attachments
+  /clear-images         drop pending images
+  Non-vision models refuse with ARIADNE_MULTIMODAL_UNSUPPORTED
+  (override with ARIADNE_VISION=on).
 
 workspace / tools
   /workspace            show workspace path
@@ -99,16 +106,24 @@ def _read_multiline(prompt: str) -> str | None:
 
 
 async def _run_turn(
-    agent: Agent, line: str, *, stream: bool, json_mode: bool, verbose: bool
+    agent: Agent,
+    line: str,
+    *,
+    stream: bool,
+    json_mode: bool,
+    verbose: bool,
+    images: list | None = None,
 ) -> tuple[int, Any]:
     from ..cli.main import _emit_stream  # shared stream renderer
 
     if stream:
-        return await _emit_stream(agent, line, json_mode=json_mode, verbose=verbose)
+        return await _emit_stream(
+            agent, line, json_mode=json_mode, verbose=verbose, images=images
+        )
     spinner = ui.status("thinking…")
     spinner.__enter__()
     try:
-        result = await agent.run(line)
+        result = await agent.run(line, images=images)
     finally:
         spinner.__exit__(None, None, None)
     if json_mode:
@@ -121,6 +136,8 @@ async def _run_turn(
 
 
 def _print_status(settings: Settings, agent: Agent) -> None:
+    from ..multimodal import model_supports_vision
+
     ui.out.print(f"session:    {settings.session_id}")
     ui.out.print(f"workspace:  {settings.workspace}")
     ui.out.print(f"model:      {settings.model}")
@@ -129,6 +146,9 @@ def _print_status(settings: Settings, agent: Agent) -> None:
     ui.out.print(f"sandbox:    {settings.sandbox}/{settings.sandbox_lifecycle}")
     ui.out.print(f"approval:   {settings.approval_mode}")
     ui.out.print(f"stream:     {settings.stream}")
+    vision = getattr(settings, "vision", "auto")
+    supports = model_supports_vision(settings.model, vision_mode=vision)
+    ui.out.print(f"vision:     {vision} (model multimodal: {'yes' if supports else 'no'})")
     if agent.active_sessions is not None:
         ui.out.print(f"active:     {agent.active_sessions.status()}")
 
@@ -158,6 +178,7 @@ def run_repl(
     # keep settings.stream aligned for /status
     settings.stream = stream
     usage_totals = {"prompt": 0, "completion": 0, "total": 0, "turns": 0}
+    pending_images: list[Any] = []
 
     if welcome:
         ws = str(settings.workspace)
@@ -168,12 +189,13 @@ def run_repl(
             f"workspace={ws}  sandbox={settings.sandbox}/{settings.sandbox_lifecycle}  "
             f"approval={settings.approval_mode}"
         )
-        ui.print_info("Type /help for commands, /exit to quit.")
+        ui.print_info("Type /help for commands, /image to attach, /exit to quit.")
 
     exit_code = 0
 
     def _consume_turn(line: str) -> None:
-        nonlocal exit_code, agent
+        nonlocal exit_code, agent, pending_images
+        imgs = list(pending_images)
         try:
             code, result = asyncio.run(
                 _run_turn(
@@ -182,6 +204,7 @@ def run_repl(
                     stream=stream,
                     json_mode=settings.json_mode,
                     verbose=settings.verbose,
+                    images=imgs or None,
                 )
             )
         except KeyboardInterrupt:
@@ -189,8 +212,14 @@ def run_repl(
             return
         except AriadneError as exc:
             ui.print_error(exc.error.code, exc.error.message)
+            if exc.error.code == "ARIADNE_MULTIMODAL_UNSUPPORTED":
+                ui.print_info(
+                    "提示: 当前模型不支持图片。可 /clear-images 后只发文字，"
+                    "或换 vision 模型 / 设置 ARIADNE_VISION=on。"
+                )
             exit_code = 1
             return
+        pending_images.clear()
         usage_totals["turns"] += 1
         if result is not None:
             usage_totals["prompt"] += result.usage.prompt_tokens
@@ -205,7 +234,8 @@ def run_repl(
             _consume_turn(initial_prompt.strip())
 
         while True:
-            prompt = f"{settings.session_id}:{settings.model}> "
+            img_mark = f"[{len(pending_images)} img] " if pending_images else ""
+            prompt = f"{img_mark}{settings.session_id}:{settings.model}> "
             line = _read_multiline(prompt)
             if line is None:
                 ui.out.print()
@@ -221,6 +251,63 @@ def run_repl(
                 continue
             if line == "/status":
                 _print_status(settings, agent)
+                if pending_images:
+                    ui.out.print(f"pending_images: {len(pending_images)}")
+                    for i, img in enumerate(pending_images, 1):
+                        ui.out.print(f"  {i}. {img.name} ({img.mime}, {len(img.data)} bytes)")
+                continue
+            if line == "/images":
+                if not pending_images:
+                    ui.print_info("no pending images (use /image [path] or clipboard)")
+                else:
+                    for i, img in enumerate(pending_images, 1):
+                        ui.out.print(f"{i}. {img.name}  {img.mime}  {len(img.data)} bytes")
+                continue
+            if line == "/clear-images":
+                pending_images.clear()
+                ui.print_info("pending images cleared")
+                continue
+            if line.startswith("/image"):
+                from ..multimodal import (
+                    MAX_IMAGES_PER_TURN,
+                    load_image_path,
+                    model_supports_vision,
+                    read_clipboard_image,
+                )
+
+                parts = line.split(maxsplit=1)
+                try:
+                    if len(parts) > 1 and parts[1].strip():
+                        img = load_image_path(parts[1].strip())
+                    else:
+                        img = read_clipboard_image()
+                        if img is None:
+                            ui.print_error(
+                                "IMAGE",
+                                "clipboard has no image — pass a path: /image ./shot.png "
+                                "(Linux: copy image then /image, needs xclip or wl-paste)",
+                            )
+                            continue
+                except AriadneError as exc:
+                    ui.print_error(exc.error.code, exc.error.message)
+                    continue
+                if len(pending_images) >= MAX_IMAGES_PER_TURN:
+                    ui.print_error("IMAGE", f"max {MAX_IMAGES_PER_TURN} images per turn")
+                    continue
+                pending_images.append(img)
+                supports = model_supports_vision(
+                    settings.model, vision_mode=getattr(settings, "vision", "auto")
+                )
+                ui.print_info(
+                    f"attached {img.name} ({img.mime}, {len(img.data)} bytes)  "
+                    f"pending={len(pending_images)}"
+                    + ("" if supports else "  ⚠ model may not support vision")
+                )
+                if not supports:
+                    ui.print_info(
+                        "当前模型未判定为多模态；发送时会提示 ARIADNE_MULTIMODAL_UNSUPPORTED，"
+                        "除非设置 ARIADNE_VISION=on。"
+                    )
                 continue
             if line.startswith("/mode"):
                 parts = line.split(maxsplit=1)

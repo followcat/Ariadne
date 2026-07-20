@@ -292,10 +292,12 @@ def _event_to_jsonable(event: TurnEvent) -> dict[str, object]:
     return {"kind": event.kind, "data": data}
 
 
-async def _emit_stream(agent, prompt: str, *, json_mode: bool, verbose: bool) -> tuple[int, object]:
+async def _emit_stream(
+    agent, prompt: str, *, json_mode: bool, verbose: bool, images: list | None = None
+) -> tuple[int, object]:
     final = None
     saw_delta = False
-    async for event in agent.run_stream(prompt):
+    async for event in agent.run_stream(prompt, images=images):
         if event.kind in {"turn_completed", "turn_failed"}:
             final = event.data.get("result")
             continue
