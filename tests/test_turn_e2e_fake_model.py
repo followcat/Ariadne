@@ -100,6 +100,16 @@ Use sandbox_exec to inspect and write NOTES.md.
                 ],
             }
         if n == 3:
+            # conversation_state is named_deferred — load schema before apply.
+            assert "conversation_state" not in tool_names
+            return {
+                "content": None,
+                "tool_calls": [
+                    _tc("tool_search", {"tool_names": ["conversation_state"]}, "c5"),
+                ],
+            }
+        if n == 4:
+            assert "conversation_state" in tool_names
             return {
                 "content": None,
                 "tool_calls": [
@@ -124,7 +134,7 @@ Use sandbox_exec to inspect and write NOTES.md.
                             ],
                             "evidence_text": "Created NOTES.md in project",
                         },
-                        "c5",
+                        "c6",
                     )
                 ],
             }
