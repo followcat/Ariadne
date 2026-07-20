@@ -44,6 +44,18 @@ ariadne memory-worker --subprocess --once   # separate OS process
 python -m ariadne.memory.worker_main --data-dir ./.ariadne --once
 ```
 
+Shared JSON (`summaries.json`, `projection_jobs.json`, `state.json`) uses
+**fcntl sidecar locks** + atomic replace (`*.lock` / `*.tmp`). Agent turns and
+sub-process workers **may run concurrently** without lost updates. Summary
+compression (including LLM) runs **outside** the lock after a short claim.
+
+### LLM summary mode
+
+`ARIADNE_SUMMARY_MODE=llm` / `--summary-mode llm` installs `make_llm_compressor`.
+The compressor runs the model via a **thread-bound event loop** when called from
+an already-running asyncio loop (turn end / worker), so it no longer silent-
+falls-back to grounded solely due to nested `asyncio.run`.
+
 ## Remaining (optional later)
 
 | Topic | Notes |
