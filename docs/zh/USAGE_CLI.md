@@ -199,8 +199,10 @@ ariadne serve --port 8420
 2. 在 **Provider** 中绑定 `BASE_URL`、`API_KEY`、`MODEL`  
 3. 可选：在 **插件** 中启用官方插件  
 4. 通过 SSE 流式对话  
-5. 顶栏 **会话** 可列出 / 切换 / 新建 / 删除会话；切换后聊天区会加载历史
-   （`GET/POST/DELETE /api/sessions`、`GET /api/sessions/{id}`）  
+5. **左侧栏**（类 Grok）：新对话、历史会话列表；底部 Provider / 插件 / 退出。  
+   切换会话会加载历史（`GET/POST/DELETE /api/sessions`、`GET /api/sessions/{id}`）  
+6. **主题**：顶栏 ☀/☾ 或侧栏 **外观** 可切换浅色 / 深色；偏好写入
+   `localStorage`（`ariadne_theme`），默认跟随系统  
 
 浏览器端到端检查（Playwright）：
 

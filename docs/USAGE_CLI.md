@@ -202,9 +202,12 @@ Typical flow:
 2. Bind provider (`BASE_URL`, `API_KEY`, `MODEL`) under **Provider**  
 3. Optionally enable official plugins under **插件**  
 4. Chat with SSE streaming turns  
-5. Use **会话 / Sessions** in the header to list, switch, create, or delete
-   sessions; history reloads into the chat pane (`GET /api/sessions`,
-   `GET /api/sessions/{id}`, `POST /api/sessions`, `DELETE /api/sessions/{id}`)  
+5. Use the **left sidebar** (Grok-style): New chat, history list, Provider /
+   plugins at the bottom. Switching a session reloads history into the chat
+   pane (`GET/POST/DELETE /api/sessions`, `GET /api/sessions/{id}`)  
+6. **Theme**: toggle light/dark from the top bar (☀/☾) or sidebar **外观**;
+   preference is stored in `localStorage` (`ariadne_theme`) and defaults to
+   the system color scheme  
 
 End-to-end browser check (Playwright):
 
