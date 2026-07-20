@@ -199,6 +199,8 @@ ariadne serve --port 8420
 2. 在 **Provider** 中绑定 `BASE_URL`、`API_KEY`、`MODEL`  
 3. 可选：在 **插件** 中启用官方插件  
 4. 通过 SSE 流式对话  
+5. 顶栏 **会话** 可列出 / 切换 / 新建 / 删除会话；切换后聊天区会加载历史
+   （`GET/POST/DELETE /api/sessions`、`GET /api/sessions/{id}`）  
 
 浏览器端到端检查（Playwright）：
 

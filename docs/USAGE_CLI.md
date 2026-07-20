@@ -202,6 +202,9 @@ Typical flow:
 2. Bind provider (`BASE_URL`, `API_KEY`, `MODEL`) under **Provider**  
 3. Optionally enable official plugins under **插件**  
 4. Chat with SSE streaming turns  
+5. Use **会话 / Sessions** in the header to list, switch, create, or delete
+   sessions; history reloads into the chat pane (`GET /api/sessions`,
+   `GET /api/sessions/{id}`, `POST /api/sessions`, `DELETE /api/sessions/{id}`)  
 
 End-to-end browser check (Playwright):
 
