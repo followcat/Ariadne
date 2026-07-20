@@ -32,7 +32,16 @@ class ToolContext:
 
 @dataclass(slots=True)
 class ToolSpec:
-    """CapabilitySpec (TOOLCALL §2.1): one unit of registration."""
+    """One capability registration unit (TOOLCALL §2.1 CapabilitySpec).
+
+    Naming map (docs CapabilitySpec → fields here):
+
+    - ``description`` (docs catalog phrase) → :attr:`catalog_description`
+      (falls back to first sentence of ``description``)
+    - ``tool_schema`` (docs full callable schema) → :meth:`tool_schema` /
+      :meth:`openai_tool` built from ``name`` + ``description`` + ``parameters``
+    - long when/how policy lives in ``description`` (schema description)
+    """
 
     name: str
     description: str
@@ -45,6 +54,12 @@ class ToolSpec:
     exposed_to_llm: bool = True
     required_credentials: tuple[str, ...] = ()  # personal v1 ignores credentials
 
+    def catalog_phrase(self) -> str:
+        """Short discovery phrase (docs CapabilitySpec.description)."""
+        if self.catalog_description.strip():
+            return self.catalog_description.strip()
+        return (self.description or "").split(".")[0].strip() or self.name
+
     def openai_tool(self) -> dict[str, Any]:
         return {
             "type": "function",
@@ -55,8 +70,16 @@ class ToolSpec:
             },
         }
 
+    def tool_schema(self) -> dict[str, Any]:
+        """Full callable schema for the model API (docs CapabilitySpec.tool_schema)."""
+        return self.openai_tool()
+
     def schema_chars(self) -> int:
-        return len(json.dumps(self.openai_tool(), ensure_ascii=False, separators=(",", ":")))
+        return len(json.dumps(self.tool_schema(), ensure_ascii=False, separators=(",", ":")))
+
+
+# Public alias aligned with TOOLCALL / ARCHITECTURE naming.
+CapabilitySpec = ToolSpec
 
 
 @dataclass
@@ -103,10 +126,43 @@ class ToolRegistry:
         for spec in self.tools.values():
             if spec.tool_exposure == "hidden" or not spec.exposed_to_llm:
                 continue
-            phrase = spec.catalog_description or spec.description.split(".")[0]
+            phrase = spec.catalog_phrase()
             marker = " (deferred)" if spec.tool_exposure == "named_deferred" else ""
             lines.append(f"- {spec.name}: {phrase}{marker}")
         return "\n".join(lines)
+
+    def schema_cost_report(self, *, prefer_deferred: bool = True) -> dict[str, Any]:
+        """Schema-cost snapshot for evals (TOOLCALL §3.2 / TC-08).
+
+        Correctness and cost must be scored separately: deferred tools remain
+        discoverable in the catalog and loadable; cost counts only wire schemas.
+        """
+        exp = self.build_exposure(prefer_deferred=prefer_deferred)
+        request_chars = self.schema_chars_for(exp.request_tools)
+        deferred_chars = sum(
+            len(json.dumps(s, ensure_ascii=False, separators=(",", ":")))
+            for s in exp.deferred_tools.values()
+        )
+        all_schemas = [
+            s.tool_schema()
+            for s in self.tools.values()
+            if s.exposed_to_llm and s.tool_exposure != "hidden"
+        ]
+        eager_all_chars = self.schema_chars_for(all_schemas)
+        return {
+            "prefer_deferred": prefer_deferred,
+            "request_tool_count": len(exp.request_tools),
+            "deferred_tool_count": len(exp.deferred_tools),
+            "callable_count": len(exp.callable_function_names),
+            "request_schema_chars": request_chars,
+            "deferred_schema_chars": deferred_chars,
+            "eager_all_schema_chars": eager_all_chars,
+            "catalog_chars": self.catalog_chars(),
+            "deferred_names": sorted(exp.deferred_tools.keys()),
+            "request_names": sorted(
+                (t.get("function") or {}).get("name") or "" for t in exp.request_tools
+            ),
+        }
 
     def catalog_chars(self) -> int:
         return len(self.catalog_text())
