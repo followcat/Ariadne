@@ -175,7 +175,9 @@ def load_image_path(path: Path | str) -> ImageAttachment:
 
 def image_from_base64(mime: str, data_b64: str, *, name: str = "image.png") -> ImageAttachment:
     try:
-        raw = base64.standard_b64decode(data_b64, validate=False)
+        # standard_b64decode has no validate= kwarg; strip whitespace for paste payloads
+        raw = base64.standard_b64decode("".join(str(data_b64).split()))
+
     except Exception as exc:  # noqa: BLE001
         raise AriadneError(
             app_error("ARIADNE_MULTIMODAL_UNSUPPORTED", f"invalid base64 image: {exc}")
