@@ -100,17 +100,19 @@ def compose_agent(settings: Settings) -> Agent:
     )
 
     skill_dirs: list[Path] = []
+    skill_namespaces: list[str] = []
     repo_root = Path(__file__).resolve().parents[3]
     user_skills = data_dir / "skills" / "user"
     user_skills.mkdir(parents=True, exist_ok=True)
-    for candidate in (
-        repo_root / "skills" / "builtin",
-        settings.workspace / "skills",
-        settings.skills_dir,
-        user_skills,
+    for candidate, ns in (
+        (repo_root / "skills" / "builtin", "builtin"),
+        (settings.workspace / "skills", "workspace"),
+        (settings.skills_dir, "local"),
+        (user_skills, "user"),
     ):
         if candidate is not None and Path(candidate).is_dir():
             skill_dirs.append(Path(candidate))
+            skill_namespaces.append(ns)
 
     # Strict skill load: invalid packs fail composition (DESIGN_PRINCIPLES fastfail).
     skills = SkillStore.from_dirs(
@@ -118,6 +120,7 @@ def compose_agent(settings: Settings) -> Agent:
         strict=True,
         user_root=user_skills,
         embedder=embedder,
+        namespaces=skill_namespaces,
     )
 
     tools = build_default_registry(memory=memory, skills=skills)

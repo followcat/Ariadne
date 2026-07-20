@@ -80,6 +80,21 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
     return _parse_simple_yaml(parts[1]), parts[2].lstrip("\n")
 
 
+def infer_namespace(root: Path, *, user_root: Path | None = None) -> str:
+    """Map a skill root directory to a personal-v1 namespace (SKILLS §8)."""
+    root = root.resolve()
+    if user_root is not None and root == user_root.resolve():
+        return "user"
+    parts_l = [p.lower() for p in root.parts]
+    if parts_l and parts_l[-1] == "user":
+        return "user"
+    if "builtin" in parts_l:
+        return "builtin"
+    if parts_l and parts_l[-1] == "skills":
+        return "workspace"
+    return "local"
+
+
 class SkillStore:
     def __init__(
         self,
@@ -93,6 +108,26 @@ class SkillStore:
         self.embedder = embedder or HashEmbeddingProvider(dims=32)
         self._emb_cache: dict[str, list[float]] = {}
 
+    def is_writable(self, name: str) -> bool:
+        """User namespace skills (or unknown names under user_root) may be managed."""
+        skill = self._skills.get(name)
+        if skill is None:
+            return True
+        return skill.namespace == "user"
+
+    def _guard_manage(self, name: str, *, action: str) -> None:
+        skill = self._skills.get(name)
+        if skill is not None and skill.namespace != "user":
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_SKILL_INVALID",
+                    f"cannot {action} {skill.namespace} skill {name!r} (read-only namespace)",
+                    name=name,
+                    namespace=skill.namespace,
+                    action=action,
+                )
+            )
+
     @classmethod
     def from_dir(
         cls,
@@ -101,12 +136,14 @@ class SkillStore:
         strict: bool = True,
         user_root: Path | None = None,
         embedder: EmbeddingProvider | None = None,
+        namespace: str | None = None,
     ) -> "SkillStore":
         root = root.resolve()
         if not root.is_dir():
             if strict:
                 raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"skills dir missing: {root}"))
             return cls({}, user_root=user_root, embedder=embedder)
+        ns = namespace or infer_namespace(root, user_root=user_root)
         skills: dict[str, Skill] = {}
         for path in sorted(root.iterdir()):
             if not path.is_dir():
@@ -114,7 +151,7 @@ class SkillStore:
             if not (path / "SKILL.md").is_file():
                 continue
             try:
-                skill = cls._load_one(path)
+                skill = cls._load_one(path, namespace=ns)
             except Exception as exc:  # noqa: BLE001
                 if strict:
                     raise AriadneError(
@@ -132,15 +169,37 @@ class SkillStore:
         strict: bool = True,
         user_root: Path | None = None,
         embedder: EmbeddingProvider | None = None,
+        namespaces: list[str] | None = None,
     ) -> "SkillStore":
+        """Load multiple roots. Later roots override same names (user last wins).
+
+        ``namespaces`` optional parallel list of namespace labels per root.
+        When omitted, each root is labeled via :func:`infer_namespace`.
+        """
+        if namespaces is not None and len(namespaces) != len(roots):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "namespaces length must match roots",
+                    roots=len(roots),
+                    namespaces=len(namespaces),
+                )
+            )
         merged: dict[str, Skill] = {}
-        for root in roots:
-            part = cls.from_dir(root, strict=strict, user_root=user_root, embedder=embedder)
+        for i, root in enumerate(roots):
+            ns = namespaces[i] if namespaces is not None else None
+            part = cls.from_dir(
+                root,
+                strict=strict,
+                user_root=user_root,
+                embedder=embedder,
+                namespace=ns,
+            )
             merged.update(part._skills)
         return cls(merged, user_root=user_root, embedder=embedder)
 
     @staticmethod
-    def _load_one(path: Path) -> Skill:
+    def _load_one(path: Path, *, namespace: str | None = None) -> Skill:
         for entry in path.iterdir():
             if entry.name.startswith("."):
                 continue
@@ -190,7 +249,11 @@ class SkillStore:
             for extra in rmeta.get("keywords") or []:
                 if str(extra) not in keywords:
                     keywords.append(str(extra))
-        ns = "user" if "user" in path.parts[-3:] else "builtin"
+        if namespace is None:
+            # Path-based fallback when callers omit explicit namespace.
+            ns = "user" if "user" in [p.lower() for p in path.parts[-3:]] else "builtin"
+        else:
+            ns = namespace
         return Skill(
             name=name,
             description=description,
@@ -325,13 +388,15 @@ class SkillStore:
         body: str = "",
         keywords: list[str] | None = None,
     ) -> dict[str, object]:
-        """Create/update/delete user skills with versioned directories."""
+        """Create/update/delete **user** skills only (builtin/workspace are protected)."""
         if self.user_root is None:
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "user skills root not configured"))
         action = (action or "").strip().lower()
         name = (name or "").strip()
         if not NAME_RE.match(name):
             raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"invalid skill name {name!r}"))
+        # Builtin / workspace / local packs are read-only via skill_manage.
+        self._guard_manage(name, action=action)
         self.user_root.mkdir(parents=True, exist_ok=True)
         skill_dir = self.user_root / name
         if action == "delete":
@@ -379,7 +444,12 @@ class SkillStore:
             body.lstrip() + ("\n" if not body.endswith("\n") else ""),
         ]
         (skill_dir / "SKILL.md").write_text("\n".join(fm), encoding="utf-8")
-        skill = self._load_one(skill_dir)
-        skill.namespace = "user"
+        skill = self._load_one(skill_dir, namespace="user")
         self._skills[name] = skill
-        return {"action": action, "name": name, "path": str(skill_dir), "description": skill.description}
+        return {
+            "action": action,
+            "name": name,
+            "path": str(skill_dir),
+            "description": skill.description,
+            "namespace": "user",
+        }
