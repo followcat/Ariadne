@@ -294,14 +294,16 @@ class TurnApplication:
                 {"name": layer.name, "status": layer.status, "token_chars": layer.token_chars},
             )
 
-        skill_plan = self.skills.plan(prompt)
+        # Hybrid plan when available (falls back to lexical).
+        if hasattr(self.skills, "plan_async"):
+            skill_plan = await self.skills.plan_async(prompt)
+        else:
+            skill_plan = self.skills.plan(prompt)
         exposure = self.tools.build_exposure(prefer_deferred=self.prefer_deferred_tools)
         catalog = self.tools.catalog_text()
 
-        # Prompt assembly (design: policy → user → high-signal memory → skills
-        # → history → runtime; tools catalog is short discovery only).
-        # Chat models still get the user message near the end for recency —
-        # skill plan is placed immediately before recent_raw + user (strong region).
+        # Prompt assembly (design: policy → high-signal memory → skills → catalog
+        # → runtime → recent → user). Skill plan sits near user (strong attention).
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_POLICY},
         ]
@@ -313,12 +315,12 @@ class TurnApplication:
         lines = ["[SKILL_SELECTION]"]
         if skill_plan["auto_load"]:
             names = ", ".join(
-                f"{s.name} (score {score})" for s, score in skill_plan["auto_load"]
+                f"{s.name} (score {score:.3g})" for s, score in skill_plan["auto_load"]
             )
-            lines.append(f"auto_load: {names} (call load_skill now)")
+            lines.append(f"auto_load: {names} (body injected this turn below)")
         if skill_plan["recommended"]:
             names = ", ".join(
-                f"{s.name} (score {score})" for s, score in skill_plan["recommended"]
+                f"{s.name} (score {score:.3g})" for s, score in skill_plan["recommended"]
             )
             lines.append(f"recommended: {names}")
         if n_skills == 0:
@@ -340,6 +342,30 @@ class TurnApplication:
         messages.append({"role": "system", "content": plan_text})
         skill_events.append(SkillEvent(kind="index", detail=detail))
         yield TurnEvent("skill_event", {"kind": "index", "detail": detail})
+
+        # Turn-scoped auto_load bodies (SKILLS §4.1 / §5) — not permanent policy.
+        for skill, score in skill_plan["auto_load"][:2]:
+            body = (skill.body or "").strip()
+            if not body:
+                continue
+            if len(body) > 6000:
+                body = body[:6000] + "\n[ariadne: skill body truncated to 6000 chars]"
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"[SKILL_BODY name={skill.name} score={score:.3g} scope=this_turn]\n"
+                        f"{body}"
+                    ),
+                }
+            )
+            skill_events.append(
+                SkillEvent(kind="load", skill_name=skill.name, detail=f"auto_load score={score:.3g}")
+            )
+            yield TurnEvent(
+                "skill_event",
+                {"kind": "load", "skill_name": skill.name, "detail": f"auto_load score={score:.3g}"},
+            )
 
         # Short tool catalog (discovery); full schemas go on the wire separately.
         messages.append(
@@ -456,17 +482,27 @@ class TurnApplication:
                             "session_id": session_id,
                         }
                     )
-                    summary = text[:400] if text else f"user asked: {prompt[:200]}"
-                    self.memory.summaries.put(
-                        session_id=session_id, turn_id=turn_id, summary_text=summary
+                    # L1: enqueue source then process to ready (status machine).
+                    source_for_summary = text if text else f"user asked: {prompt[:200]}"
+                    self.memory.summaries.enqueue(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        source_text=source_for_summary,
                     )
+                    self.memory.summaries.process_pending(session_id=session_id, max_jobs=4)
+                    summary = source_for_summary[:400]
                     tool_blob = "\n".join(
                         f"{c.name}: {json.dumps(c.output, ensure_ascii=False)[:300]}"
                         for c in tool_calls
                         if c.status == "completed"
                     )
-                    state = self.memory.state.get(session_id)
-                    entity_ids = list((state.get("entities") or {}).keys())
+                    # Tag only entities mentioned this turn (not the entire state set).
+                    evidence_blob = "\n".join(
+                        [prompt, text, tool_blob]
+                    )
+                    entity_ids = self.memory.entities_mentioned_in_text(
+                        session_id, evidence_blob
+                    )
                     self.memory.semantic.index_turn(
                         session_id=session_id,
                         turn_id=turn_id,
