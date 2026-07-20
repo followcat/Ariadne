@@ -86,11 +86,16 @@ def compose_agent(settings: Settings) -> Agent:
 
     transcript = TranscriptStore(path=data_dir / "sessions" / f"{settings.session_id}.jsonl")
     state_store = ConversationStateStore(path=data_dir / "memory" / "state.json")
+    summary_store = TurnSummaryStore(path=data_dir / "memory" / "summaries.json")
+    if settings.summary_mode == "llm":
+        from ..memory.llm_summary import make_llm_compressor
+
+        summary_store.compressor = make_llm_compressor(model, max_chars=400, fallback=True)
     memory = MemoryFacade(
         transcript=transcript,
         curated=CuratedStore(path=data_dir / "memory" / "curated.json"),
         state=state_store,
-        summaries=TurnSummaryStore(path=data_dir / "memory" / "summaries.json"),
+        summaries=summary_store,
         semantic=SemanticIndex(path=data_dir / "memory" / "semantic.json", embedder=embedder),
         projection=ProjectionWorker(
             path=data_dir / "memory" / "projection_jobs.json",
@@ -121,6 +126,7 @@ def compose_agent(settings: Settings) -> Agent:
         user_root=user_skills,
         embedder=embedder,
         namespaces=skill_namespaces,
+        budgets=settings.skill_plan_budgets(),
     )
 
     tools = build_default_registry(memory=memory, skills=skills)
@@ -147,6 +153,7 @@ def compose_agent(settings: Settings) -> Agent:
         active_sessions=active,
         tool_loop_limit=settings.tool_loop_limit,
         prefer_deferred_tools=settings.prefer_deferred_tools,
+        tool_search_mode=settings.tool_search_mode,
         sandbox_mode=settings.sandbox_lifecycle,
         stream_model=settings.stream,
         sandbox_prestart=settings.sandbox_prestart,

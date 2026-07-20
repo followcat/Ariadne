@@ -119,6 +119,53 @@ def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
         "--eager-tools", action="store_true", default=b, help="Send all tool schemas eagerly"
     )
     p.add_argument(
+        "--tool-search-mode",
+        choices=["function", "native", "none"],
+        default=s,
+        help="Deferred tool load: function (tool_search), native (auto-load), none",
+    )
+    p.add_argument(
+        "--summary-mode",
+        choices=["grounded", "llm"],
+        default=s,
+        help="L1 summary compressor: grounded extract or llm (falls back to grounded)",
+    )
+    p.add_argument(
+        "--skill-auto-load",
+        type=int,
+        default=s,
+        dest="skill_auto_load_limit",
+        help="Max auto_load skills per turn (SkillPlanBudgets)",
+    )
+    p.add_argument(
+        "--skill-recommended",
+        type=int,
+        default=s,
+        dest="skill_recommended_limit",
+        help="Max recommended skills in plan",
+    )
+    p.add_argument(
+        "--skill-body-max",
+        type=int,
+        default=s,
+        dest="skill_auto_body_max",
+        help="Max auto_load skill bodies injected per turn",
+    )
+    p.add_argument(
+        "--skill-body-chars",
+        type=int,
+        default=s,
+        dest="skill_auto_body_chars",
+        help="Max chars per auto_load skill body",
+    )
+    p.add_argument(
+        "--skill-plan-chars",
+        type=int,
+        default=s,
+        dest="skill_plan_chars",
+        help="Max chars for [SKILL_SELECTION] plan block",
+    )
+    p.add_argument(
         "--force-workspace",
         action="store_true",
         default=b,
@@ -272,6 +319,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Cap loop iterations (default unlimited with --loop)",
     )
+    mem_w.add_argument(
+        "--subprocess",
+        action="store_true",
+        default=False,
+        help="Spawn out-of-process worker (python -m ariadne.memory.worker_main)",
+    )
     return parser
 
 
@@ -297,6 +350,13 @@ def _settings_from_args(args: argparse.Namespace, *, default_lifecycle: str | No
         sandbox_prestart=args.sandbox_prestart,
         force_workspace=getattr(args, "force_workspace", False),
         approval_mode=getattr(args, "approval_mode", None),
+        skill_auto_load_limit=getattr(args, "skill_auto_load_limit", None),
+        skill_recommended_limit=getattr(args, "skill_recommended_limit", None),
+        skill_auto_body_max=getattr(args, "skill_auto_body_max", None),
+        skill_auto_body_chars=getattr(args, "skill_auto_body_chars", None),
+        skill_plan_chars=getattr(args, "skill_plan_chars", None),
+        tool_search_mode=getattr(args, "tool_search_mode", None),
+        summary_mode=getattr(args, "summary_mode", None),
     )
 
 
@@ -460,6 +520,13 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"api_key:    {'set' if settings.api_key else 'MISSING'}")
     print(f"data_dir:   {settings.resolved_data_dir}")
     print(f"deferred:   {settings.prefer_deferred_tools}")
+    print(f"tool_search:{settings.tool_search_mode}")
+    print(f"summary:    {settings.summary_mode}")
+    b = settings.skill_plan_budgets()
+    print(
+        f"skill_plan: auto={b.auto_load_limit} rec={b.recommended_limit} "
+        f"bodies={b.auto_body_max}x{b.auto_body_chars} plan_chars={b.plan_chars}"
+    )
     print(f"stream:     {settings.stream}")
     print(f"embeddings: {settings.embedding_provider}")
     if not settings.base_url or not settings.api_key:
@@ -642,10 +709,24 @@ async def cmd_memory_worker(args: argparse.Namespace) -> int:
     from ..memory.state import ConversationStateStore
     from ..memory.summary import TurnSummaryStore
     from ..memory.transcript import TranscriptStore
-    from ..memory.worker import MemoryWorker
+    from ..memory.worker import MemoryWorker, spawn_worker_process
 
     settings = _settings_from_args(args)
     data = settings.resolved_data_dir
+    if getattr(args, "subprocess", False):
+        proc = spawn_worker_process(
+            data_dir=data,
+            once=not args.loop,
+            interval=args.interval,
+            stop_when_idle=args.stop_when_idle,
+            max_iterations=args.max_iterations,
+        )
+        out, err = proc.communicate()
+        if out:
+            print(out, end="" if out.endswith("\n") else "\n")
+        if err:
+            print(err, end="" if err.endswith("\n") else "\n", file=__import__("sys").stderr)
+        return int(proc.returncode or 0)
     state = ConversationStateStore(path=data / "memory" / "state.json")
     memory = MemoryFacade(
         transcript=TranscriptStore(path=data / "sessions" / f"{settings.session_id}.jsonl"),

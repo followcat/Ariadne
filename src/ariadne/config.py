@@ -49,12 +49,33 @@ class Settings:
     approval_mode: str = "auto"  # auto | on-request | readonly
     merge_home_plugins: bool = True  # CLI: merge ~/.ariadne/plugins.json; web: off
     vision: str = "auto"  # auto | on | off — multimodal image send policy
+    # Skill selection budgets (SKILLS G08 / P3 host config)
+    skill_auto_load_limit: int = 1
+    skill_recommended_limit: int = 5
+    skill_auto_body_max: int = 2
+    skill_auto_body_chars: int = 6000
+    skill_plan_chars: int = 1200
+    # Tool deferred search: function (tool_search) | native (auto-materialize) | none
+    tool_search_mode: str = "function"
+    # L1 summary compressor: grounded | llm
+    summary_mode: str = "grounded"
 
     @property
     def resolved_data_dir(self) -> Path:
         if self.data_dir is not None:
             return self.data_dir
         return self.workspace / ".ariadne"
+
+    def skill_plan_budgets(self):
+        from .skills.store import SkillPlanBudgets
+
+        return SkillPlanBudgets(
+            auto_load_limit=max(0, int(self.skill_auto_load_limit)),
+            recommended_limit=max(0, int(self.skill_recommended_limit)),
+            auto_body_max=max(0, int(self.skill_auto_body_max)),
+            auto_body_chars=max(200, int(self.skill_auto_body_chars)),
+            plan_chars=max(80, int(self.skill_plan_chars)),
+        )
 
 
 def load_settings(
@@ -78,6 +99,13 @@ def load_settings(
     force_workspace: bool = False,
     approval_mode: str | None = None,
     vision: str | None = None,
+    skill_auto_load_limit: int | None = None,
+    skill_recommended_limit: int | None = None,
+    skill_auto_body_max: int | None = None,
+    skill_auto_body_chars: int | None = None,
+    skill_plan_chars: int | None = None,
+    tool_search_mode: str | None = None,
+    summary_mode: str | None = None,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
     if workspace in {Path("/"), Path.home()} and not force_workspace:
@@ -149,6 +177,50 @@ def load_settings(
 
     vision_mode = normalize_vision_mode(vision or pick("ARIADNE_VISION", default="auto"))
 
+    def pick_int(cli: int | None, *keys: str, default: int) -> int:
+        if cli is not None:
+            return int(cli)
+        raw = pick(*keys, default=str(default))
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
+    skill_auto = pick_int(
+        skill_auto_load_limit, "ARIADNE_SKILL_AUTO_LOAD_LIMIT", default=1
+    )
+    skill_rec = pick_int(
+        skill_recommended_limit, "ARIADNE_SKILL_RECOMMENDED_LIMIT", default=5
+    )
+    skill_bodies = pick_int(
+        skill_auto_body_max, "ARIADNE_SKILL_AUTO_BODY_MAX", default=2
+    )
+    skill_body_chars = pick_int(
+        skill_auto_body_chars, "ARIADNE_SKILL_AUTO_BODY_CHARS", default=6000
+    )
+    skill_plan = pick_int(skill_plan_chars, "ARIADNE_SKILL_PLAN_CHARS", default=1200)
+
+    search_mode = (
+        tool_search_mode or pick("ARIADNE_TOOL_SEARCH_MODE", default="function")
+    ).strip().lower()
+    if search_mode not in {"function", "native", "none"}:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"unknown tool search mode: {search_mode!r} (function|native|none)",
+            )
+        )
+    sum_mode = (
+        summary_mode or pick("ARIADNE_SUMMARY_MODE", default="grounded")
+    ).strip().lower()
+    if sum_mode not in {"grounded", "llm"}:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"unknown summary mode: {sum_mode!r} (grounded|llm)",
+            )
+        )
+
     return Settings(
         base_url=base_url,
         api_key=api_key,
@@ -172,4 +244,11 @@ def load_settings(
         sandbox_prestart=prestart_flag,
         approval_mode=approval,
         vision=vision_mode,
+        skill_auto_load_limit=skill_auto,
+        skill_recommended_limit=skill_rec,
+        skill_auto_body_max=skill_bodies,
+        skill_auto_body_chars=skill_body_chars,
+        skill_plan_chars=skill_plan,
+        tool_search_mode=search_mode,
+        summary_mode=sum_mode,
     )
