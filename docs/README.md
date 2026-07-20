@@ -1,10 +1,23 @@
 # Ariadne Docs
 
-Normative design documents for the Ariadne personal open-source agent kernel.
+> Language: **English** · [简体中文索引](zh/README.md)
+
+Normative design documents for the Ariadne personal open-source agent kernel.  
+User-facing pages are bilingual; design contracts stay **English-first** (see [I18N.md](I18N.md)).
+
+## User docs (EN · 中文)
 
 | Doc | Topic |
 | --- | --- |
-| [../README.md](../README.md) | Project overview |
+| [../README.md](../README.md) · [../README.zh-CN.md](../README.zh-CN.md) | Product overview (EN · 中文) |
+| [USAGE_CLI.md](USAGE_CLI.md) · [zh/USAGE_CLI.md](zh/USAGE_CLI.md) | CLI / web / plugins usage |
+| [zh/README.md](zh/README.md) | Chinese docs hub |
+| [I18N.md](I18N.md) | Bilingual documentation policy |
+
+## Design docs (English, normative)
+
+| Doc | Topic |
+| --- | --- |
 | [VISION.md](VISION.md) | Why Ariadne exists |
 | [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md) | Hard rules |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Kernel structure & turn lifecycle |
@@ -21,20 +34,24 @@ Normative design documents for the Ariadne personal open-source agent kernel.
 | [design/sandbox-v1.md](design/sandbox-v1.md) | Redesigned sandbox port |
 | [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md) | How memory and sandbox meet |
 | [design/cli-shell-agent.md](design/cli-shell-agent.md) | CLI as primary shell-agent host |
-| [USAGE_CLI.md](USAGE_CLI.md) | CLI usage guide |
 
 ## Reading order
 
-1. Vision
-2. Design principles
-3. Architecture
-4. Public API
-5. Skills → Toolcall → Memory → Sandbox
-6. Roadmap
+**Getting started:** README → USAGE_CLI (pick your language).
+
+**Design deep-dives:**
+
+1. Vision  
+2. Design principles  
+3. Architecture  
+4. Public API  
+5. Skills → Toolcall → Memory → Sandbox  
+6. Roadmap  
 7. Source map (if you care about provenance)
 
 ## Status
 
 **v0.2 usable** — kernel + CLI + web + plugins implemented under `src/ariadne`
-with offline tests. Product overview and screenshots: [../README.md](../README.md).
-Host usage: [USAGE_CLI.md](USAGE_CLI.md). Delivery checklist: [ROADMAP.md](ROADMAP.md).
+with offline tests. Product overview: [../README.md](../README.md) /
+[../README.zh-CN.md](../README.zh-CN.md). Host usage: [USAGE_CLI.md](USAGE_CLI.md) /
+[zh/USAGE_CLI.md](zh/USAGE_CLI.md). Delivery checklist: [ROADMAP.md](ROADMAP.md).

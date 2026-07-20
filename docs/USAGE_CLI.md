@@ -1,5 +1,7 @@
 # CLI & host usage
 
+> Language: **English** · [简体中文](zh/USAGE_CLI.md)
+
 Ariadne’s primary host is a **CLI shell agent** over a project workspace.  
 Optional hosts: **web UI** (`ariadne serve`) and the **Python** `Agent` API.
 
@@ -215,7 +217,8 @@ your prompt
 ```
 
 See [design/cli-shell-agent.md](design/cli-shell-agent.md) for the full CLI design,  
-and the root [README.md](../README.md) for screenshots and product overview.
+the root [README.md](../README.md) (English) / [README.zh-CN.md](../README.zh-CN.md) (中文) for screenshots,  
+and [I18N.md](I18N.md) for the bilingual docs policy.
 
 ## Troubleshooting
 

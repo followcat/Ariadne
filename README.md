@@ -10,6 +10,11 @@
 </p>
 
 <p align="center">
+  <strong>English</strong> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="#quick-start"><img src="https://img.shields.io/badge/quick%20start-5%20min-brightgreen?style=flat-square" alt="Quick start" /></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.13%2B-blue?style=flat-square" alt="Python 3.13+" /></a>
   <a href="docs/ROADMAP.md"><img src="https://img.shields.io/badge/status-v0.2%20usable-0e7-green?style=flat-square" alt="Status" /></a>
@@ -136,7 +141,7 @@ Offline tests (no network):
 PYTHONPATH=src python3 -m pytest -q
 ```
 
-Full CLI reference: **[docs/USAGE_CLI.md](docs/USAGE_CLI.md)**.
+Full CLI reference: **[docs/USAGE_CLI.md](docs/USAGE_CLI.md)** (English) · **[docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md)** (中文).
 
 ## Usage
 
@@ -213,7 +218,10 @@ Each registered user has isolated data, BYOK provider settings, and plugin crede
 
 | Doc | Topic |
 | --- | --- |
-| [docs/USAGE_CLI.md](docs/USAGE_CLI.md) | CLI / web / plugins usage |
+| [README.zh-CN.md](README.zh-CN.md) | 中文产品介绍 |
+| [docs/zh/README.md](docs/zh/README.md) | Chinese docs index |
+| [docs/USAGE_CLI.md](docs/USAGE_CLI.md) · [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | CLI / web / plugins (EN · 中文) |
+| [docs/I18N.md](docs/I18N.md) | Bilingual docs policy |
 | [docs/VISION.md](docs/VISION.md) | Product vision |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Kernel architecture |
 | [docs/PUBLIC_API.md](docs/PUBLIC_API.md) | Callable agent surface |
@@ -240,7 +248,8 @@ Explicitly **out of scope** for core (by design):
 src/ariadne/          kernel, memory, tools, skills, sandbox, CLI, web
 skills/builtin/       example skill packs
 tests/                offline pytest suite
-docs/                 normative design + usage
+docs/                 English design (normative) + usage
+docs/zh/              Chinese user docs
 docs/assets/          README images
 scripts/              llm_smoke.py, verify_web.py
 ```
