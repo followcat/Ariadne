@@ -131,6 +131,8 @@ class TurnApplication:
     active_sessions: ActiveSessionManager | None = None
     tool_loop_limit: int = 32
     prefer_deferred_tools: bool = True
+    # function | native | none — see ToolRegistry.build_exposure client_search_mode
+    tool_search_mode: str = "function"
     sandbox_mode: str = "per_turn"  # per_turn | active_session
     stream_model: bool = False
     sandbox_prestart: bool = False
@@ -304,8 +306,17 @@ class TurnApplication:
         exposure = self.tools.build_exposure(
             prefer_deferred=self.prefer_deferred_tools,
             session_visible=self.session_visible_tools,
+            client_search_mode=self.tool_search_mode,
         )
         catalog = self.tools.catalog_text(session_visible=self.session_visible_tools)
+        if exposure.client_search_mode == "native" and exposure.deferred_tools:
+            # Provider-native path: deferred names stay discoverable in catalog;
+            # first invoke auto-materializes (no tool_search function on wire).
+            deferred_names = ", ".join(sorted(exposure.deferred_tools.keys()))
+            catalog = (
+                (catalog + "\n" if catalog else "")
+                + f"(native deferred load: {deferred_names})"
+            )
 
         # Prompt assembly (design: policy → high-signal memory → skills → catalog
         # → runtime → recent → user). Skill plan sits near user (strong attention).

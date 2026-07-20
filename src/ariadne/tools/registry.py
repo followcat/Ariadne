@@ -175,14 +175,24 @@ class ToolRegistry:
         *,
         prefer_deferred: bool = True,
         session_visible: set[str] | None = None,
+        client_search_mode: str = "function",
     ) -> ToolExposureState:
         """Build wire exposure for a turn.
 
         ``session_visible``: optional allow-list of tool names for this session.
         Hidden tools and ``exposed_to_llm=False`` are always excluded. When the
         filter is set, tools outside it are omitted from catalog/wire entirely.
-        ``tool_search`` remains available when any deferred tool is in scope.
+
+        ``client_search_mode`` (TOOLCALL §2.3):
+
+        - ``function``: offer ``tool_search`` to materialize deferred schemas
+        - ``native``: no ``tool_search`` on the wire; host auto-materializes on
+          first invoke of a deferred name (provider-native search path)
+        - ``none``: deferred tools stay unloadable (eager-only wire)
         """
+        mode = (client_search_mode or "function").strip().lower()
+        if mode not in {"function", "native", "none"}:
+            mode = "function"
         request: list[dict[str, Any]] = []
         deferred: dict[str, dict[str, Any]] = {}
         callable_names: set[str] = set()
@@ -190,23 +200,37 @@ class ToolRegistry:
             if spec.tool_exposure == "hidden" or not spec.exposed_to_llm:
                 continue
             if session_visible is not None and spec.name not in session_visible:
-                # Always allow tool_search when deferred loading is possible.
-                if spec.name != "tool_search":
+                if not (spec.name == "tool_search" and mode == "function"):
                     continue
+            # In native/none modes, tool_search is never offered as a function.
+            if spec.name == "tool_search" and mode != "function":
+                continue
             schema = spec.openai_tool()
             if prefer_deferred and spec.tool_exposure == "named_deferred":
+                if mode == "none":
+                    # Hide deferred entirely when search is disabled.
+                    continue
                 deferred[spec.name] = schema
             else:
                 request.append(schema)
                 callable_names.add(spec.name)
-        if deferred and "tool_search" in self.tools and not any(
-            (t.get("function") or {}).get("name") == "tool_search" for t in request
+        if (
+            mode == "function"
+            and deferred
+            and "tool_search" in self.tools
+            and not any(
+                (t.get("function") or {}).get("name") == "tool_search" for t in request
+            )
         ):
             if session_visible is None or "tool_search" in session_visible:
                 request.append(self.tools["tool_search"].openai_tool())
                 callable_names.add("tool_search")
-        elif "tool_search" in self.tools and not any(
-            (t.get("function") or {}).get("name") == "tool_search" for t in request
+        elif (
+            mode == "function"
+            and "tool_search" in self.tools
+            and not any(
+                (t.get("function") or {}).get("name") == "tool_search" for t in request
+            )
         ):
             if session_visible is None or "tool_search" in session_visible:
                 request.append(self.tools["tool_search"].openai_tool())
@@ -215,6 +239,7 @@ class ToolRegistry:
             request_tools=request,
             deferred_tools=deferred,
             callable_function_names=callable_names,
+            client_search_mode=mode,
             session_visible=set(session_visible) if session_visible is not None else None,
         )
 
@@ -265,7 +290,10 @@ class ToolRegistry:
         if spec is None:
             raise AriadneError(app_error("ARIADNE_UNKNOWN_TOOL", f"Unknown tool: {name}", name=name))
         if ctx.exposure is not None and name not in ctx.exposure.callable_function_names:
-            if name != "tool_search":
+            # Native deferred search: auto-materialize known deferred tools.
+            if ctx.exposure.ensure_callable(name):
+                pass
+            elif name != "tool_search":
                 raise AriadneError(
                     app_error(
                         "ARIADNE_UNKNOWN_TOOL",

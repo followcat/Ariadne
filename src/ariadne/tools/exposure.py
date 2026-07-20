@@ -29,7 +29,7 @@ class ToolExposureState:
     deferred_tools: dict[str, dict[str, Any]] = field(default_factory=dict)
     callable_function_names: set[str] = field(default_factory=set)
     loaded_tool_names: set[str] = field(default_factory=set)
-    # none | function (tool_search) | native (provider-side search)
+    # none | function (tool_search) | native (auto-materialize on first call)
     client_search_mode: str = "function"
     # Optional session visibility filter applied at build time (names allowed)
     session_visible: set[str] | None = None
@@ -37,6 +37,20 @@ class ToolExposureState:
     def load_exact(self, tool_names: list[str]) -> list[dict[str, Any]]:
         """Materialize deferred schemas. Prefer :meth:`load_exact_report` for not_found."""
         return self.load_exact_report(tool_names).loaded
+
+    def ensure_callable(self, name: str) -> bool:
+        """Native mode: auto-materialize a deferred tool on first invoke.
+
+        Returns True if the name is callable after this call.
+        """
+        if name in self.callable_function_names:
+            return True
+        if self.client_search_mode != "native":
+            return False
+        if name not in self.deferred_tools:
+            return False
+        self.load_exact([name])
+        return name in self.callable_function_names
 
     def load_exact_report(self, tool_names: list[str]) -> LoadExactResult:
         """Materialize deferred schemas; report not_found and already_loaded."""
