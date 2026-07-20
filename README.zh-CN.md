@@ -36,7 +36,7 @@
 **Ariadne** 是一个可调用的运行时：把一次用户 turn 变成模型推理、技能引导、工具调用、分层记忆，以及可选的沙箱执行。
 
 默认人机界面：面向项目工作区的 **CLI 终端 Agent**（直接运行 `ariadne` 进入 REPL，对齐 codex）。  
-可选：**Grok 风格 Web UI**（`ariadne serve`）——侧栏历史、深浅色主题、会话标题、图片粘贴。
+可选：**Grok 风格 Vue Web UI**（`ariadne serve`）——左侧会话历史、右侧可折叠工具面板、流式 Markdown（GFM 表格）、thinking 折叠、回合耗时/token 统计。
 
 它**不是**企业多租户平台、连接器中枢或公司打包栈。
 
@@ -52,15 +52,15 @@
 ## 截图
 
 <p align="center">
-  <img src="docs/assets/web-demo.jpg" alt="Ariadne Web 深色主题：侧栏会话与对话" width="920" />
+  <img src="docs/assets/web-demo.jpg" alt="Ariadne Web Vue 深色：侧栏、对话、工具面板" width="920" />
 </p>
-<p align="center"><sub><b>Web 深色</b> — 左侧历史 + 新对话 · 会话主题标题 · Markdown 流式 · 底部输入框 · Provider / 插件 / 外观</sub></p>
+<p align="center"><sub><b>Web 深色</b> — 左侧历史 · 中间对话 · <b>右侧工具面板</b> · 底部输入框 · 主题 / 模型 chip</sub></p>
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/assets/web-demo-light.jpg" alt="Ariadne Web 浅色主题" />
-      <p align="center"><sub><b>Web 浅色</b> — 同一壳层，顶栏切换浅色/深色</sub></p>
+      <img src="docs/assets/web-demo-light.jpg" alt="Ariadne Web 浅色主题（含工具面板）" />
+      <p align="center"><sub><b>Web 浅色</b> — 同一三栏壳层 · 浅色主题</sub></p>
     </td>
     <td width="50%">
       <img src="docs/assets/cli-demo.jpg" alt="Ariadne CLI REPL" />
@@ -80,20 +80,20 @@
 | **Toolcall** | **唯一**能力注册表、延迟 schema、可审计循环 |
 | **Memory** | 分层召回 + 精选事实 + 会话状态 |
 | **Sandbox** | 可插拔执行（`local` / `docker` / `null`） |
-| **宿主体验** | 终端 Agent + Grok 风格 Web + 官方插件 |
+| **宿主体验** | 终端 Agent + Vue Web UI + 官方插件 |
 
 ## 功能特性
 
 - **CLI 优先** — 裸 `ariadne` 进交互 REPL；`run` / `exec` 单轮；流式、diff、审批
-- **会话** — continue / resume；**主题标题**（自动总结 + 手动 `/title` 或 Web 改名）
+- **会话** — continue / resume；**主题标题**（每轮结束后自动总结 + `/title` 或点击 Web 顶栏标题改名）
 - **图片** — CLI `/image`（路径或剪贴板）；Web 粘贴/拖拽；非多模态模型明确报错（`ARIADNE_VISION`）
 - **文件工具** — `sandbox_read_file` / `write` / `edit` + 统一 diff
 - **记忆 L0–L4** — transcript、摘要、精选事实、语义召回、L2 会话状态
 - **Skills** — pack、混合检索、带分数的选择计划（不倾倒全量 index）
 - **护栏** — 入站/出站 secret 脱敏；注入警告
-- **官方插件** — GitLab / Redmine / Odoo 为**用户属性**（密钥界面显示为 `***`）
-- **Web UI** — 侧栏历史、BYOK Provider 弹窗、插件弹窗、浅色/深色主题
-- **OpenAI 兼容模型** — chat completions + tools
+- **官方插件** — GitLab / Redmine / Odoo 为**用户属性**（密钥显示为 `***`）
+- **Web UI（Vue 3）** — 三栏 Grok 壳层：历史 · 对话 · 工具；markdown-it GFM 表格；thinking 折叠；回合耗时/token/tool 统计
+- **OpenAI 兼容模型** — chat completions + tools + 可选 reasoning 流
 
 ## 宿主与界面
 
@@ -108,20 +108,31 @@ ariadne exec "…"        # run 别名
 
 REPL 常用：`/help`、`/title`、`/image`、`/resume`、`/status`、`/mode`、`/exit`。
 
-### Web UI
+### Web UI（Vue）
 
 ```bash
 ariadne serve --host 127.0.0.1 --port 8420
 # → http://127.0.0.1:8420
 ```
 
-| 区域 | 与当前界面一致的行为 |
+三栏壳层（对齐当前产品界面）：
+
+| 区域 | 行为 |
 | --- | --- |
-| **侧栏** | 新对话 · 带**主题标题**的历史 · Provider / 插件 / 外观 / 退出 |
-| **主区** | 顶栏会话标题 · 模型 chip · Markdown 流式 · 工具 pill |
-| **输入框** | 底部悬浮输入 · Enter 发送 · 粘贴/拖入图片 |
-| **主题** | 浅色/深色切换（localStorage + 系统默认） |
-| **会话** | 切换加载历史；双击行或点标题改名；自动主题总结 |
+| **左侧栏** | 新对话 · 带**主题标题**的历史 · 外观 / Provider / 退出 |
+| **主栏** | 顶栏（会话标题 · 模型 chip · 工具开关）· 对话区 · 底部输入 |
+| **右侧工具面板** | 可折叠 · 单次调用参数/输出/错误 · 回合结束 **info**：耗时 · tokens · tool 次数 |
+| **Markdown** | **markdown-it** + GFM 表格、代码高亮（非手写子集） |
+| **Thinking** | 模型返回 reasoning 时流式展示；**出答后自动折叠**（可再展开） |
+| **主题** | 浅色/深色（localStorage + 系统默认） |
+| **会话** | 切换加载历史；点顶栏标题改名或强制重总结 |
+
+前端源码：[`frontend/`](frontend/)（Vite）。生产构建输出到 `src/ariadne/web/static/dist/`，由 FastAPI 托管。
+
+```bash
+cd frontend && npm ci && npm run build:fast   # UI 变更后刷新 static/dist
+cd frontend && npm run dev                   # 热更新；/api 代理到 :8420
+```
 
 ## 快速开始
 
@@ -223,6 +234,7 @@ print(result.text)
 | [README.md](README.md) | English overview |
 | [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | 中文宿主用法 |
 | [docs/design/alignment-skills-toolcall-memory.md](docs/design/alignment-skills-toolcall-memory.md) | 设计对齐说明 |
+| [docs/design/web-vue-frontend.md](docs/design/web-vue-frontend.md) | Vue Web UI 与 markdown-it 栈 |
 | [docs/](docs/) | 英文设计规范索引 |
 
 ## 非目标
@@ -237,12 +249,15 @@ print(result.text)
 ## 仓库结构
 
 ```text
-src/ariadne/          内核、记忆、工具、技能、沙箱、CLI、Web
+src/ariadne/          内核、记忆、工具、技能、沙箱、CLI、Web API
+src/ariadne/web/static/dist/   Vue 生产构建（ariadne serve 托管）
+frontend/             Vue 3 + Vite 前端源码
 skills/builtin/       示例 skill packs
 tests/                离线 pytest
 docs/                 设计规范 + 用法
 docs/zh/              中文用户文档
 docs/assets/          README 配图（hero、CLI、Web 深/浅色）
+docs/design/web-vue-frontend.md   Web UI / Markdown 栈说明
 scripts/              llm_smoke.py、verify_web.py
 ```
 

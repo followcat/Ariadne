@@ -36,7 +36,7 @@
 **Ariadne** is a callable runtime that turns one user turn into model reasoning, skill guidance, tool calls, layered memory, and optional sandboxed execution.
 
 Default human interface: a **CLI shell agent** over your project workspace (bare `ariadne` → REPL, codex-style).  
-Optional: a **Grok-style web UI** (`ariadne serve`) with sidebar history, light/dark themes, session titles, and image paste.
+Optional: a **Grok-style Vue web UI** (`ariadne serve`) — left session history, right collapsible tool panel, streaming Markdown (GFM tables), thinking collapse, turn stats.
 
 It is **not** an enterprise multi-tenant platform, connector hub, or company packaging stack.
 
@@ -52,15 +52,15 @@ Your prompt
 ## Screenshots
 
 <p align="center">
-  <img src="docs/assets/web-demo.jpg" alt="Ariadne web — dark theme, sidebar sessions, chat" width="920" />
+  <img src="docs/assets/web-demo.jpg" alt="Ariadne web — Vue UI dark: sidebar, chat, tools panel" width="920" />
 </p>
-<p align="center"><sub><b>Web (dark)</b> — left history + new chat · session topic titles · markdown stream · bottom composer · Provider / plugins / theme</sub></p>
+<p align="center"><sub><b>Web (dark)</b> — left history · main chat · <b>right tools panel</b> · bottom composer · theme / model chips</sub></p>
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/assets/web-demo-light.jpg" alt="Ariadne web light theme" />
-      <p align="center"><sub><b>Web (light)</b> — same shell, light theme toggle (☀/☾)</sub></p>
+      <img src="docs/assets/web-demo-light.jpg" alt="Ariadne web light theme with tools panel" />
+      <p align="center"><sub><b>Web (light)</b> — same three-column shell · light theme</sub></p>
     </td>
     <td width="50%">
       <img src="docs/assets/cli-demo.jpg" alt="Ariadne CLI REPL with tools and diffs" />
@@ -80,20 +80,20 @@ Most “agent frameworks” give you either a thin chat wrapper, or a company pl
 | **Toolcall** | **One** capability registry, deferred schemas, audited loop |
 | **Memory** | Layered recall + curated facts + conversation state |
 | **Sandbox** | Pluggable execution (`local` / `docker` / `null`) |
-| **Host UX** | Terminal agent + Grok-style web UI + official plugins |
+| **Host UX** | Terminal agent + Vue web UI + official plugins |
 
 ## Features
 
 - **CLI first** — bare `ariadne` enters interactive REPL; `run` / `exec` one-shot; streaming, rich diffs, approvals
-- **Sessions** — continue / resume; **topic titles** (auto summary + manual `/title` or web rename)
+- **Sessions** — continue / resume; **topic titles** (auto after each turn + `/title` or click web top-bar title)
 - **Images** — CLI `/image` (path or clipboard); web paste / drag-drop; fails clearly if model is not multimodal (`ARIADNE_VISION`)
 - **File tools** — `sandbox_read_file` / `write` / `edit` with unified diffs
 - **Memory L0–L4** — transcript, summaries, curated facts, semantic recall, L2 conversation state
 - **Skills** — packs, hybrid search, scored selection plan (no full-index dump)
 - **Guardrails** — secret redaction in/out; injection warnings
-- **Official plugins** — GitLab / Redmine / Odoo as **user attributes** (home store or web account; secrets shown as `***`)
-- **Web UI** — sidebar history, BYOK provider modal, plugins modal, light/dark theme
-- **OpenAI-compatible models** — chat completions + tools
+- **Official plugins** — GitLab / Redmine / Odoo as **user attributes** (secrets shown as `***`)
+- **Web UI (Vue 3)** — three-column Grok-style shell: history · chat · tools; markdown-it GFM tables; thinking collapse; turn stats
+- **OpenAI-compatible models** — chat completions + tools + optional reasoning stream
 
 ## Hosts & UI
 
@@ -108,20 +108,31 @@ ariadne exec "…"        # alias of run
 
 Useful in-REPL commands: `/help`, `/title`, `/image`, `/resume`, `/status`, `/mode`, `/exit`.
 
-### Web UI
+### Web UI (Vue)
 
 ```bash
 ariadne serve --host 127.0.0.1 --port 8420
 # → http://127.0.0.1:8420
 ```
 
-| Area | Behavior (matches current UI) |
+Three-column shell (matches current product UI):
+
+| Area | Behavior |
 | --- | --- |
-| **Sidebar** | New chat · history with **topic titles** · Provider / plugins / appearance / logout |
-| **Main** | Session title in top bar · model chip · markdown streaming · tool pills |
-| **Composer** | Bottom floating input · Enter send · paste/drop images |
-| **Theme** | Light / dark toggle (localStorage + system default) |
-| **Sessions** | Switch reloads history; double-click row or click title to rename; auto topic summary |
+| **Left sidebar** | New chat · session history with **topic titles** · appearance / Provider / logout |
+| **Main column** | Top bar (session title · model chip · tools toggle) · chat · bottom composer |
+| **Right tools panel** | Collapsible · per-call args/output/errors · **info** row after turn: duration · tokens · tool count |
+| **Markdown** | **markdown-it** + GFM tables, code highlight (not a hand-rolled subset) |
+| **Thinking** | Streams reasoning when the model provides it; **auto-collapses** when the answer starts (expandable) |
+| **Theme** | Light / dark (localStorage + system default) |
+| **Sessions** | Switch reloads history; click top title to rename or force re-summarize |
+
+Frontend source: [`frontend/`](frontend/) (Vite). Production assets are built into `src/ariadne/web/static/dist/` and served by FastAPI.
+
+```bash
+cd frontend && npm ci && npm run build:fast   # refresh static/dist after UI changes
+cd frontend && npm run dev                   # hot reload; proxies /api → :8420
+```
 
 ## Quick start
 
@@ -225,6 +236,7 @@ See [docs/PUBLIC_API.md](docs/PUBLIC_API.md).
 | [README.zh-CN.md](README.zh-CN.md) | 中文介绍 |
 | [docs/USAGE_CLI.md](docs/USAGE_CLI.md) · [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | Host usage |
 | [docs/design/alignment-skills-toolcall-memory.md](docs/design/alignment-skills-toolcall-memory.md) | Design alignment notes |
+| [docs/design/web-vue-frontend.md](docs/design/web-vue-frontend.md) | Vue web UI + markdown-it stack |
 | [docs/VISION.md](docs/VISION.md) · [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [PUBLIC_API.md](docs/PUBLIC_API.md) | Design core |
 | [docs/SKILLS.md](docs/SKILLS.md) · [TOOLCALL.md](docs/TOOLCALL.md) · [MEMORY.md](docs/MEMORY.md) · [SANDBOX.md](docs/SANDBOX.md) | Subsystems |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Delivery checklist |
@@ -241,12 +253,15 @@ Official optional plugins (GitLab / Redmine / Odoo) are user-configured integrat
 ## Project layout
 
 ```text
-src/ariadne/          kernel, memory, tools, skills, sandbox, CLI, web
+src/ariadne/          kernel, memory, tools, skills, sandbox, CLI, web API
+src/ariadne/web/static/dist/   Vue production build (served by ariadne serve)
+frontend/             Vue 3 + Vite web UI source
 skills/builtin/       example skill packs
 tests/                offline pytest suite
 docs/                 design (normative EN) + usage
 docs/zh/              Chinese user docs
 docs/assets/          README images (hero, CLI, web dark/light)
+docs/design/web-vue-frontend.md   web UI / markdown stack notes
 scripts/              llm_smoke.py, verify_web.py
 ```
 
