@@ -121,14 +121,17 @@ class ToolRegistry:
     def get(self, name: str) -> ToolSpec | None:
         return self.tools.get(name)
 
-    def catalog_text(self) -> str:
+    def catalog_text(self, *, session_visible: set[str] | None = None) -> str:
         lines = []
         for spec in self.tools.values():
             if spec.tool_exposure == "hidden" or not spec.exposed_to_llm:
                 continue
+            if session_visible is not None and spec.name not in session_visible:
+                continue
             phrase = spec.catalog_phrase()
             marker = " (deferred)" if spec.tool_exposure == "named_deferred" else ""
-            lines.append(f"- {spec.name}: {phrase}{marker}")
+            title = f" [{spec.title}]" if spec.title and spec.title != spec.name else ""
+            lines.append(f"- {spec.name}: {phrase}{marker}{title}")
         return "\n".join(lines)
 
     def schema_cost_report(self, *, prefer_deferred: bool = True) -> dict[str, Any]:
@@ -167,29 +170,61 @@ class ToolRegistry:
     def catalog_chars(self) -> int:
         return len(self.catalog_text())
 
-    def build_exposure(self, *, prefer_deferred: bool = True) -> ToolExposureState:
+    def build_exposure(
+        self,
+        *,
+        prefer_deferred: bool = True,
+        session_visible: set[str] | None = None,
+    ) -> ToolExposureState:
+        """Build wire exposure for a turn.
+
+        ``session_visible``: optional allow-list of tool names for this session.
+        Hidden tools and ``exposed_to_llm=False`` are always excluded. When the
+        filter is set, tools outside it are omitted from catalog/wire entirely.
+        ``tool_search`` remains available when any deferred tool is in scope.
+        """
         request: list[dict[str, Any]] = []
         deferred: dict[str, dict[str, Any]] = {}
         callable_names: set[str] = set()
         for spec in self.tools.values():
             if spec.tool_exposure == "hidden" or not spec.exposed_to_llm:
                 continue
+            if session_visible is not None and spec.name not in session_visible:
+                # Always allow tool_search when deferred loading is possible.
+                if spec.name != "tool_search":
+                    continue
             schema = spec.openai_tool()
             if prefer_deferred and spec.tool_exposure == "named_deferred":
                 deferred[spec.name] = schema
             else:
                 request.append(schema)
                 callable_names.add(spec.name)
-        if "tool_search" in self.tools and not any(
+        if deferred and "tool_search" in self.tools and not any(
             (t.get("function") or {}).get("name") == "tool_search" for t in request
         ):
-            request.append(self.tools["tool_search"].openai_tool())
-            callable_names.add("tool_search")
+            if session_visible is None or "tool_search" in session_visible:
+                request.append(self.tools["tool_search"].openai_tool())
+                callable_names.add("tool_search")
+        elif "tool_search" in self.tools and not any(
+            (t.get("function") or {}).get("name") == "tool_search" for t in request
+        ):
+            if session_visible is None or "tool_search" in session_visible:
+                request.append(self.tools["tool_search"].openai_tool())
+                callable_names.add("tool_search")
         return ToolExposureState(
             request_tools=request,
             deferred_tools=deferred,
             callable_function_names=callable_names,
+            session_visible=set(session_visible) if session_visible is not None else None,
         )
+
+    def ensure_titles(self) -> None:
+        """Fill missing title from name (TC title/kind completeness)."""
+        for spec in self.tools.values():
+            if not (spec.title or "").strip():
+                spec.title = spec.name.replace("_", " ").title()
+            if not (spec.kind or "").strip():
+                spec.kind = "tool"
 
     def list_openai_tools(self) -> list[dict[str, Any]]:
         return self.build_exposure(prefer_deferred=False).request_tools
@@ -306,6 +341,8 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=sandbox_exec,
+            title="Sandbox exec",
+            kind="tool",
         )
     )
 
@@ -325,6 +362,8 @@ def build_default_registry(
         ToolSpec(
             name="memory",
             catalog_description="durable curated memory",
+            title="Memory",
+            kind="tool",
             description=(
                 "Manage durable curated memory (add/update/remove/read). "
                 "Use for long-lived preferences. Use conversation_state for current-session truth."
@@ -446,6 +485,7 @@ def build_default_registry(
             # Large schema — design center is deferred (TOOLCALL §3.2).
             tool_exposure="named_deferred",
             title="Conversation state",
+            kind="tool",
         )
     )
 
@@ -500,6 +540,8 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=search_skills,
+            title="Search skills",
+            kind="tool",
         )
     )
 
@@ -511,37 +553,69 @@ def build_default_registry(
         if skill is None:
             raise AriadneError(app_error("ARIADNE_SKILL_NOT_FOUND", f"skill not found: {name}", name=name))
         include_refs = bool(args.get("include_references") or False)
+        ref_names = args.get("references")
+        targeted: list[str] | None = None
+        if isinstance(ref_names, list) and ref_names:
+            targeted = [str(x) for x in ref_names]
+            include_refs = True
         if ctx.skill_events is not None:
             from ..types import SkillEvent
 
             ctx.skill_events.append(SkillEvent(kind="load", skill_name=name))
+        # requires_tools enforcement: report missing tools (do not invent handlers).
+        available = set(registry.tools.keys())
+        missing = ctx.skills.missing_tools(skill, available)
         payload: dict[str, Any] = {
             "name": skill.name,
             "description": skill.description,
             "body": skill.body,
             "requires_tools": skill.requires_tools,
+            "missing_tools": missing,
+            "requires_tools_ok": not missing,
             "namespace": skill.namespace,
             "version": skill.version,
+            "tags": skill.tags,
         }
         if include_refs:
-            payload["references"] = skill.references
+            refs = skill.select_references(targeted)
+            payload["references"] = refs
+            if targeted is not None:
+                payload["references_requested"] = targeted
+                payload["references_missing"] = [
+                    r for r in targeted if r not in refs and f"{r}.md" not in refs
+                ]
+        if missing:
+            payload["warning"] = (
+                f"skill requires tools not registered: {', '.join(missing)}"
+            )
         return payload
 
     registry.register(
         ToolSpec(
             name="load_skill",
             catalog_description="load full skill body",
-            description="Load skill body for this turn (tool result scope).",
+            description=(
+                "Load skill body for this turn (tool result scope). "
+                "Optional references=[name.md,…] loads only those files; "
+                "include_references=true loads all. Reports missing requires_tools."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
                     "include_references": {"type": "boolean"},
+                    "references": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Targeted reference filenames to load",
+                    },
                 },
                 "required": ["name"],
                 "additionalProperties": False,
             },
             handler=load_skill,
+            title="Load skill",
+            kind="tool",
         )
     )
 
@@ -590,18 +664,28 @@ def build_default_registry(
         names = args.get("tool_names") or []
         if not isinstance(names, list) or not names:
             raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "tool_names required"))
-        loaded = ctx.exposure.load_exact([str(x) for x in names])
+        report = ctx.exposure.load_exact_report([str(x) for x in names])
+        loaded = report.loaded
         return {
-            "loaded": [(t.get("function") or {}).get("name") for t in loaded],
-            "still_deferred": sorted(ctx.exposure.deferred_tools.keys() - ctx.exposure.loaded_tool_names),
-            "schema_chars_loaded": len(json.dumps(loaded, ensure_ascii=False, separators=(",", ":"))),
+            "loaded": report.loaded_names(),
+            "not_found": report.not_found,
+            "already_loaded": report.already_loaded,
+            "still_deferred": sorted(
+                ctx.exposure.deferred_tools.keys() - ctx.exposure.loaded_tool_names
+            ),
+            "schema_chars_loaded": len(
+                json.dumps(loaded, ensure_ascii=False, separators=(",", ":"))
+            ),
         }
 
     registry.register(
         ToolSpec(
             name="tool_search",
             catalog_description="load deferred tool schemas",
-            description="Load full schemas for deferred tools by exact name before calling them.",
+            description=(
+                "Load full schemas for deferred tools by exact name before calling them. "
+                "Returns loaded, not_found, and already_loaded lists."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -616,6 +700,8 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=tool_search,
+            title="Tool search",
+            kind="tool",
         )
     )
 
@@ -636,11 +722,13 @@ def build_default_registry(
                 },
                 handler=echo_note,
                 tool_exposure="named_deferred",
+                title="Echo note",
+                kind="tool",
             )
         )
 
     from .filetools import register_file_tools
 
     register_file_tools(registry)
-
+    registry.ensure_titles()
     return registry
