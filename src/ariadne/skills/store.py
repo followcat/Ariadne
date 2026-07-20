@@ -19,6 +19,17 @@ AUTO_LOAD_SCORE = 10
 
 
 @dataclass(slots=True)
+class SkillPlanBudgets:
+    """Configurable skill selection budgets (SKILLS §5 / G08)."""
+
+    auto_load_limit: int = 1
+    recommended_limit: int = 5
+    auto_body_max: int = 2
+    auto_body_chars: int = 6000
+    plan_chars: int = 1200  # selection plan text budget
+
+
+@dataclass(slots=True)
 class Skill:
     name: str
     description: str
@@ -31,12 +42,41 @@ class Skill:
     namespace: str = "builtin"
     display_name: str = ""
     short_description: str = ""
+    tags: list[str] = field(default_factory=list)
 
     def index_line(self) -> str:
-        return f"- {self.name}: {self.short_description or self.description}"
+        tag_bit = f" [{', '.join(self.tags)}]" if self.tags else ""
+        return f"- {self.name}: {self.short_description or self.description}{tag_bit}"
 
     def searchable_text(self) -> str:
-        return " ".join([self.name, self.description, " ".join(self.keywords), self.body[:2000]])
+        return " ".join(
+            [
+                self.name,
+                self.description,
+                " ".join(self.keywords),
+                " ".join(self.tags),
+                self.body[:2000],
+            ]
+        )
+
+    def select_references(self, names: list[str] | None = None) -> dict[str, str]:
+        """Return all refs or only named ones (targeted load)."""
+        if not names:
+            return dict(self.references)
+        out: dict[str, str] = {}
+        for raw in names:
+            key = str(raw or "").strip()
+            if not key:
+                continue
+            if key in self.references:
+                out[key] = self.references[key]
+                continue
+            # allow bare stem match
+            for ref_name, text in self.references.items():
+                if ref_name == key or ref_name.removesuffix(".md") == key.removesuffix(".md"):
+                    out[ref_name] = text
+                    break
+        return out
 
 
 def _parse_simple_yaml(text: str) -> dict[str, object]:
@@ -102,11 +142,13 @@ class SkillStore:
         *,
         user_root: Path | None = None,
         embedder: EmbeddingProvider | None = None,
+        budgets: SkillPlanBudgets | None = None,
     ) -> None:
         self._skills = dict(skills or {})
         self.user_root = user_root
         self.embedder = embedder or HashEmbeddingProvider(dims=32)
         self._emb_cache: dict[str, list[float]] = {}
+        self.budgets = budgets or SkillPlanBudgets()
 
     def is_writable(self, name: str) -> bool:
         """User namespace skills (or unknown names under user_root) may be managed."""
@@ -137,12 +179,13 @@ class SkillStore:
         user_root: Path | None = None,
         embedder: EmbeddingProvider | None = None,
         namespace: str | None = None,
+        budgets: SkillPlanBudgets | None = None,
     ) -> "SkillStore":
         root = root.resolve()
         if not root.is_dir():
             if strict:
                 raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"skills dir missing: {root}"))
-            return cls({}, user_root=user_root, embedder=embedder)
+            return cls({}, user_root=user_root, embedder=embedder, budgets=budgets)
         ns = namespace or infer_namespace(root, user_root=user_root)
         skills: dict[str, Skill] = {}
         for path in sorted(root.iterdir()):
@@ -159,7 +202,7 @@ class SkillStore:
                     ) from exc
                 continue
             skills[skill.name] = skill
-        return cls(skills, user_root=user_root, embedder=embedder)
+        return cls(skills, user_root=user_root, embedder=embedder, budgets=budgets)
 
     @classmethod
     def from_dirs(
@@ -170,6 +213,7 @@ class SkillStore:
         user_root: Path | None = None,
         embedder: EmbeddingProvider | None = None,
         namespaces: list[str] | None = None,
+        budgets: SkillPlanBudgets | None = None,
     ) -> "SkillStore":
         """Load multiple roots. Later roots override same names (user last wins).
 
@@ -194,9 +238,10 @@ class SkillStore:
                 user_root=user_root,
                 embedder=embedder,
                 namespace=ns,
+                budgets=budgets,
             )
             merged.update(part._skills)
-        return cls(merged, user_root=user_root, embedder=embedder)
+        return cls(merged, user_root=user_root, embedder=embedder, budgets=budgets)
 
     @staticmethod
     def _load_one(path: Path, *, namespace: str | None = None) -> Skill:
@@ -223,10 +268,13 @@ class SkillStore:
             raise ValueError("body too long")
         keywords = meta.get("keywords") or []
         requires = meta.get("requires_tools") or []
+        tags = meta.get("tags") or []
         if not isinstance(keywords, list):
             keywords = [str(keywords)]
         if not isinstance(requires, list):
             requires = [str(requires)]
+        if not isinstance(tags, list):
+            tags = [str(tags)]
         refs: dict[str, str] = {}
         ref_dir = path / "references"
         if ref_dir.is_dir():
@@ -249,6 +297,9 @@ class SkillStore:
             for extra in rmeta.get("keywords") or []:
                 if str(extra) not in keywords:
                     keywords.append(str(extra))
+            for extra in rmeta.get("tags") or []:
+                if str(extra) not in tags:
+                    tags.append(str(extra))
         if namespace is None:
             # Path-based fallback when callers omit explicit namespace.
             ns = "user" if "user" in [p.lower() for p in path.parts[-3:]] else "builtin"
@@ -266,6 +317,7 @@ class SkillStore:
             namespace=ns,
             display_name=display_name,
             short_description=short_description,
+            tags=[str(x) for x in tags if str(x).strip()],
         )
 
     def list(self) -> list[Skill]:
@@ -311,14 +363,57 @@ class SkillStore:
     def search_scored(self, query: str, *, limit: int = 5) -> list[tuple[int, "Skill"]]:
         return self._score_lexical(query)[:limit]
 
-    def plan(self, query: str, *, auto_load_limit: int = 1, recommended_limit: int = 5) -> dict[str, Any]:
+    def plan(
+        self,
+        query: str,
+        *,
+        auto_load_limit: int | None = None,
+        recommended_limit: int | None = None,
+    ) -> dict[str, Any]:
         """SKILLS §5 selection plan (lexical). Prefer plan_async for hybrid ranking."""
+        b = self.budgets
         return self._plan_from_scored(
             [(float(score), skill) for score, skill in self._score_lexical(query)],
-            auto_load_limit=auto_load_limit,
-            recommended_limit=recommended_limit,
+            auto_load_limit=b.auto_load_limit if auto_load_limit is None else auto_load_limit,
+            recommended_limit=(
+                b.recommended_limit if recommended_limit is None else recommended_limit
+            ),
             auto_threshold=float(AUTO_LOAD_SCORE),
         )
+
+    def format_plan_text(self, plan: dict[str, Any], *, n_skills: int | None = None) -> str:
+        """Compact [SKILL_SELECTION] block honoring plan_chars budget."""
+        n = n_skills if n_skills is not None else len(self._skills)
+        lines = ["[SKILL_SELECTION]"]
+        if plan.get("auto_load"):
+            names = ", ".join(
+                f"{s.name} (score {score:.3g})" for s, score in plan["auto_load"]
+            )
+            lines.append(f"auto_load: {names} (body injected this turn below)")
+        if plan.get("recommended"):
+            names = ", ".join(
+                f"{s.name} (score {score:.3g})" for s, score in plan["recommended"]
+            )
+            lines.append(f"recommended: {names}")
+        other = int(plan.get("other") or 0)
+        if n == 0:
+            lines.append("other: 0 skills installed")
+        elif not plan.get("auto_load") and not plan.get("recommended"):
+            lines.append(f"other: {n} installed — none auto-matched; use search_skills")
+        else:
+            lines.append(f"other: {other} more installed — use search_skills if needed")
+        report = plan.get("report") or {}
+        if report:
+            lines.append(
+                f"budget: plan_chars={report.get('plan_chars', 0)}/"
+                f"{self.budgets.plan_chars} "
+                f"auto_bodies≤{self.budgets.auto_body_max}×{self.budgets.auto_body_chars}"
+            )
+        text = "\n".join(lines)
+        cap = self.budgets.plan_chars
+        if len(text) > cap:
+            text = text[:cap] + f"\n[ariadne: skill plan truncated to {cap} chars]"
+        return text
 
     def _plan_from_scored(
         self,
@@ -336,26 +431,72 @@ class SkillStore:
             (skill, score) for score, skill in scored if skill.name not in auto_names
         ][:recommended_limit]
         other = max(0, len(self._skills) - len(auto) - len(recommended))
-        return {"auto_load": auto, "recommended": recommended, "other": other}
+        # Layer-like char report for traces (G08).
+        auto_chars = sum(len(s.body or "") for s, _ in auto)
+        rec_chars = sum(len(s.index_line()) for s, _ in recommended)
+        report = {
+            "auto_load_count": len(auto),
+            "recommended_count": len(recommended),
+            "other_count": other,
+            "auto_body_chars": auto_chars,
+            "recommended_index_chars": rec_chars,
+            "plan_chars": 0,  # filled by format_plan_text consumers if needed
+            "budgets": {
+                "auto_load_limit": auto_load_limit,
+                "recommended_limit": recommended_limit,
+                "auto_body_max": self.budgets.auto_body_max,
+                "auto_body_chars": self.budgets.auto_body_chars,
+                "plan_chars": self.budgets.plan_chars,
+            },
+        }
+        plan_text_est = self.format_plan_text(
+            {"auto_load": auto, "recommended": recommended, "other": other, "report": {}},
+        )
+        report["plan_chars"] = len(plan_text_est)
+        return {
+            "auto_load": auto,
+            "recommended": recommended,
+            "other": other,
+            "report": report,
+        }
 
     async def plan_async(
-        self, query: str, *, auto_load_limit: int = 1, recommended_limit: int = 5
+        self,
+        query: str,
+        *,
+        auto_load_limit: int | None = None,
+        recommended_limit: int | None = None,
     ) -> dict[str, Any]:
         """Hybrid selection plan (lexical + embeddings) — design target for ranking."""
+        b = self.budgets
+        a_lim = b.auto_load_limit if auto_load_limit is None else auto_load_limit
+        r_lim = b.recommended_limit if recommended_limit is None else recommended_limit
         scored = await self.search_hybrid_scored(
-            query, limit=max(recommended_limit + auto_load_limit + 5, 12)
+            query, limit=max(r_lim + a_lim + 5, 12)
         )
         if not scored:
-            return self.plan(
-                query, auto_load_limit=auto_load_limit, recommended_limit=recommended_limit
-            )
+            return self.plan(query, auto_load_limit=a_lim, recommended_limit=r_lim)
         # Hybrid scores are ~0-1; map high-confidence band to auto_load.
         return self._plan_from_scored(
             scored,
-            auto_load_limit=auto_load_limit,
-            recommended_limit=recommended_limit,
+            auto_load_limit=a_lim,
+            recommended_limit=r_lim,
             auto_threshold=0.72,
         )
+
+    def missing_tools(self, skill: Skill, available: set[str]) -> list[str]:
+        """requires_tools not present in the available tool name set."""
+        return [t for t in skill.requires_tools if t not in available]
+
+    @staticmethod
+    def bump_version(version: str) -> str:
+        """Bump trailing integer segment (\"1\" → \"2\", \"1.0\" → \"1.1\")."""
+        parts = (version or "1").strip().split(".")
+        try:
+            parts[-1] = str(int(parts[-1]) + 1)
+            return ".".join(parts)
+        except ValueError:
+            return f"{version}.1"
 
     async def search_hybrid_scored(
         self, query: str, *, limit: int = 5
@@ -424,21 +565,34 @@ class SkillStore:
             raise AriadneError(app_error("ARIADNE_SKILL_INVALID", "body required"))
         if action == "create" and skill_dir.exists():
             raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"skill already exists: {name}"))
+        prev_version = "0"
         if action == "update" and skill_dir.exists():
             import shutil
 
+            existing = self._skills.get(name)
+            if existing is not None:
+                prev_version = existing.version
+            else:
+                try:
+                    prev_version = self._load_one(skill_dir, namespace="user").version
+                except Exception:  # noqa: BLE001
+                    prev_version = "1"
             versions = self.user_root / ".versions" / name
             versions.mkdir(parents=True, exist_ok=True)
             stamp = str(int(__import__("time").time()))
             shutil.copytree(skill_dir, versions / stamp, dirs_exist_ok=True)
         skill_dir.mkdir(parents=True, exist_ok=True)
         kw = keywords or []
+        if action == "create":
+            new_version = "1"
+        else:
+            new_version = self.bump_version(prev_version if prev_version != "0" else "1")
         fm = [
             "---",
             f"name: {name}",
             f"description: {description.strip()}",
             f"keywords: [{', '.join(kw)}]" if kw else "keywords: []",
-            "version: \"1\"",
+            f'version: "{new_version}"',
             "---",
             "",
             body.lstrip() + ("\n" if not body.endswith("\n") else ""),
@@ -452,4 +606,6 @@ class SkillStore:
             "path": str(skill_dir),
             "description": skill.description,
             "namespace": "user",
+            "version": skill.version,
+            "previous_version": prev_version if action == "update" else None,
         }
