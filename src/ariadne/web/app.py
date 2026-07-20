@@ -37,6 +37,10 @@ class TurnBody(BaseModel):
     session_id: str | None = None
 
 
+class PluginBody(BaseModel):
+    config: dict[str, str]
+
+
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="Ariadne Web")
     users = UserStore(settings.resolved_data_dir / "web" / "users.json")
@@ -59,6 +63,7 @@ def create_app(settings: Settings) -> FastAPI:
             api_key=provider["api_key"],
             model=provider["model"],
             data_dir=user_data,
+            merge_home_plugins=False,  # web users only get their own plugins
         )
 
     @app.post("/api/auth/register")
@@ -139,6 +144,53 @@ def create_app(settings: Settings) -> FastAPI:
             {"session_id": s.session_id, "turns": s.turns, "mtime": s.mtime}
             for s in list_sessions(user_data)
         ]
+
+    def _plugin_store_for(username: str) -> Any:
+        from ..plugins import PluginStore
+
+        user_data = settings.resolved_data_dir / "web" / "users" / username
+        return PluginStore(user_data / "plugins.json")
+
+    @app.get("/api/me/plugins")
+    def list_my_plugins(username: str = Depends(current_user)) -> Any:
+        from ..plugins import PLUGIN_REGISTRY
+
+        configured = _plugin_store_for(username).list()
+        return [
+            {
+                "name": name,
+                "description": plugin.description,
+                "required_config": list(plugin.required_config),
+                "enabled": bool(configured.get(name, {}).get("enabled")),
+                "configured": name in configured,
+            }
+            for name, plugin in sorted(PLUGIN_REGISTRY.items())
+        ]
+
+    @app.put("/api/me/plugins/{name}")
+    def enable_plugin(name: str, body: PluginBody, username: str = Depends(current_user)) -> Any:
+        from ..plugins import PLUGIN_REGISTRY, build_plugin_tools
+
+        plugin = PLUGIN_REGISTRY.get(name)
+        if plugin is None:
+            raise HTTPException(status_code=404, detail=f"unknown plugin: {name}")
+        missing = [k for k in plugin.required_config if not str(body.config.get(k) or "").strip()]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"missing config: {', '.join(missing)}")
+        try:
+            build_plugin_tools(name, body.config)  # validate before persisting
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        _plugin_store_for(username).enable(name, body.config)
+        return {"status": "enabled", "plugin": name}
+
+    @app.delete("/api/me/plugins/{name}")
+    def disable_plugin(name: str, username: str = Depends(current_user)) -> Any:
+        try:
+            _plugin_store_for(username).disable(name)
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {"status": "disabled", "plugin": name}
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

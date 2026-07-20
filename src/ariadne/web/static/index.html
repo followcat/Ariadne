@@ -51,6 +51,7 @@
     <div class="spacer"></div>
     <small id="provider"></small>
     <button id="editprovider" class="ghost">Provider</button>
+    <button id="editplugins" class="ghost">插件</button>
     <button id="logout" class="ghost">退出</button>
   </header>
   <div id="settings" class="hidden">
@@ -60,6 +61,7 @@
     <button id="saveprovider">保存</button>
     <span class="warn" id="provmsg"></span>
   </div>
+  <div id="plugins" class="hidden"></div>
   <div id="chat"></div>
   <div id="composer">
     <input id="input" placeholder="给 Ariadne 下达任务… (Enter 发送)">
@@ -109,6 +111,55 @@ async function enter() {
   if (!me.provider_configured) $('settings').classList.remove('hidden');
 }
 $('editprovider').onclick = () => $('settings').classList.toggle('hidden');
+$('editplugins').onclick = () => { $('plugins').classList.toggle('hidden'); loadPlugins(); };
+
+async function loadPlugins() {
+  const list = await (await api('/api/me/plugins', {headers: authHeaders()})).json();
+  const root = $('plugins');
+  root.innerHTML = '<h3 style="margin:6px 0">官方插件（属于你的账号）</h3>';
+  for (const p of list) {
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#10141b;padding:10px;border-radius:8px;margin:6px 0';
+    const head = document.createElement('div');
+    head.innerHTML = `<strong>${p.name}</strong> <small style="color:var(--dim)">${p.description}</small> ` +
+      (p.enabled ? '<span style="color:var(--ok)">已启用</span>' : '<span style="color:var(--dim)">未启用</span>');
+    card.appendChild(head);
+    const inputs = {};
+    for (const key of p.required_config) {
+      const inp = document.createElement('input');
+      inp.placeholder = key;
+      if (/key|token|password/i.test(key)) inp.type = 'password';
+      inp.style.marginTop = '6px';
+      card.appendChild(inp);
+      inputs[key] = inp;
+    }
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.marginTop = '6px';
+    const enableBtn = document.createElement('button');
+    enableBtn.textContent = '启用';
+    enableBtn.onclick = async () => {
+      const config = {};
+      for (const k of p.required_config) config[k] = inputs[k].value;
+      const r = await api('/api/me/plugins/' + p.name, {method: 'PUT', headers: authHeaders(), body: JSON.stringify({config})});
+      if (!r.ok) alert((await r.json()).detail);
+      loadPlugins();
+    };
+    row.appendChild(enableBtn);
+    if (p.enabled) {
+      const disableBtn = document.createElement('button');
+      disableBtn.textContent = '停用';
+      disableBtn.className = 'ghost';
+      disableBtn.onclick = async () => {
+        await api('/api/me/plugins/' + p.name, {method: 'DELETE', headers: authHeaders()});
+        loadPlugins();
+      };
+      row.appendChild(disableBtn);
+    }
+    card.appendChild(row);
+    root.appendChild(card);
+  }
+}
 $('saveprovider').onclick = async () => {
   const r = await api('/api/me/provider', {method:'PUT', headers: authHeaders(),
     body: JSON.stringify({base_url: $('baseurl').value, api_key: $('apikey').value, model: $('model').value})});
