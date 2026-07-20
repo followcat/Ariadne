@@ -25,17 +25,20 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#features">Features</a> ·
+  <a href="#hosts--ui">Hosts &amp; UI</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#architecture">Architecture</a> ·
-  <a href="#documentation">Docs</a> ·
-  <a href="#non-goals">Non-goals</a>
+  <a href="#documentation">Docs</a>
 </p>
 
 ---
 
-**Ariadne** is a callable runtime that turns one user turn into model reasoning, skill guidance, tool calls, layered memory, and optional sandboxed execution — first as a **CLI shell agent** over your project, also as a small **web UI** and a Python API.
+**Ariadne** is a callable runtime that turns one user turn into model reasoning, skill guidance, tool calls, layered memory, and optional sandboxed execution.
 
-It is **not** an enterprise multi-tenant platform, connector hub, or company packaging stack. It is the middle layer that is hard to get right and worth open-sourcing.
+Default human interface: a **CLI shell agent** over your project workspace (bare `ariadne` → REPL, codex-style).  
+Optional: a **Grok-style web UI** (`ariadne serve`) with sidebar history, light/dark themes, session titles, and image paste.
+
+It is **not** an enterprise multi-tenant platform, connector hub, or company packaging stack.
 
 ```text
 Your prompt
@@ -48,15 +51,20 @@ Your prompt
 
 ## Screenshots
 
+<p align="center">
+  <img src="docs/assets/web-demo.jpg" alt="Ariadne web — dark theme, sidebar sessions, chat" width="920" />
+</p>
+<p align="center"><sub><b>Web (dark)</b> — left history + new chat · session topic titles · markdown stream · bottom composer · Provider / plugins / theme</sub></p>
+
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/assets/cli-demo.jpg" alt="CLI shell agent with file tools and diffs" />
-      <p align="center"><sub><b>CLI</b> — one-shot <code>run</code>, streaming chat, unified diffs</sub></p>
+      <img src="docs/assets/web-demo-light.jpg" alt="Ariadne web light theme" />
+      <p align="center"><sub><b>Web (light)</b> — same shell, light theme toggle (☀/☾)</sub></p>
     </td>
     <td width="50%">
-      <img src="docs/assets/web-demo.jpg" alt="Web UI with BYOK provider and plugins" />
-      <p align="center"><sub><b>Web</b> — register, BYOK provider, per-user plugins</sub></p>
+      <img src="docs/assets/cli-demo.jpg" alt="Ariadne CLI REPL with tools and diffs" />
+      <p align="center"><sub><b>CLI</b> — bare <code>ariadne</code> REPL · tools · diffs · <code>/title</code> · <code>/image</code></sub></p>
     </td>
   </tr>
 </table>
@@ -68,23 +76,52 @@ Most “agent frameworks” give you either a thin chat wrapper, or a company pl
 | You want | Ariadne gives you |
 | --- | --- |
 | **Callable agent** | `await agent.run(...)` / CLI turn execution |
-| **Skills** | Procedural guidance on demand — not dumped into every prompt |
+| **Skills** | On-demand procedural guidance + compact selection plan |
 | **Toolcall** | **One** capability registry, deferred schemas, audited loop |
 | **Memory** | Layered recall + curated facts + conversation state |
 | **Sandbox** | Pluggable execution (`local` / `docker` / `null`) |
-| **Host UX** | Terminal agent + optional web UI + official plugins |
+| **Host UX** | Terminal agent + Grok-style web UI + official plugins |
 
 ## Features
 
-- **Terminal agent** — `run` / `chat`, streaming, rich diffs, approval modes, sessions (`--continue`, `/resume`)
-- **File tools** — `sandbox_read_file` / `write` / `edit` with exact-match fastfail and unified diffs
-- **Sandbox** — workspace mapped to `/workspace`, scratch `/session`, toolbox profiles, observation compression
-- **Memory L0–L4** — transcript, summaries, curated facts, optional semantic recall, L2 conversation state
-- **Skills** — filesystem packs, hybrid search, selection plan with scores
-- **Guardrails** — inbound secret redaction + injection warnings; outbound redaction
-- **Official plugins** — GitLab / Redmine / Odoo as **user attributes** (CLI home store or web account)
-- **Web UI** — `ariadne serve`, registration, BYOK `BASE_URL` / `API_KEY` / `MODEL`
-- **OpenAI-compatible models** — any endpoint that speaks chat completions + tools
+- **CLI first** — bare `ariadne` enters interactive REPL; `run` / `exec` one-shot; streaming, rich diffs, approvals
+- **Sessions** — continue / resume; **topic titles** (auto summary + manual `/title` or web rename)
+- **Images** — CLI `/image` (path or clipboard); web paste / drag-drop; fails clearly if model is not multimodal (`ARIADNE_VISION`)
+- **File tools** — `sandbox_read_file` / `write` / `edit` with unified diffs
+- **Memory L0–L4** — transcript, summaries, curated facts, semantic recall, L2 conversation state
+- **Skills** — packs, hybrid search, scored selection plan (no full-index dump)
+- **Guardrails** — secret redaction in/out; injection warnings
+- **Official plugins** — GitLab / Redmine / Odoo as **user attributes** (home store or web account; secrets shown as `***`)
+- **Web UI** — sidebar history, BYOK provider modal, plugins modal, light/dark theme
+- **OpenAI-compatible models** — chat completions + tools
+
+## Hosts & UI
+
+### CLI shell (default)
+
+```bash
+ariadne                 # interactive REPL (active_session, stream on)
+ariadne "do the thing"  # REPL + first user turn
+ariadne run "…"         # non-interactive one-shot
+ariadne exec "…"        # alias of run
+```
+
+Useful in-REPL commands: `/help`, `/title`, `/image`, `/resume`, `/status`, `/mode`, `/exit`.
+
+### Web UI
+
+```bash
+ariadne serve --host 127.0.0.1 --port 8420
+# → http://127.0.0.1:8420
+```
+
+| Area | Behavior (matches current UI) |
+| --- | --- |
+| **Sidebar** | New chat · history with **topic titles** · Provider / plugins / appearance / logout |
+| **Main** | Session title in top bar · model chip · markdown streaming · tool pills |
+| **Composer** | Bottom floating input · Enter send · paste/drop images |
+| **Theme** | Light / dark toggle (localStorage + system default) |
+| **Sessions** | Switch reloads history; double-click row or click title to rename; auto topic summary |
 
 ## Quick start
 
@@ -96,7 +133,7 @@ cd Ariadne
 python3 -m pip install -e ".[dev]"
 ```
 
-Requires **Python 3.13+**. For a no-install checkout:
+Requires **Python 3.13+**. Checkout without install:
 
 ```bash
 export PYTHONPATH=$PWD/src
@@ -104,71 +141,50 @@ export PYTHONPATH=$PWD/src
 
 ### 2. Configure an OpenAI-compatible LLM
 
-Copy the example env and fill in your provider (any compatible host works — e.g. LongCat, OpenAI, local gateways):
-
 ```bash
 cp .env.example .env
 ```
 
 ```bash
 # .env — never commit this file
-BASE_URL=https://api.longcat.chat/openai/v1   # or your host .../v1
-API_KEY=sk-...                                # Bearer token
-MODEL=LongCat-2.0                             # model id on that host
+BASE_URL=https://api.longcat.chat/openai/v1
+API_KEY=sk-...
+MODEL=LongCat-2.0
+# optional: ARIADNE_VISION=auto|on|off
 ```
-
-Ariadne also reads a workspace `.env` and process environment (`OPENAI_BASE_URL` / `OPENAI_API_KEY` aliases).
 
 ### 3. Run
 
 ```bash
-# health check
 ariadne doctor
-
-# interactive CLI (default — like `codex`)
 ariadne
-ariadne "create NOTES.md with a one-line outline of this project"
-
-# one-shot non-interactive turn
-ariadne run "summarize README.md"
-ariadne exec "…"   # alias of run
-
-# web UI (register users, bind your own provider)
-ariadne serve --host 127.0.0.1 --port 8420
+ariadne serve --port 8420
 ```
-
-Offline tests (no network):
 
 ```bash
 PYTHONPATH=src python3 -m pytest -q
 ```
 
-Full CLI reference: **[docs/USAGE_CLI.md](docs/USAGE_CLI.md)** (English) · **[docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md)** (中文).
+Full host guide: **[docs/USAGE_CLI.md](docs/USAGE_CLI.md)** · **[docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md)**.
 
 ## Usage
 
 ### CLI cheatsheet
 
 ```bash
-ariadne                         # interactive REPL (default)
-ariadne "…"                     # REPL seeded with first prompt
-ariadne run "…"                 # single non-interactive turn
-ariadne exec "…"                # alias of run
-ariadne chat                    # explicit interactive alias
-ariadne --stream -v run "…"     # stream + tool traces
-ariadne -c                      # continue last session in REPL
+ariadne
+ariadne "create NOTES.md with a one-line outline"
+ariadne run "summarize README.md"
+ariadne -c                      # continue last session
 ariadne resume --last
-ariadne sessions                # list sessions
-ariadne tools / skills / toolbox
+ariadne sessions
 ariadne plugins
-ariadne plugin enable gitlab --url https://gitlab.example.com --token glpat-…
-ariadne plugin enable redmine --url … --api-key …
-ariadne plugin enable odoo --url … --database … --login … --password …
-# project-local override instead of ~/.ariadne/plugins.json:
-ariadne plugin enable gitlab --workspace-scope --url … --token …
+ariadne plugin enable gitlab --url … --token …
+# in REPL:
+#   /title 部署脚本     /title --refresh
+#   /image ./shot.png   /image          # clipboard
+#   /help /status /exit
 ```
-
-Useful flags: `--workspace`, `--session`, `--sandbox local|docker|null`, `--approval-mode auto|on-request|readonly`, `--model`, `--json`.
 
 ### Python API (shape)
 
@@ -181,72 +197,46 @@ result = await agent.run("Summarize this repo and open a short TODO list")
 print(result.text)
 ```
 
-Library-oriented constructors (`Memory.local`, `ToolRegistry`, `RunTurnCommand`, …) are documented in [docs/PUBLIC_API.md](docs/PUBLIC_API.md).
-
-### Web UI
-
-```bash
-ariadne serve --port 8420
-# open http://127.0.0.1:8420
-```
-
-Each registered user has isolated data, BYOK provider settings, and plugin credentials (`/api/me/plugins`). Playwright smoke: `scripts/verify_web.py`.
+See [docs/PUBLIC_API.md](docs/PUBLIC_API.md).
 
 ## Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  Hosts:  CLI (run/chat)  ·  Web (serve)  ·  library Agent   │
+│  Hosts:  CLI (default REPL)  ·  Web (serve)  ·  library     │
 └────────────────────────────┬────────────────────────────────┘
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  TurnApplication — memory build · skill plan · tool loop    │
-│       │                                                     │
-│       ├─ Memory facade (L0 transcript … L2 state …)         │
-│       ├─ SkillStore (index / search / load)                 │
+│  TurnApplication — memory · skill plan · tool loop          │
+│       ├─ Memory facade (L0…L2… semantic)                    │
+│       ├─ SkillStore (compact SKILL_SELECTION + search/load) │
 │       ├─ ToolRegistry (one registry, deferred exposure)     │
-│       ├─ Model (OpenAI-compatible chat + tools + stream)    │
+│       ├─ Model (OpenAI-compatible + optional vision)        │
 │       └─ Sandbox port (local / docker / null)               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Design pillars**
-
-1. **One registry** for tools — never a second ad-hoc tool system  
-2. **Skills ≠ tools** — skills teach; tools act  
-3. **Layered memory** — raw turns, summaries, curated facts, optional semantic + state  
-4. **Deferred detail** — short catalogs first; full schemas on demand  
-5. **Fastfail** — invalid packs / unknown tools fail clearly; no silent downgrade  
-6. **Sandbox is a port** — execution is replaceable  
-7. **Personal first** — single-user friendly; no company extension model in core  
+**Design pillars:** one registry · skills ≠ tools · layered memory · deferred detail · fastfail · sandbox as a port · personal first.
 
 ## Documentation
 
 | Doc | Topic |
 | --- | --- |
-| [README.zh-CN.md](README.zh-CN.md) | 中文产品介绍 |
-| [docs/zh/README.md](docs/zh/README.md) | Chinese docs index |
-| [docs/USAGE_CLI.md](docs/USAGE_CLI.md) · [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | CLI / web / plugins (EN · 中文) |
-| [docs/I18N.md](docs/I18N.md) | Bilingual docs policy |
-| [docs/VISION.md](docs/VISION.md) | Product vision |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Kernel architecture |
-| [docs/PUBLIC_API.md](docs/PUBLIC_API.md) | Callable agent surface |
+| [README.zh-CN.md](README.zh-CN.md) | 中文介绍 |
+| [docs/USAGE_CLI.md](docs/USAGE_CLI.md) · [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | Host usage |
+| [docs/design/alignment-skills-toolcall-memory.md](docs/design/alignment-skills-toolcall-memory.md) | Design alignment notes |
+| [docs/VISION.md](docs/VISION.md) · [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [PUBLIC_API.md](docs/PUBLIC_API.md) | Design core |
 | [docs/SKILLS.md](docs/SKILLS.md) · [TOOLCALL.md](docs/TOOLCALL.md) · [MEMORY.md](docs/MEMORY.md) · [SANDBOX.md](docs/SANDBOX.md) | Subsystems |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | What’s done |
-| [docs/DESIGN_PRINCIPLES.md](docs/DESIGN_PRINCIPLES.md) · [NON_GOALS.md](docs/NON_GOALS.md) | Hard rules |
-
-Reading order for design deep-dives: Vision → Principles → Architecture → Public API → Skills / Toolcall / Memory / Sandbox.
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Delivery checklist |
 
 ## Non-goals
-
-Explicitly **out of scope** for core (by design):
 
 - Company Packs / multi-company deployment models  
 - First-class WeCom / Feishu / Telegram / Slack product surface  
 - Multi-tenant SaaS control planes  
 - Silent compatibility fallbacks  
 
-**Official optional plugins** (GitLab / Redmine / Odoo) are supported as user-configured integrations — not as a multi-company pack system. See [docs/NON_GOALS.md](docs/NON_GOALS.md).
+Official optional plugins (GitLab / Redmine / Odoo) are user-configured integrations — not multi-company packs. See [docs/NON_GOALS.md](docs/NON_GOALS.md).
 
 ## Project layout
 
@@ -254,9 +244,9 @@ Explicitly **out of scope** for core (by design):
 src/ariadne/          kernel, memory, tools, skills, sandbox, CLI, web
 skills/builtin/       example skill packs
 tests/                offline pytest suite
-docs/                 English design (normative) + usage
+docs/                 design (normative EN) + usage
 docs/zh/              Chinese user docs
-docs/assets/          README images
+docs/assets/          README images (hero, CLI, web dark/light)
 scripts/              llm_smoke.py, verify_web.py
 ```
 
@@ -267,7 +257,7 @@ Here the labyrinth is multi-step tool use; the thread is skills + disciplined to
 
 ## Origin note
 
-Ariadne reinterprets ideas proven inside a private production agent core (skills runtime, deferred tool schemas, multi-layer memory). It is a **new personal open-source project**, not a fork of that platform’s company packaging, connectors, or deployment model.
+Ariadne reinterprets ideas proven inside a private production agent core (skills runtime, deferred tool schemas, multi-layer memory). It is a **new personal open-source project**, not a fork of that platform’s company packaging or connectors.
 
 ## License
 
