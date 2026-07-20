@@ -63,9 +63,19 @@ class ToolSpec:
 class ToolRegistry:
     tools: dict[str, ToolSpec] = field(default_factory=dict)
 
-    def register(self, spec: ToolSpec, handler: ToolHandler | None = None) -> None:
+    def register(
+        self, spec: ToolSpec, handler: ToolHandler | None = None, *, replace: bool = False
+    ) -> None:
         if handler is not None:
             spec.handler = handler
+        if spec.name in self.tools and not replace:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    f"duplicate tool registration: {spec.name!r} (pass replace=True to override)",
+                    name=spec.name,
+                )
+            )
         self.tools[spec.name] = spec
 
     @classmethod
@@ -131,6 +141,34 @@ class ToolRegistry:
     def schema_chars_for(self, tools: list[dict[str, Any]]) -> int:
         return len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")))
 
+    def validate_arguments(self, name: str, arguments: dict[str, Any]) -> None:
+        """Lightweight JSON-schema subset: required keys + object type (TOOLCALL §4)."""
+        spec = self.tools.get(name)
+        if spec is None:
+            return
+        if not isinstance(arguments, dict):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    f"tool {name!r} arguments must be a JSON object",
+                    name=name,
+                )
+            )
+        params = spec.parameters or {}
+        required = params.get("required") or []
+        if not isinstance(required, list):
+            return
+        missing = [k for k in required if k not in arguments]
+        if missing:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    f"tool {name!r} missing required: {', '.join(missing)}",
+                    name=name,
+                    missing=missing,
+                )
+            )
+
     async def invoke(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         spec = self.tools.get(name)
         if spec is None:
@@ -144,6 +182,7 @@ class ToolRegistry:
                         name=name,
                     )
                 )
+        self.validate_arguments(name, arguments)
         if ctx.approval_hook is not None and not ctx.approval_hook(name, arguments):
             raise AriadneError(
                 app_error(
