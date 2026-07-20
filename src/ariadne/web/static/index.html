@@ -191,6 +191,54 @@
   }
   .badge.off { background: rgba(139,147,161,.12); color: var(--dim); }
 
+  /* ── Sessions panel ── */
+  #sessions {
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 18px 16px;
+  }
+  #sessions .sess-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
+  }
+  #sessions .sess-toolbar h3 {
+    margin: 0; font-size: 13px; color: var(--dim);
+    font-weight: 600; letter-spacing: .04em; text-transform: uppercase; flex: 1;
+  }
+  #sessions .sess-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+  .sess-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px; align-items: center;
+    background: var(--bg-elev);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+  }
+  .sess-row:hover { border-color: rgba(91,156,255,.4); }
+  .sess-row.active {
+    border-color: rgba(201,162,39,.45);
+    background: rgba(201,162,39,.06);
+  }
+  .sess-row .sid {
+    font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--fg);
+  }
+  .sess-row .preview {
+    font-size: 12px; color: var(--dim); margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48vw;
+  }
+  .sess-row .meta { font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
+  .sess-row .del {
+    padding: 6px 10px; font-size: 12px;
+  }
+  #session-chip {
+    cursor: pointer;
+    max-width: min(220px, 28vw);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #session-chip .label { color: var(--dim); margin-right: 4px; }
+
   /* ── Chat ── */
   #chat {
     flex: 1; overflow-y: auto;
@@ -385,9 +433,13 @@
       <span class="thread" aria-hidden="true"></span>
     </div>
     <small id="who"></small>
+    <button type="button" id="session-chip" class="chip" title="管理会话">
+      <span class="label">session</span><span id="session-label">—</span>
+    </button>
     <div class="spacer"></div>
     <span id="provider-chip" class="chip off"><span class="dot"></span><span id="provider">未配置 provider</span></span>
     <div class="actions">
+      <button id="editsessions" class="ghost" type="button">会话</button>
       <button id="editprovider" class="ghost" type="button">Provider</button>
       <button id="editplugins" class="ghost" type="button">插件</button>
       <button id="logout" class="ghost" type="button">退出</button>
@@ -413,6 +465,16 @@
     <span class="warn" id="provmsg"></span>
   </div>
 
+  <div id="sessions" class="hidden">
+    <div class="sess-toolbar">
+      <h3>会话 Sessions</h3>
+      <button type="button" id="session-new" class="ghost">新会话</button>
+      <button type="button" id="session-refresh" class="ghost">刷新</button>
+    </div>
+    <div class="sess-list" id="sess-list"></div>
+    <p class="warn" id="sess-msg" style="margin-top:8px"></p>
+  </div>
+
   <div id="plugins" class="hidden"></div>
 
   <div id="chat">
@@ -420,7 +482,8 @@
       <div class="empty-hint" id="empty-hint">
         <div class="thread-art">A</div>
         <h2>给 Ariadne 下达任务</h2>
-        <p>在项目工作区上调用 skills、tools 与 memory。<br>支持 Markdown 回复与流式渲染。</p>
+        <p>多轮对话会写入当前 <strong>session</strong>。<br>
+          点顶栏「会话」可切换、新建或删除；历史消息会重新加载到下方。</p>
       </div>
     </div>
   </div>
@@ -559,8 +622,9 @@ const MD = (() => {
 
 const $ = id => document.getElementById(id);
 let token = localStorage.getItem('ariadne_token') || '';
-let sessionId = localStorage.getItem('ariadne_session') || 'web-' + Math.random().toString(16).slice(2, 8);
+let sessionId = localStorage.getItem('ariadne_session') || '';
 let busy = false;
+let username = '';
 
 function authHeaders() {
   return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
@@ -570,6 +634,128 @@ async function api(path, opts = {}) {
   const r = await fetch(path, opts);
   if (r.status === 401) { logout(); throw new Error('unauthorized'); }
   return r;
+}
+
+function setSessionId(id, { persist = true } = {}) {
+  sessionId = id;
+  if (persist) localStorage.setItem('ariadne_session', id);
+  const short = id.length > 18 ? id.slice(0, 8) + '…' + id.slice(-6) : id;
+  $('session-label').textContent = short;
+  if (username) $('who').textContent = username;
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+    ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function clearChat() {
+  const inner = $('chat-inner');
+  inner.innerHTML =
+    '<div class="empty-hint" id="empty-hint">' +
+    '<div class="thread-art">A</div>' +
+    '<h2>给 Ariadne 下达任务</h2>' +
+    '<p>当前会话 <code style="color:var(--gold)">' + MD.esc(sessionId) + '</code><br>' +
+    '点「会话」可切换历史或新建空会话。</p></div>';
+}
+
+function renderHistory(messages) {
+  const inner = $('chat-inner');
+  inner.innerHTML = '';
+  if (!messages || !messages.length) {
+    clearChat();
+    return;
+  }
+  for (const m of messages) {
+    if (m.role === 'user') addUserMsg(m.content || '');
+    else if (m.role === 'assistant') {
+      const shell = addAssistantShell();
+      setAssistantMarkdown(shell, m.content || '', { streaming: false });
+    }
+  }
+  scrollChat();
+}
+
+async function loadSessionHistory(id) {
+  const r = await api('/api/sessions/' + encodeURIComponent(id), { headers: authHeaders() });
+  if (!r.ok) { clearChat(); return; }
+  const data = await r.json();
+  renderHistory(data.messages || []);
+}
+
+async function loadSessions() {
+  const root = $('sess-list');
+  const msg = $('sess-msg');
+  msg.textContent = '';
+  root.innerHTML = '<div style="color:var(--dim);font-size:13px">加载中…</div>';
+  try {
+    const list = await (await api('/api/sessions', { headers: authHeaders() })).json();
+    root.innerHTML = '';
+    if (!list.length) {
+      root.innerHTML = '<div style="color:var(--dim);font-size:13px">暂无历史会话。发送一条消息后会出现在这里。</div>';
+      return;
+    }
+    for (const s of list) {
+      const row = document.createElement('div');
+      row.className = 'sess-row' + (s.session_id === sessionId ? ' active' : '');
+      row.dataset.sid = s.session_id;
+      const left = document.createElement('div');
+      left.innerHTML =
+        '<div class="sid">' + MD.esc(s.session_id) +
+        (s.session_id === sessionId ? ' <span class="badge">当前</span>' : '') + '</div>' +
+        '<div class="preview">' + MD.esc(s.preview || '（无预览）') + '</div>';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.innerHTML = (s.turns || 0) + ' 轮<br>' + MD.esc(fmtTime(s.mtime));
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'ghost del';
+      del.textContent = '删除';
+      del.onclick = async (ev) => {
+        ev.stopPropagation();
+        if (!confirm('删除会话 ' + s.session_id + '？此操作不可恢复。')) return;
+        const r = await api('/api/sessions/' + encodeURIComponent(s.session_id), {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        if (!r.ok) { msg.textContent = (await r.json()).detail || '删除失败'; return; }
+        if (s.session_id === sessionId) {
+          await createNewSession({ load: true });
+        } else {
+          loadSessions();
+        }
+      };
+      row.onclick = async () => {
+        if (s.session_id === sessionId) return;
+        setSessionId(s.session_id);
+        await loadSessionHistory(s.session_id);
+        loadSessions();
+        $('sessions').classList.add('hidden');
+      };
+      row.appendChild(left);
+      row.appendChild(meta);
+      row.appendChild(del);
+      root.appendChild(row);
+    }
+  } catch (e) {
+    root.innerHTML = '';
+    msg.textContent = '加载失败: ' + (e.message || e);
+  }
+}
+
+async function createNewSession({ load = true } = {}) {
+  const r = await api('/api/sessions', { method: 'POST', headers: authHeaders() });
+  if (!r.ok) {
+    $('sess-msg').textContent = '创建会话失败';
+    return;
+  }
+  const data = await r.json();
+  setSessionId(data.session_id);
+  if (load) clearChat();
+  if (!$('sessions').classList.contains('hidden')) loadSessions();
 }
 
 async function doAuth(path) {
@@ -591,6 +777,7 @@ $('register').onclick = () => doAuth('/api/auth/register');
 
 function logout() {
   token = '';
+  username = '';
   localStorage.removeItem('ariadne_token');
   $('app').classList.add('hidden');
   $('auth').classList.remove('hidden');
@@ -601,7 +788,15 @@ async function enter() {
   $('auth').classList.add('hidden');
   $('app').classList.remove('hidden');
   const me = await (await api('/api/me', { headers: authHeaders() })).json();
-  $('who').textContent = me.username + ' · ' + sessionId;
+  username = me.username;
+  if (!sessionId) {
+    const r = await api('/api/sessions', { method: 'POST', headers: authHeaders() });
+    if (r.ok) setSessionId((await r.json()).session_id);
+    else setSessionId('web-' + Math.random().toString(16).slice(2, 8));
+  } else {
+    setSessionId(sessionId);
+  }
+  $('who').textContent = username;
   const chip = $('provider-chip');
   if (me.provider_configured) {
     $('provider').textContent = me.model + ' · ' + (me.base_url || '').replace(/^https?:\/\//, '');
@@ -611,9 +806,34 @@ async function enter() {
     chip.classList.add('off');
     $('settings').classList.remove('hidden');
   }
+  // restore history for current session if any
+  await loadSessionHistory(sessionId);
 }
-$('editprovider').onclick = () => $('settings').classList.toggle('hidden');
-$('editplugins').onclick = () => { $('plugins').classList.toggle('hidden'); loadPlugins(); };
+$('editprovider').onclick = () => {
+  $('settings').classList.toggle('hidden');
+  $('plugins').classList.add('hidden');
+  $('sessions').classList.add('hidden');
+};
+$('editplugins').onclick = () => {
+  $('plugins').classList.toggle('hidden');
+  $('settings').classList.add('hidden');
+  $('sessions').classList.add('hidden');
+  if (!$('plugins').classList.contains('hidden')) loadPlugins();
+};
+$('editsessions').onclick = () => {
+  $('sessions').classList.toggle('hidden');
+  $('settings').classList.add('hidden');
+  $('plugins').classList.add('hidden');
+  if (!$('sessions').classList.contains('hidden')) loadSessions();
+};
+$('session-chip').onclick = () => {
+  $('sessions').classList.toggle('hidden');
+  $('settings').classList.add('hidden');
+  $('plugins').classList.add('hidden');
+  if (!$('sessions').classList.contains('hidden')) loadSessions();
+};
+$('session-new').onclick = () => createNewSession({ load: true });
+$('session-refresh').onclick = () => loadSessions();
 
 async function loadPlugins() {
   const list = await (await api('/api/me/plugins', { headers: authHeaders() })).json();
@@ -879,6 +1099,8 @@ async function send() {
     }
     if (!stream.text) stream.finish();
     else stream.finish();
+    // refresh session list if panel open (preview / turn count)
+    if (!$('sessions').classList.contains('hidden')) loadSessions();
   } catch (err) {
     stream.set('ERROR: ' + (err && err.message ? err.message : String(err)));
     stream.finish();
