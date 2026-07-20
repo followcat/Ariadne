@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..cli.render import render_json
@@ -383,8 +384,33 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=400, detail=exc.error.message) from exc
         return {"status": "disabled", "plugin": name}
 
+    # Vue SPA build (frontend/ → static/dist). Fall back to legacy static/index.html.
+    dist_dir = STATIC_DIR / "dist"
+    dist_index = dist_dir / "index.html"
+    legacy_index = STATIC_DIR / "index.html"
+
+    if dist_dir.is_dir():
+        assets = dist_dir / "assets"
+        if assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets), name="vue-assets")
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+        if dist_index.is_file():
+            return FileResponse(dist_index)
+        return FileResponse(legacy_index)
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    def spa_fallback(spa_path: str) -> FileResponse:
+        """Serve built SPA files or index for client routes; never shadow /api."""
+        if spa_path.startswith("api"):
+            raise HTTPException(status_code=404, detail="not found")
+        if dist_dir.is_dir():
+            candidate = dist_dir / spa_path
+            if candidate.is_file():
+                return FileResponse(candidate)
+            if dist_index.is_file():
+                return FileResponse(dist_index)
+        raise HTTPException(status_code=404, detail="not found")
 
     return app

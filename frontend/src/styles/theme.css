@@ -1,0 +1,167 @@
+:root,
+[data-theme='dark'] {
+  --bg: #000;
+  --bg-2: #0a0a0a;
+  --bg-3: #111;
+  --bg-hover: #1a1a1a;
+  --fg: #f5f5f5;
+  --fg-2: #e5e5e5;
+  --dim: #8a8a8a;
+  --muted: #5c5c5c;
+  --line: #222;
+  --line-2: #2a2a2a;
+  --btn: #fff;
+  --btn-fg: #000;
+  --btn-hover: #e8e8e8;
+  --code-bg: #1a1a1a;
+  --pre-bg: #0d0d0d;
+  --scroll: #2a2a2a;
+  --blue: #1d9bf0;
+  --ok: #00ba7c;
+  --warn: #ffad1f;
+  --err: #f4212e;
+  --sidebar-w: 280px;
+  --tools-w: 340px;
+  --font: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+[data-theme='light'] {
+  --bg: #f7f7f8;
+  --bg-2: #fff;
+  --bg-3: #fff;
+  --bg-hover: #eef0f3;
+  --fg: #0f1419;
+  --fg-2: #1a1a1a;
+  --dim: #536471;
+  --muted: #8b98a5;
+  --line: #e5e7eb;
+  --line-2: #d0d5dd;
+  --btn: #0f1419;
+  --btn-fg: #fff;
+  --btn-hover: #2a2a2a;
+  --code-bg: #eef0f3;
+  --pre-bg: #f0f2f5;
+  --scroll: #c5cad3;
+  --blue: #1d9bf0;
+  --ok: #00a06a;
+  --warn: #b58105;
+  --err: #cf1f2b;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button {
+  border: 0; cursor: pointer; background: transparent;
+}
+button:disabled { opacity: .45; cursor: not-allowed; }
+.hidden { display: none !important; }
+
+/* Markdown content (from markdown-it) */
+.md-body {
+  font-size: 15.5px;
+  line-height: 1.65;
+  color: var(--fg-2);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: .55em 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  margin: 1.1em 0 .4em;
+  line-height: 1.25;
+  font-weight: 650;
+  color: var(--fg);
+  letter-spacing: -.02em;
+}
+.md-body h1 { font-size: 1.4em; }
+.md-body h2 { font-size: 1.2em; }
+.md-body h3 { font-size: 1.05em; }
+.md-body ul, .md-body ol { margin: .5em 0; padding-left: 1.4em; }
+.md-body li { margin: .25em 0; }
+.md-body li::marker { color: var(--muted); }
+.md-body blockquote {
+  margin: .7em 0;
+  padding: .2em 0 .2em 14px;
+  border-left: 2px solid var(--line-2);
+  color: var(--dim);
+}
+.md-body a { color: var(--blue); text-decoration: none; }
+.md-body a:hover { text-decoration: underline; }
+.md-body hr { border: 0; border-top: 1px solid var(--line); margin: 1.1em 0; }
+.md-body code {
+  font-family: var(--mono);
+  font-size: .88em;
+  background: var(--code-bg);
+  padding: .12em .4em;
+  border-radius: 6px;
+  color: var(--fg);
+}
+.md-body pre {
+  margin: .8em 0;
+  padding: 14px 16px;
+  background: var(--pre-bg);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow-x: auto;
+}
+.md-body pre code,
+.md-body pre.hljs {
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  display: block;
+}
+.md-body pre.hljs {
+  padding: 14px 16px;
+  background: var(--pre-bg);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+/* Tables — critical for agent reports */
+.md-body .table-wrap {
+  overflow-x: auto;
+  margin: .8em 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.md-body table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 420px;
+  font-size: 13.5px;
+  margin: 0;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.md-body th {
+  background: var(--bg-hover);
+  color: var(--fg);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.md-body tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-3) 80%, transparent); }
+.md-body td code { font-size: .85em; }
+
+/* Streaming caret */
+.md-body.streaming-answer::after {
+  content: '▋';
+  margin-left: 2px;
+  color: var(--dim);
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }

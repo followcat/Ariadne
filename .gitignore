@@ -3,9 +3,17 @@ __pycache__/
 *.py[cod]
 .venv/
 .uv/
-dist/
-build/
+/dist/
+/build/
 *.egg-info/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Keep Vue production build served by FastAPI
+!src/ariadne/web/static/dist/
+!src/ariadne/web/static/dist/**
 
 # Local runtime
 .ariadne/
