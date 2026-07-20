@@ -4,11 +4,45 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..errors import AriadneError, app_error
+
+_SECRET_KEY_RE = re.compile(r"(key|token|password|secret|passwd)", re.I)
+
+
+def is_secret_config_key(key: str) -> bool:
+    return bool(_SECRET_KEY_RE.search(key))
+
+
+def mask_secret_value(value: str) -> str:
+    """Show head/tail with ***** in the middle (never return the full secret)."""
+    s = str(value or "")
+    if not s:
+        return ""
+    if len(s) <= 4:
+        return "*****"
+    if len(s) <= 8:
+        return f"{s[:1]}*****{s[-1:]}"
+    return f"{s[:3]}*****{s[-3:]}"
+
+
+def looks_masked_value(value: str) -> bool:
+    return "*****" in str(value or "")
+
+
+def display_config(config: dict[str, str] | None) -> dict[str, str]:
+    """Public-safe config: secrets masked, non-secrets plain."""
+    out: dict[str, str] = {}
+    for key, raw in (config or {}).items():
+        text = str(raw or "")
+        if not text:
+            continue
+        out[key] = mask_secret_value(text) if is_secret_config_key(key) else text
+    return out
 
 
 @dataclass

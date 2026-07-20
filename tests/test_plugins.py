@@ -136,6 +136,19 @@ def test_missing_config_fastfails() -> None:
         build_plugin_tools("nonexistent", {})
 
 
+def test_mask_secret_value() -> None:
+    from ariadne.plugins.store import display_config, mask_secret_value
+
+    assert mask_secret_value("") == ""
+    assert mask_secret_value("ab") == "*****"
+    assert "*****" in mask_secret_value("glpat-secret-token-xyz")
+    assert not mask_secret_value("glpat-secret-token-xyz").startswith("glpat-secret")
+    shown = display_config({"url": "http://x", "token": "super-secret-token"})
+    assert shown["url"] == "http://x"
+    assert "*****" in shown["token"]
+    assert "super-secret-token" not in shown["token"]
+
+
 def test_plugin_store_enable_disable(tmp_path: Path) -> None:
     path = tmp_path / "plugins.json"
     store = PluginStore(path)

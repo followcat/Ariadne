@@ -154,6 +154,7 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/me/plugins")
     def list_my_plugins(username: str = Depends(current_user)) -> Any:
         from ..plugins import PLUGIN_REGISTRY
+        from ..plugins.store import display_config
 
         configured = _plugin_store_for(username).list()
         return [
@@ -163,6 +164,10 @@ def create_app(settings: Settings) -> FastAPI:
                 "required_config": list(plugin.required_config),
                 "enabled": bool(configured.get(name, {}).get("enabled")),
                 "configured": name in configured,
+                # secrets masked (middle *****); never return raw tokens
+                "config": display_config(
+                    dict((configured.get(name) or {}).get("config") or {})
+                ),
             }
             for name, plugin in sorted(PLUGIN_REGISTRY.items())
         ]
@@ -170,18 +175,33 @@ def create_app(settings: Settings) -> FastAPI:
     @app.put("/api/me/plugins/{name}")
     def enable_plugin(name: str, body: PluginBody, username: str = Depends(current_user)) -> Any:
         from ..plugins import PLUGIN_REGISTRY, build_plugin_tools
+        from ..plugins.store import looks_masked_value
 
         plugin = PLUGIN_REGISTRY.get(name)
         if plugin is None:
             raise HTTPException(status_code=404, detail=f"unknown plugin: {name}")
-        missing = [k for k in plugin.required_config if not str(body.config.get(k) or "").strip()]
+        store = _plugin_store_for(username)
+        existing = dict((store.list().get(name) or {}).get("config") or {})
+        # Keep stored secrets when the client resubmits a masked placeholder
+        # or leaves a secret field blank on re-enable.
+        merged: dict[str, str] = {}
+        missing: list[str] = []
+        for key in plugin.required_config:
+            raw = str(body.config.get(key) or "").strip()
+            if not raw or looks_masked_value(raw):
+                if existing.get(key):
+                    merged[key] = str(existing[key])
+                else:
+                    missing.append(key)
+            else:
+                merged[key] = raw
         if missing:
             raise HTTPException(status_code=400, detail=f"missing config: {', '.join(missing)}")
         try:
-            build_plugin_tools(name, body.config)  # validate before persisting
+            build_plugin_tools(name, merged)  # validate before persisting
         except AriadneError as exc:
             raise HTTPException(status_code=400, detail=exc.error.message) from exc
-        _plugin_store_for(username).enable(name, body.config)
+        store.enable(name, merged)
         return {"status": "enabled", "plugin": name}
 
     @app.delete("/api/me/plugins/{name}")

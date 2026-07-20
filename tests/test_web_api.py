@@ -144,12 +144,34 @@ def test_per_user_plugins(tmp_path: Path) -> None:
             # enable with full config
             r = await client.put(
                 "/api/me/plugins/gitlab",
-                json={"config": {"url": "http://gitlab.example.com", "token": "t1"}},
+                json={
+                    "config": {
+                        "url": "http://gitlab.example.com",
+                        "token": "glpat-secret-token-xyz",
+                    }
+                },
                 headers=headers,
             )
             assert r.status_code == 200
             r = await client.get("/api/me/plugins", headers=headers)
-            assert {p["name"]: p["enabled"] for p in r.json()}["gitlab"] is True
+            gitlab = {p["name"]: p for p in r.json()}["gitlab"]
+            assert gitlab["enabled"] is True
+            # secrets are masked for display (never raw token)
+            assert gitlab["config"]["url"] == "http://gitlab.example.com"
+            assert "*****" in gitlab["config"]["token"]
+            assert "glpat-secret-token-xyz" not in gitlab["config"]["token"]
+            # re-enable with masked token keeps the stored secret
+            r = await client.put(
+                "/api/me/plugins/gitlab",
+                json={
+                    "config": {
+                        "url": "http://gitlab.example.com",
+                        "token": gitlab["config"]["token"],
+                    }
+                },
+                headers=headers,
+            )
+            assert r.status_code == 200
             # other user does not see it (user attribute isolation)
             r2 = await client.post(
                 "/api/auth/register", json={"username": "grace", "password": "password123"}
