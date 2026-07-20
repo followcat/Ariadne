@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
+from .json_file import locked_read_json, locked_update_json, locked_write_json
 from .state import ConversationStateStore
 
 
@@ -30,6 +30,7 @@ class ProjectionWorker:
     """Background/fenced projection queue for conversation state.
 
     Personal mode can run jobs inline via drain(), or lease/process like a worker.
+    Job file is fcntl-locked for safe agent + sub-process concurrency.
     """
 
     def __init__(
@@ -40,7 +41,7 @@ class ProjectionWorker:
         lease_seconds: float = 30.0,
         max_attempts: int = 3,
     ) -> None:
-        self.path = path
+        self.path = Path(path)
         self.state_store = state_store
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
@@ -49,28 +50,35 @@ class ProjectionWorker:
             self._write({"jobs": []})
 
     def _read(self) -> dict[str, Any]:
-        return json.loads(self.path.read_text(encoding="utf-8"))
+        data = locked_read_json(self.path, default={"jobs": []})
+        if not isinstance(data, dict):
+            return {"jobs": []}
+        data.setdefault("jobs", [])
+        return data
 
     def _write(self, data: dict[str, Any]) -> None:
-        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        locked_write_json(self.path, data)
 
     def enqueue(self, *, session_id: str, turn_id: str, evidence_text: str) -> str:
-        data = self._read()
         job_id = uuid.uuid4().hex[:12]
-        data.setdefault("jobs", []).append(
-            {
-                "job_id": job_id,
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "evidence_text": evidence_text,
-                "status": "pending",
-                "attempts": 0,
-                "lease_owner": "",
-                "lease_until": 0.0,
-                "error": "",
-            }
-        )
-        self._write(data)
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            data.setdefault("jobs", []).append(
+                {
+                    "job_id": job_id,
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "evidence_text": evidence_text,
+                    "status": "pending",
+                    "attempts": 0,
+                    "lease_owner": "",
+                    "lease_until": 0.0,
+                    "error": "",
+                }
+            )
+            return data
+
+        locked_update_json(self.path, mut, default={"jobs": []})
         return job_id
 
     def claim(self, *, worker_id: str, session_id: str | None = None) -> dict[str, Any] | None:
@@ -78,18 +86,14 @@ class ProjectionWorker:
 
         Within a session, only the earliest unfinished job is claimable — later
         turns wait until earlier ones succeed/fail/no_change.
+        Atomic under exclusive lock (safe across processes).
         """
         now = time.time()
-        data = self._read()
-        jobs: list[dict[str, Any]] = list(data.get("jobs") or [])
+        claimed: dict[str, Any] | None = None
 
         def unfinished(job: dict[str, Any]) -> bool:
             st = job.get("status")
-            if st == "pending":
-                return True
-            if st == "leased":
-                return True  # including expired; reclaimable
-            return False
+            return st in {"pending", "leased"}
 
         def claimable(job: dict[str, Any]) -> bool:
             st = job.get("status")
@@ -99,27 +103,33 @@ class ProjectionWorker:
                 return True
             return False
 
-        # Per session: first unfinished job in list order is the only candidate
-        first_unfinished_by_session: dict[str, dict[str, Any]] = {}
-        for job in jobs:
-            sid = str(job.get("session_id") or "")
-            if session_id is not None and sid != session_id:
-                continue
-            if not unfinished(job):
-                continue
-            if sid not in first_unfinished_by_session:
-                first_unfinished_by_session[sid] = job
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            nonlocal claimed
+            jobs: list[dict[str, Any]] = list(data.get("jobs") or [])
+            first_unfinished_by_session: dict[str, dict[str, Any]] = {}
+            for job in jobs:
+                sid = str(job.get("session_id") or "")
+                if session_id is not None and sid != session_id:
+                    continue
+                if not unfinished(job):
+                    continue
+                if sid not in first_unfinished_by_session:
+                    first_unfinished_by_session[sid] = job
 
-        for job in first_unfinished_by_session.values():
-            if not claimable(job):
-                continue
-            job["status"] = "leased"
-            job["lease_owner"] = worker_id
-            job["lease_until"] = now + self.lease_seconds
-            job["attempts"] = int(job.get("attempts") or 0) + 1
-            self._write(data)
-            return dict(job)
-        return None
+            for job in first_unfinished_by_session.values():
+                if not claimable(job):
+                    continue
+                job["status"] = "leased"
+                job["lease_owner"] = worker_id
+                job["lease_until"] = now + self.lease_seconds
+                job["attempts"] = int(job.get("attempts") or 0) + 1
+                claimed = dict(job)
+                break
+            data["jobs"] = jobs
+            return data
+
+        locked_update_json(self.path, mut, default={"jobs": []})
+        return claimed
 
     def pending_lag(self, session_id: str) -> int:
         """Number of unfinished jobs (pending/active lease) for a session."""
@@ -134,15 +144,17 @@ class ProjectionWorker:
         return n
 
     def complete(self, job_id: str, *, status: str, error: str = "") -> None:
-        data = self._read()
-        for job in data.get("jobs") or []:
-            if job.get("job_id") == job_id:
-                job["status"] = status
-                job["error"] = error
-                job["lease_owner"] = ""
-                job["lease_until"] = 0.0
-                break
-        self._write(data)
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            for job in data.get("jobs") or []:
+                if job.get("job_id") == job_id:
+                    job["status"] = status
+                    job["error"] = error
+                    job["lease_owner"] = ""
+                    job["lease_until"] = 0.0
+                    break
+            return data
+
+        locked_update_json(self.path, mut, default={"jobs": []})
 
     def list_jobs(self, *, session_id: str | None = None) -> list[dict[str, Any]]:
         data = self._read()

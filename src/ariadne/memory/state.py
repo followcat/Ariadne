@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import copy
-import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..errors import AriadneError, app_error
+from .json_file import locked_read_json, locked_update_json, locked_write_json
 
 ALLOWED_OPS = {
     "ensure_entity",
@@ -35,18 +34,22 @@ def empty_state() -> dict[str, Any]:
 
 @dataclass
 class ConversationStateStore:
+    """Authoritative L2 state. File is fcntl-locked for multi-process safety."""
+
     path: Path
 
     def __post_init__(self) -> None:
+        self.path = Path(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self._write({"documents": {}})
 
     def _read(self) -> dict[str, Any]:
-        return json.loads(self.path.read_text(encoding="utf-8"))
+        data = locked_read_json(self.path, default={"documents": {}})
+        return data if isinstance(data, dict) else {"documents": {}}
 
     def _write(self, data: dict[str, Any]) -> None:
-        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        locked_write_json(self.path, data)
 
     def get(self, session_id: str) -> dict[str, Any]:
         data = self._read()
@@ -150,17 +153,7 @@ class ConversationStateStore:
     ) -> dict[str, Any]:
         if not operations:
             return {"decision": "no_change", "state": self.get(session_id)}
-        current_version = self.version(session_id)
-        if expected_parent_version is not None and expected_parent_version != current_version:
-            raise AriadneError(
-                app_error(
-                    "ARIADNE_MEMORY_NOT_READY",
-                    "state version conflict (CAS parent mismatch)",
-                    expected_parent_version=expected_parent_version,
-                    current_version=current_version,
-                )
-            )
-        state = self.get(session_id)
+        # Validate ops against evidence before locking (no invent / no bad quotes).
         evidence = evidence_text or ""
         for op in operations:
             name = str(op.get("op") or "").strip()
@@ -175,63 +168,84 @@ class ConversationStateStore:
                         op=name,
                     )
                 )
-            self._apply_one(state, op, source_turn_id=source_turn_id)
-        if len(state.get("entities") or {}) > MAX_ENTITIES:
-            raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "entity capacity exceeded"))
-        relations = state.get("relations") or {}
-        if len(relations) > MAX_RELATION_TYPES:
-            raise AriadneError(
-                app_error("ARIADNE_INVALID_TOOL_ARGS", "relation type capacity exceeded")
-            )
-        for rel_name, edges in relations.items():
-            if len(edges or []) > MAX_RELATIONS_PER_TYPE:
+
+        result_holder: dict[str, Any] = {}
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            docs = data.setdefault("documents", {})
+            doc = docs.get(session_id) or {}
+            current_version = int(doc.get("version") or 0)
+            if expected_parent_version is not None and expected_parent_version != current_version:
                 raise AriadneError(
                     app_error(
-                        "ARIADNE_INVALID_TOOL_ARGS",
-                        f"relation capacity exceeded for {rel_name!r}",
-                        relation=rel_name,
+                        "ARIADNE_MEMORY_NOT_READY",
+                        "state version conflict (CAS parent mismatch)",
+                        expected_parent_version=expected_parent_version,
+                        current_version=current_version,
                     )
                 )
-        collections = state.get("collections") or {}
-        if len(collections) > MAX_COLLECTIONS:
-            raise AriadneError(
-                app_error("ARIADNE_INVALID_TOOL_ARGS", "collection capacity exceeded")
-            )
-        for cname, coll in collections.items():
-            members = (coll or {}).get("members") or []
-            if len(members) > MAX_COLLECTION_MEMBERS:
+            state = copy.deepcopy(doc.get("state") or empty_state())
+            for op in operations:
+                self._apply_one(state, op, source_turn_id=source_turn_id)
+            if len(state.get("entities") or {}) > MAX_ENTITIES:
+                raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "entity capacity exceeded"))
+            relations = state.get("relations") or {}
+            if len(relations) > MAX_RELATION_TYPES:
                 raise AriadneError(
-                    app_error(
-                        "ARIADNE_INVALID_TOOL_ARGS",
-                        f"collection member capacity exceeded for {cname!r}",
-                        collection=cname,
-                    )
+                    app_error("ARIADNE_INVALID_TOOL_ARGS", "relation type capacity exceeded")
                 )
-        data = self._read()
-        docs = data.setdefault("documents", {})
-        new_version = current_version + 1
-        docs[session_id] = {
-            "state": state,
-            "watermark_turn_id": source_turn_id,
-            "version": new_version,
-        }
-        versions = data.setdefault("versions", {}).setdefault(session_id, [])
-        versions.append(
-            {
-                "version": new_version,
-                "parent_version": current_version,
+            for rel_name, edges in relations.items():
+                if len(edges or []) > MAX_RELATIONS_PER_TYPE:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            f"relation capacity exceeded for {rel_name!r}",
+                            relation=rel_name,
+                        )
+                    )
+            collections = state.get("collections") or {}
+            if len(collections) > MAX_COLLECTIONS:
+                raise AriadneError(
+                    app_error("ARIADNE_INVALID_TOOL_ARGS", "collection capacity exceeded")
+                )
+            for cname, coll in collections.items():
+                members = (coll or {}).get("members") or []
+                if len(members) > MAX_COLLECTION_MEMBERS:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            f"collection member capacity exceeded for {cname!r}",
+                            collection=cname,
+                        )
+                    )
+            new_version = current_version + 1
+            docs[session_id] = {
+                "state": state,
                 "watermark_turn_id": source_turn_id,
-                "ops": [str(op.get("op")) for op in operations],
+                "version": new_version,
             }
-        )
-        self._write(data)
-        return {
-            "decision": "apply",
-            "state": state,
-            "ops": len(operations),
-            "version": new_version,
-            "parent_version": current_version,
-        }
+            versions = data.setdefault("versions", {}).setdefault(session_id, [])
+            versions.append(
+                {
+                    "version": new_version,
+                    "parent_version": current_version,
+                    "watermark_turn_id": source_turn_id,
+                    "ops": [str(op.get("op")) for op in operations],
+                }
+            )
+            result_holder.update(
+                {
+                    "decision": "apply",
+                    "state": state,
+                    "ops": len(operations),
+                    "version": new_version,
+                    "parent_version": current_version,
+                }
+            )
+            return data
+
+        locked_update_json(self.path, mut, default={"documents": {}})
+        return result_holder
 
     def _apply_one(self, state: dict[str, Any], op: dict[str, Any], *, source_turn_id: str) -> None:
         entities: dict[str, Any] = state.setdefault("entities", {})

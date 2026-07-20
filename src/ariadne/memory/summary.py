@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-SummaryStatus = Literal["pending", "ready", "failed", "not_applicable"]
+from .json_file import locked_read_json, locked_update_json, locked_write_json
+
+SummaryStatus = Literal["pending", "processing", "ready", "failed", "not_applicable"]
 CompressorFn = Callable[[str], str]
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?。！？])\s+|\n+")
@@ -41,7 +42,6 @@ def grounded_compress(source_text: str, *, max_chars: int = 400) -> str:
         picked.append(s)
 
     add(sentences[0])
-    # Prefer mid lines that look like facts (bullets, numbers, paths, assignments).
     mid = sentences[1:-1]
     signal = [
         s
@@ -54,7 +54,6 @@ def grounded_compress(source_text: str, *, max_chars: int = 400) -> str:
         add(sentences[-1])
     out = " ".join(picked)
     if len(out) > max_chars:
-        # Prefer head+tail of the assembled grounded text.
         head = max_chars // 2 - 10
         tail = max_chars - head - 5
         out = out[:head] + " … " + out[-tail:]
@@ -63,28 +62,46 @@ def grounded_compress(source_text: str, *, max_chars: int = 400) -> str:
     return out
 
 
+def _compressor_kind(fn: CompressorFn | None) -> str:
+    if fn is None:
+        return "grounded_compress"
+    kind = getattr(fn, "kind", None)
+    if kind:
+        return str(kind)
+    name = getattr(fn, "__name__", "") or ""
+    if "grounded" in name:
+        return "grounded_compress"
+    return "custom"
+
+
 @dataclass
 class TurnSummaryStore:
-    """L1 store: enqueue → process → ready (design: no invent; raw fallback when missing)."""
+    """L1 store: enqueue → process → ready (design: no invent; raw fallback when missing).
+
+    JSON path is fcntl-locked so agent turns and sub-process workers can share
+    the same ``summaries.json`` without lost updates.
+    """
 
     path: Path
     compressor: CompressorFn | None = None
     max_summary_chars: int = 400
 
     def __post_init__(self) -> None:
+        self.path = Path(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
-            self.path.write_text("{}\n", encoding="utf-8")
+            locked_write_json(self.path, {})
         if self.compressor is None:
-            self.compressor = lambda t: grounded_compress(
-                t, max_chars=self.max_summary_chars
-            )
+            fn = lambda t: grounded_compress(t, max_chars=self.max_summary_chars)  # noqa: E731
+            fn.kind = "grounded_compress"  # type: ignore[attr-defined]
+            self.compressor = fn
 
     def _read(self) -> dict[str, Any]:
-        return json.loads(self.path.read_text(encoding="utf-8"))
+        data = locked_read_json(self.path, default={})
+        return data if isinstance(data, dict) else {}
 
     def _write(self, data: dict[str, Any]) -> None:
-        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        locked_write_json(self.path, data)
 
     def put(
         self,
@@ -95,14 +112,17 @@ class TurnSummaryStore:
         status: SummaryStatus = "ready",
     ) -> None:
         """Write a summary entry (legacy ready path + status field)."""
-        data = self._read()
-        sess = data.setdefault(session_id, {})
-        sess[turn_id] = {
-            "status": status,
-            "summary_text": summary_text,
-            "updated_at": time.time(),
-        }
-        self._write(data)
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            sess = data.setdefault(session_id, {})
+            sess[turn_id] = {
+                "status": status,
+                "summary_text": summary_text,
+                "updated_at": time.time(),
+            }
+            return data
+
+        locked_update_json(self.path, mut, default={})
 
     def enqueue(
         self,
@@ -112,57 +132,94 @@ class TurnSummaryStore:
         source_text: str,
     ) -> None:
         """Mark summary pending with source text for later compression."""
-        data = self._read()
-        sess = data.setdefault(session_id, {})
-        existing = sess.get(turn_id) or {}
-        if existing.get("status") == "ready" and existing.get("summary_text"):
-            return
-        sess[turn_id] = {
-            "status": "pending",
-            "source_text": (source_text or "")[:4000],
-            "summary_text": "",
-            "updated_at": time.time(),
-        }
-        self._write(data)
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            sess = data.setdefault(session_id, {})
+            existing = sess.get(turn_id) or {}
+            if existing.get("status") == "ready" and existing.get("summary_text"):
+                return data
+            sess[turn_id] = {
+                "status": "pending",
+                "source_text": (source_text or "")[:4000],
+                "summary_text": "",
+                "updated_at": time.time(),
+            }
+            return data
+
+        locked_update_json(self.path, mut, default={})
 
     def process_pending(
         self, *, session_id: str | None = None, max_jobs: int = 32
     ) -> int:
-        """Compress pending entries to ready via grounded compressor.
+        """Compress pending entries to ready.
 
-        Never invents facts beyond the source_text. Returns number processed.
+        Compressors may call LLM (seconds). Claim under lock, compress
+        **outside** the lock, then finish under lock so other processes are not
+        blocked on model latency.
         """
-        data = self._read()
-        n = 0
         compress = self.compressor or (
             lambda t: grounded_compress(t, max_chars=self.max_summary_chars)
         )
-        for sid, sess in list(data.items()):
-            if session_id is not None and sid != session_id:
-                continue
-            if not isinstance(sess, dict):
-                continue
-            for turn_id, payload in list(sess.items()):
-                if n >= max_jobs:
-                    break
-                if not isinstance(payload, dict):
-                    continue
-                if payload.get("status") != "pending":
-                    continue
-                src = str(payload.get("source_text") or "").strip()
-                if not src:
-                    payload["status"] = "not_applicable"
-                    payload["summary_text"] = ""
-                else:
-                    payload["summary_text"] = compress(src)
-                    payload["status"] = "ready"
-                    payload["compressor"] = "grounded_compress"
-                payload["updated_at"] = time.time()
-                n += 1
-            if n >= max_jobs:
+        kind = _compressor_kind(compress)
+        n = 0
+        while n < max_jobs:
+            claimed: dict[str, str] | None = None
+
+            def claim(data: dict[str, Any]) -> dict[str, Any]:
+                nonlocal claimed
+                for sid, sess in list(data.items()):
+                    if session_id is not None and sid != session_id:
+                        continue
+                    if not isinstance(sess, dict):
+                        continue
+                    for tid, payload in list(sess.items()):
+                        if not isinstance(payload, dict):
+                            continue
+                        if payload.get("status") != "pending":
+                            continue
+                        src = str(payload.get("source_text") or "").strip()
+                        payload["status"] = "processing"
+                        payload["updated_at"] = time.time()
+                        claimed = {"session_id": sid, "turn_id": tid, "source_text": src}
+                        return data
+                return data
+
+            locked_update_json(self.path, claim, default={})
+            if claimed is None:
                 break
-        if n:
-            self._write(data)
+
+            src = claimed["source_text"]
+            if not src:
+                summary_text = ""
+                status: SummaryStatus = "not_applicable"
+                comp_label = kind
+            else:
+                summary_text = compress(src)
+                status = "ready"
+                # If llm fell back, text may still look grounded; label as requested kind.
+                comp_label = kind
+
+            sid = claimed["session_id"]
+            tid = claimed["turn_id"]
+
+            def finish(data: dict[str, Any]) -> dict[str, Any]:
+                sess = data.get(sid)
+                if not isinstance(sess, dict):
+                    return data
+                payload = sess.get(tid)
+                if not isinstance(payload, dict):
+                    return data
+                # Only finish if we still own the processing claim.
+                if payload.get("status") != "processing":
+                    return data
+                payload["status"] = status
+                payload["summary_text"] = summary_text
+                payload["compressor"] = comp_label
+                payload["updated_at"] = time.time()
+                return data
+
+            locked_update_json(self.path, finish, default={})
+            n += 1
         return n
 
     def list_ready(
@@ -195,7 +252,7 @@ class TurnSummaryStore:
             n += sum(
                 1
                 for p in sess.values()
-                if isinstance(p, dict) and p.get("status") == "pending"
+                if isinstance(p, dict) and p.get("status") in {"pending", "processing"}
             )
         return n
 
@@ -215,7 +272,6 @@ class TurnSummaryStore:
         )
         if not items:
             return ""
-        # Dedupe by turn_id (last write wins; list_ready already unique keys).
         seen: set[str] = set()
         lines = ["[HISTORICAL_CONTEXT: MAY BE SUPERSEDED BY CONVERSATION_STATE]"]
         for item in items:
