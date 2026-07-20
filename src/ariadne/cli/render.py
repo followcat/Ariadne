@@ -9,6 +9,11 @@ from ..types import TurnEvent, TurnResult
 def render_event(event: TurnEvent, *, verbose: bool = False) -> str:
     if event.kind == "model_delta":
         return str(event.data.get("text") or "")
+    if event.kind == "model_thinking_delta":
+        # Optional verbose: prefix so hosts can filter thinking from answer.
+        if verbose:
+            return str(event.data.get("text") or "")
+        return ""
     if not verbose:
         return ""
     if event.kind == "turn_started":

@@ -400,7 +400,11 @@ async def _emit_stream(
             sys.stdout.write(json.dumps(_event_to_jsonable(event), ensure_ascii=False, default=str) + "\n")
             sys.stdout.flush()
             continue
-        if event.kind == "model_delta":
+        if event.kind == "model_thinking_delta":
+            # Dim thinking stream; hosts may suppress. Web collapses after answer.
+            if verbose:
+                ui.print_delta(str(event.data.get("text") or ""))
+        elif event.kind == "model_delta":
             saw_delta = True
             ui.print_delta(str(event.data.get("text") or ""))
         elif event.kind == "tool_started":

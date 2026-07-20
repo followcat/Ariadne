@@ -15,7 +15,7 @@ class ModelExchange:
 
 @dataclass(slots=True)
 class ModelStreamEvent:
-    kind: str  # delta | tool_call_delta | completed
+    kind: str  # delta | thinking_delta | tool_call_delta | completed
     text: str = ""
     exchange: ModelExchange | None = None
 

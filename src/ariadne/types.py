@@ -85,6 +85,8 @@ class Message:
     tool_call_id: str | None = None
     name: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
+    # Provider reasoning / chain-of-thought (not always present; not re-sent by default)
+    reasoning_content: str = ""
 
 
 @dataclass(slots=True)
@@ -118,6 +120,7 @@ class TurnResult:
 TurnEventKind = Literal[
     "turn_started",
     "model_delta",
+    "model_thinking_delta",  # reasoning / chain-of-thought (UI may collapse when answer ready)
     "tool_started",
     "tool_completed",
     "skill_event",

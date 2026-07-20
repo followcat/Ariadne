@@ -330,11 +330,62 @@
     background: var(--btn); color: var(--btn-fg);
     display: grid; place-items: center; font-size: 12px; font-weight: 800;
   }
-  .msg.assistant.streaming .md::after {
-    content: "▍"; margin-left: 2px; color: var(--dim);
+  .msg.assistant.streaming .md.has-text::after {
+    content: "▋"; margin-left: 2px; color: var(--dim);
     animation: blink 1s step-end infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }
+
+  /* Thinking / reasoning: live open, collapse when answer ready (ChatGPT·Grok) */
+  .thinking {
+    margin: 0 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg-3);
+    overflow: hidden;
+  }
+  .thinking.hidden { display: none; }
+  .thinking-toggle {
+    width: 100%; text-align: left;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    font-size: 13px; color: var(--dim); font-weight: 560;
+  }
+  .thinking-toggle:hover { background: var(--bg-hover); color: var(--fg-2); }
+  .thinking-toggle .ico {
+    width: 18px; height: 18px; border-radius: 6px;
+    display: grid; place-items: center; font-size: 11px;
+    background: var(--bg-hover); color: var(--muted);
+  }
+  .thinking.live .thinking-toggle .ico { color: var(--blue); }
+  .thinking-toggle .label { flex: 1; }
+  .thinking-toggle .chev {
+    font-size: 12px; color: var(--muted);
+    transition: transform .15s ease;
+  }
+  .thinking.open .thinking-toggle .chev { transform: rotate(90deg); }
+  .thinking-body {
+    display: none;
+    padding: 0 12px 10px;
+    max-height: 220px; overflow-y: auto;
+    font-size: 13px; line-height: 1.55; color: var(--muted);
+    white-space: pre-wrap; word-break: break-word;
+    border-top: 1px solid transparent;
+  }
+  .thinking.open .thinking-body,
+  .thinking.live .thinking-body {
+    display: block;
+    border-top-color: var(--line);
+    padding-top: 8px;
+  }
+  .thinking.live .thinking-toggle .label::after {
+    content: "";
+    display: inline-block; width: 5px; height: 5px; margin-left: 8px;
+    border-radius: 50%; background: var(--blue);
+    animation: blink 1s step-end infinite;
+    vertical-align: middle;
+  }
+  .md.placeholder { color: var(--muted); }
 
   .md { font-size: 15.5px; line-height: 1.65; word-wrap: break-word; overflow-wrap: anywhere; color: var(--fg-2); }
   .md > :first-child { margin-top: 0; }
@@ -1475,7 +1526,22 @@ function addAssistantShell() {
   div.className = 'msg assistant streaming';
   div.innerHTML =
     '<div class="meta"><span class="avatar">A</span><span>Ariadne</span><span class="status">· 思考中</span></div>' +
-    '<div class="md">…</div>';
+    '<div class="thinking hidden" data-thinking>' +
+      '<button type="button" class="thinking-toggle">' +
+        '<span class="ico">✦</span><span class="label">思考过程</span><span class="chev">›</span>' +
+      '</button>' +
+      '<div class="thinking-body"></div>' +
+    '</div>' +
+    '<div class="md placeholder">…</div>';
+  const th = div.querySelector('[data-thinking]');
+  const toggle = th && th.querySelector('.thinking-toggle');
+  if (toggle) {
+    toggle.onclick = () => {
+      // Manual expand/collapse after answer is ready (live stays open)
+      if (th.classList.contains('live')) return;
+      th.classList.toggle('open');
+    };
+  }
   $('chat-inner').appendChild(div);
   scrollChat();
   return div;
@@ -1486,14 +1552,45 @@ function setAssistantMarkdown(shell, text, { streaming = true } = {}) {
   const meta = shell.querySelector('.meta .status');
   if (streaming) {
     shell.classList.add('streaming');
-    if (meta) meta.textContent = '· 思考中';
+    if (meta && !shell.dataset.hasAnswer) meta.textContent = '· 思考中';
+    if (meta && shell.dataset.hasAnswer) meta.textContent = '· 生成中';
   } else {
     shell.classList.remove('streaming');
     if (meta) meta.textContent = '';
   }
   shell.dataset.raw = text || '';
-  md.innerHTML = text ? MD.render(text) : (streaming ? '…' : '<p>(empty reply)</p>');
+  if (text) {
+    md.classList.remove('placeholder');
+    md.classList.add('has-text');
+    md.innerHTML = MD.render(text);
+  } else {
+    md.classList.add('placeholder');
+    md.classList.remove('has-text');
+    md.innerHTML = streaming ? '…' : '<p>(empty reply)</p>';
+  }
   scrollChat();
+}
+
+function setThinking(shell, text, { live = true, forceCollapse = false } = {}) {
+  const box = shell.querySelector('[data-thinking]');
+  if (!box) return;
+  const body = box.querySelector('.thinking-body');
+  const label = box.querySelector('.label');
+  if (!text) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  body.textContent = text;
+  if (forceCollapse || !live) {
+    box.classList.remove('live');
+    box.classList.remove('open'); // collapsed by default after answer
+    if (label) label.textContent = '已思考';
+  } else {
+    box.classList.add('live');
+    box.classList.remove('open');
+    if (label) label.textContent = '思考中';
+  }
 }
 
 function addTool(name, status, detail, extra) {
@@ -1515,8 +1612,10 @@ function addTool(name, status, detail, extra) {
 
 function createStreamRenderer(shell) {
   let full = '';
+  let thinking = '';
   let pending = null;
   let lastPaint = 0;
+  let sawAnswer = false;
   const paint = (force = false) => {
     const now = performance.now();
     if (!force && now - lastPaint < 40) {
@@ -1525,6 +1624,7 @@ function createStreamRenderer(shell) {
           pending = null;
           lastPaint = performance.now();
           setAssistantMarkdown(shell, full, { streaming: true });
+          if (thinking) setThinking(shell, thinking, { live: !sawAnswer });
         });
       }
       return;
@@ -1532,17 +1632,43 @@ function createStreamRenderer(shell) {
     if (pending != null) { cancelAnimationFrame(pending); pending = null; }
     lastPaint = now;
     setAssistantMarkdown(shell, full, { streaming: true });
+    if (thinking) setThinking(shell, thinking, { live: !sawAnswer });
   };
   return {
-    append(chunk) { full += chunk; paint(false); },
-    set(text) { full = text || ''; paint(true); },
+    appendThinking(chunk) {
+      thinking += chunk;
+      // While only thinking (no answer yet), keep open/live
+      setThinking(shell, thinking, { live: !sawAnswer });
+      scrollChat();
+    },
+    append(chunk) {
+      if (!sawAnswer && chunk) {
+        sawAnswer = true;
+        shell.dataset.hasAnswer = '1';
+        // Answer started → collapse thinking (Grok/ChatGPT style)
+        if (thinking) setThinking(shell, thinking, { live: false, forceCollapse: true });
+      }
+      full += chunk;
+      paint(false);
+    },
+    set(text) {
+      if (text) {
+        sawAnswer = true;
+        shell.dataset.hasAnswer = '1';
+        if (thinking) setThinking(shell, thinking, { live: false, forceCollapse: true });
+      }
+      full = text || '';
+      paint(true);
+    },
     finish(fallbackText) {
       if (!full && fallbackText) full = fallbackText;
       if (pending != null) { cancelAnimationFrame(pending); pending = null; }
       setAssistantMarkdown(shell, full || '(empty reply)', { streaming: false });
+      if (thinking) setThinking(shell, thinking, { live: false, forceCollapse: true });
       return full;
     },
     get text() { return full; },
+    get thinking() { return thinking; },
   };
 }
 
@@ -1596,7 +1722,9 @@ async function send() {
         if (!line.startsWith('data:')) continue;
         let ev;
         try { ev = JSON.parse(line.replace(/^data:\s?/, '')); } catch (_) { continue; }
-        if (ev.kind === 'model_delta') {
+        if (ev.kind === 'model_thinking_delta') {
+          stream.appendThinking(String((ev.data && ev.data.text) || ''));
+        } else if (ev.kind === 'model_delta') {
           stream.append(String((ev.data && ev.data.text) || ''));
         } else if (ev.kind === 'tool_started') {
           addTool(ev.data.name, 'started', '', {

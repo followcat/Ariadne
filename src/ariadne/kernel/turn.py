@@ -470,7 +470,11 @@ class TurnApplication:
                     async for sev in self.model.stream(
                         messages=messages, tools=tools_payload, model=model
                     ):
-                        if sev.kind == "delta" and sev.text:
+                        if sev.kind == "thinking_delta" and sev.text:
+                            yield TurnEvent(
+                                "model_thinking_delta", {"text": sev.text}
+                            )
+                        elif sev.kind == "delta" and sev.text:
                             yield TurnEvent("model_delta", {"text": sev.text})
                         if sev.kind == "completed" and sev.exchange is not None:
                             exchange = sev.exchange
@@ -482,6 +486,10 @@ class TurnApplication:
                     exchange = await self.model.complete(
                         messages=messages, tools=tools_payload, model=model
                     )
+                    # Non-stream: surface reasoning once if the provider returned it.
+                    reasoning = getattr(exchange.message, "reasoning_content", "") or ""
+                    if reasoning:
+                        yield TurnEvent("model_thinking_delta", {"text": reasoning})
 
                 usage_total.prompt_tokens += exchange.usage.prompt_tokens
                 usage_total.completion_tokens += exchange.usage.completion_tokens

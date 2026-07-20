@@ -156,8 +156,13 @@ def create_app(settings: Settings) -> FastAPI:
         images: list[Any] | None,
     ) -> StreamingResponse:
         user_settings = _settings_for(username)
+        # SSE path always wants model token streaming (answer + thinking deltas).
         if session_id:
-            user_settings = dataclasses.replace(user_settings, session_id=session_id)
+            user_settings = dataclasses.replace(
+                user_settings, session_id=session_id, stream=True
+            )
+        else:
+            user_settings = dataclasses.replace(user_settings, stream=True)
         agent = compose_agent(user_settings)
 
         async def events():
