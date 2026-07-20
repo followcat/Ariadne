@@ -139,6 +139,8 @@ class TurnApplication:
     guardrails_enabled: bool = True
     approval_hook: ApprovalHook | None = None
     vision_mode: str = "auto"  # auto | on | off — see multimodal.model_supports_vision
+    # Optional per-session tool allow-list (None = all exposed tools).
+    session_visible_tools: set[str] | None = None
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -299,8 +301,11 @@ class TurnApplication:
             skill_plan = await self.skills.plan_async(prompt)
         else:
             skill_plan = self.skills.plan(prompt)
-        exposure = self.tools.build_exposure(prefer_deferred=self.prefer_deferred_tools)
-        catalog = self.tools.catalog_text()
+        exposure = self.tools.build_exposure(
+            prefer_deferred=self.prefer_deferred_tools,
+            session_visible=self.session_visible_tools,
+        )
+        catalog = self.tools.catalog_text(session_visible=self.session_visible_tools)
 
         # Prompt assembly (design: policy → high-signal memory → skills → catalog
         # → runtime → recent → user). Skill plan sits near user (strong attention).
@@ -312,44 +317,64 @@ class TurnApplication:
 
         # Always emit compact SKILL_SELECTION (never dump full linear index).
         n_skills = len(self.skills.list())
-        lines = ["[SKILL_SELECTION]"]
-        if skill_plan["auto_load"]:
-            names = ", ".join(
-                f"{s.name} (score {score:.3g})" for s, score in skill_plan["auto_load"]
-            )
-            lines.append(f"auto_load: {names} (body injected this turn below)")
-        if skill_plan["recommended"]:
-            names = ", ".join(
-                f"{s.name} (score {score:.3g})" for s, score in skill_plan["recommended"]
-            )
-            lines.append(f"recommended: {names}")
-        if n_skills == 0:
-            lines.append("other: 0 skills installed")
+        if hasattr(self.skills, "format_plan_text"):
+            plan_text = self.skills.format_plan_text(skill_plan, n_skills=n_skills)
         else:
-            other = int(skill_plan.get("other") or 0)
-            if not skill_plan["auto_load"] and not skill_plan["recommended"]:
-                lines.append(
-                    f"other: {n_skills} installed — none auto-matched; use search_skills"
-                )
-            else:
-                lines.append(f"other: {other} more installed — use search_skills if needed")
-        plan_text = "\n".join(lines)
+            plan_text = "[SKILL_SELECTION]\nother: use search_skills"
+        report = skill_plan.get("report") or {}
         detail = (
             f"plan: {len(skill_plan['auto_load'])} auto, "
             f"{len(skill_plan['recommended'])} recommended, "
-            f"{skill_plan.get('other', 0)} other; scores in plan"
+            f"{skill_plan.get('other', 0)} other; "
+            f"plan_chars={report.get('plan_chars', len(plan_text))}"
         )
         messages.append({"role": "system", "content": plan_text})
         skill_events.append(SkillEvent(kind="index", detail=detail))
         yield TurnEvent("skill_event", {"kind": "index", "detail": detail})
 
         # Turn-scoped auto_load bodies (SKILLS §4.1 / §5) — not permanent policy.
-        for skill, score in skill_plan["auto_load"][:2]:
+        budgets = getattr(self.skills, "budgets", None)
+        body_max = int(getattr(budgets, "auto_body_max", 2) or 2)
+        body_chars = int(getattr(budgets, "auto_body_chars", 6000) or 6000)
+        available_tools = set(self.tools.tools.keys())
+        for skill, score in skill_plan["auto_load"][:body_max]:
             body = (skill.body or "").strip()
             if not body:
                 continue
-            if len(body) > 6000:
-                body = body[:6000] + "\n[ariadne: skill body truncated to 6000 chars]"
+            missing = []
+            if hasattr(self.skills, "missing_tools"):
+                missing = self.skills.missing_tools(skill, available_tools)
+            if missing:
+                # Enforce requires_tools: inject note instead of body.
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"[SKILL_BODY name={skill.name} score={score:.3g} "
+                            f"scope=this_turn skipped=missing_tools]\n"
+                            f"requires_tools missing: {', '.join(missing)}. "
+                            "Register/enable those tools before following this skill."
+                        ),
+                    }
+                )
+                skill_events.append(
+                    SkillEvent(
+                        kind="load",
+                        skill_name=skill.name,
+                        detail=f"auto_load skipped missing_tools={missing}",
+                    )
+                )
+                yield TurnEvent(
+                    "skill_event",
+                    {
+                        "kind": "load",
+                        "skill_name": skill.name,
+                        "detail": f"auto_load skipped missing_tools={missing}",
+                    },
+                )
+                continue
+            if len(body) > body_chars:
+                body = body[:body_chars] + f"\n[ariadne: skill body truncated to {body_chars} chars]"
             messages.append(
                 {
                     "role": "system",
