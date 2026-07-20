@@ -1,11 +1,12 @@
-"""Interactive REPL for `ariadne chat`.
+"""Interactive REPL for bare `ariadne` / `ariadne chat`.
 
-Codex/Claude-Code style terminal agent loop:
+Codex-style terminal agent loop:
 - readline history persisted under the data dir
 - multiline input (trailing \\ continuation, ``` blocks)
 - Ctrl+C cancels the current turn, not the REPL
 - streaming by default (--no-stream to disable)
 - spinner while the model thinks, live deltas when streaming
+- optional initial_prompt seeds the first turn
 - prompt shows session:model
 """
 
@@ -27,6 +28,34 @@ from . import ui
 from .render import render_json
 
 HISTORY_LIMIT = 5000
+
+_HELP_TEXT = """\
+session
+  /session              show session id
+  /resume [id]          list or switch sessions
+  /new | /reset-session new session id (workspace kept)
+  /status               host status (model, workspace, approval, …)
+  /mode [auto|on-request|readonly]
+  /model [name]         show or hot-swap model
+  /usage                cumulative tokens this REPL
+  /compact              archive transcript (summaries remain)
+
+workspace / tools
+  /workspace            show workspace path
+  /tools                list tools
+  /skills               list skills
+  /sandbox-status
+  /clear-session-files  wipe /session scratch (not /workspace)
+  /memory read
+
+ui
+  /clear                clear screen
+  /help
+  /exit | /quit
+
+input: trailing \\ continues a line; ``` fences open a multiline block.
+Ctrl+C cancels the running turn; Ctrl+C on an empty prompt exits.
+"""
 
 
 def _setup_readline(history_path: Path) -> None:
@@ -91,27 +120,90 @@ async def _run_turn(
     return (0 if result.status == "completed" else 1), result
 
 
+def _print_status(settings: Settings, agent: Agent) -> None:
+    ui.out.print(f"session:    {settings.session_id}")
+    ui.out.print(f"workspace:  {settings.workspace}")
+    ui.out.print(f"model:      {settings.model}")
+    ui.out.print(f"base_url:   {'set' if settings.base_url else 'MISSING'}")
+    ui.out.print(f"api_key:    {'set' if settings.api_key else 'MISSING'}")
+    ui.out.print(f"sandbox:    {settings.sandbox}/{settings.sandbox_lifecycle}")
+    ui.out.print(f"approval:   {settings.approval_mode}")
+    ui.out.print(f"stream:     {settings.stream}")
+    if agent.active_sessions is not None:
+        ui.out.print(f"active:     {agent.active_sessions.status()}")
+
+
+def _reset_session(settings: Settings, agent: Agent) -> Agent:
+    if agent.active_sessions is not None:
+        asyncio.run(agent.active_sessions.close(settings.session_id, reason="reset_session"))
+    settings.session_id = f"reset-{uuid.uuid4().hex[:8]}"
+    from .approval import make_approval_hook
+
+    agent = compose_agent(settings)
+    agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
+    return agent
+
+
 def run_repl(
     args: argparse.Namespace,
     settings: Settings,
     agent: Agent,
     *,
     welcome: bool = True,
+    initial_prompt: str | None = None,
 ) -> int:
     history_path = settings.resolved_data_dir / "history"
     _setup_readline(history_path)
     stream = settings.stream or not getattr(args, "no_stream", False)
+    # keep settings.stream aligned for /status
+    settings.stream = stream
     usage_totals = {"prompt": 0, "completion": 0, "total": 0, "turns": 0}
 
     if welcome:
+        ws = str(settings.workspace)
+        if len(ws) > 48:
+            ws = "…" + ws[-47:]
         ui.print_info(
-            f"Ariadne chat  session={settings.session_id}  workspace={settings.workspace}  "
-            f"sandbox={settings.sandbox}/{settings.sandbox_lifecycle}  approval={settings.approval_mode}"
+            f"Ariadne  session={settings.session_id}  model={settings.model}  "
+            f"workspace={ws}  sandbox={settings.sandbox}/{settings.sandbox_lifecycle}  "
+            f"approval={settings.approval_mode}"
         )
-        ui.print_info("Type /exit to quit, /help for commands.")
+        ui.print_info("Type /help for commands, /exit to quit.")
 
     exit_code = 0
+
+    def _consume_turn(line: str) -> None:
+        nonlocal exit_code, agent
+        try:
+            code, result = asyncio.run(
+                _run_turn(
+                    agent,
+                    line,
+                    stream=stream,
+                    json_mode=settings.json_mode,
+                    verbose=settings.verbose,
+                )
+            )
+        except KeyboardInterrupt:
+            ui.print_info("^C (turn cancelled; sandbox cleaned up)")
+            return
+        except AriadneError as exc:
+            ui.print_error(exc.error.code, exc.error.message)
+            exit_code = 1
+            return
+        usage_totals["turns"] += 1
+        if result is not None:
+            usage_totals["prompt"] += result.usage.prompt_tokens
+            usage_totals["completion"] += result.usage.completion_tokens
+            usage_totals["total"] += result.usage.total_tokens
+        if code != 0:
+            exit_code = 1
+
     try:
+        if initial_prompt and initial_prompt.strip():
+            ui.print_info(f"→ {initial_prompt.strip()[:120]}")
+            _consume_turn(initial_prompt.strip())
+
         while True:
             prompt = f"{settings.session_id}:{settings.model}> "
             line = _read_multiline(prompt)
@@ -125,12 +217,25 @@ def run_repl(
             if line in {"/exit", "/quit"}:
                 break
             if line == "/help":
-                ui.out.print(
-                    "/exit /quit /session /workspace /tools /skills /model [name] "
-                    "/memory read /usage /compact /resume [id] /reset-session "
-                    "/sandbox-status /clear-session-files /clear /help",
-                    markup=False,
-                )
+                ui.out.print(_HELP_TEXT, markup=False)
+                continue
+            if line == "/status":
+                _print_status(settings, agent)
+                continue
+            if line.startswith("/mode"):
+                parts = line.split(maxsplit=1)
+                if len(parts) == 1:
+                    ui.out.print(settings.approval_mode)
+                    continue
+                mode = parts[1].strip()
+                if mode not in {"auto", "on-request", "readonly"}:
+                    ui.print_error("MODE", "usage: /mode [auto|on-request|readonly]")
+                    continue
+                from .approval import make_approval_hook
+
+                settings.approval_mode = mode
+                agent.turn_app.approval_hook = make_approval_hook(mode)
+                ui.print_info(f"approval -> {mode}")
                 continue
             if line == "/session":
                 ui.out.print(settings.session_id)
@@ -223,14 +328,8 @@ def run_repl(
                 agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
                 ui.print_info(f"resumed session: {target}")
                 continue
-            if line == "/reset-session":
-                if agent.active_sessions is not None:
-                    asyncio.run(agent.active_sessions.close(settings.session_id, reason="reset_session"))
-                settings.session_id = f"reset-{uuid.uuid4().hex[:8]}"
-                from .approval import make_approval_hook
-
-                agent = compose_agent(settings)
-                agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
+            if line in {"/reset-session", "/new"}:
+                agent = _reset_session(settings, agent)
                 ui.print_info(f"new session: {settings.session_id} (workspace kept)")
                 continue
             if line == "/sandbox-status":
@@ -247,30 +346,7 @@ def run_repl(
                 ui.out.print("cleared" if ok else "no active session or clear failed")
                 continue
 
-            try:
-                code, result = asyncio.run(
-                    _run_turn(
-                        agent,
-                        line,
-                        stream=stream,
-                        json_mode=settings.json_mode,
-                        verbose=settings.verbose,
-                    )
-                )
-            except KeyboardInterrupt:
-                ui.print_info("^C (turn cancelled; sandbox cleaned up)")
-                continue
-            except AriadneError as exc:
-                ui.print_error(exc.error.code, exc.error.message)
-                exit_code = 1
-                continue
-            usage_totals["turns"] += 1
-            if result is not None:
-                usage_totals["prompt"] += result.usage.prompt_tokens
-                usage_totals["completion"] += result.usage.completion_tokens
-                usage_totals["total"] += result.usage.total_tokens
-            if code != 0:
-                exit_code = 1
+            _consume_turn(line)
     finally:
         if agent.active_sessions is not None:
             asyncio.run(agent.active_sessions.close(settings.session_id, reason="chat_exit"))

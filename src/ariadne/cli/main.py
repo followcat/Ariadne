@@ -16,6 +16,74 @@ from ..types import TurnEvent
 from .render import render_json
 from . import ui
 
+# Subcommands recognized before free-form prompt (codex-style bare entry).
+_KNOWN_COMMANDS = frozenset(
+    {
+        "run",
+        "exec",
+        "chat",
+        "resume",
+        "doctor",
+        "tools",
+        "skills",
+        "sessions",
+        "plugins",
+        "plugin",
+        "serve",
+        "toolbox",
+        "version",
+        "help",
+    }
+)
+
+# Long options that consume the next argv token as a value.
+_VALUE_OPTIONS = frozenset(
+    {
+        "--session",
+        "--workspace",
+        "--sandbox",
+        "--sandbox-lifecycle",
+        "--toolbox",
+        "--docker-image",
+        "--model",
+        "--tool-loop-limit",
+        "--skills-dir",
+        "--approval-mode",
+        "--host",
+        "--port",
+    }
+)
+
+
+def extract_free_prompt(argv: list[str]) -> tuple[list[str], str | None]:
+    """Split ``[flags…] [PROMPT…]`` when the first positional is not a command.
+
+    Returns ``(argv_for_argparse, free_prompt)``. If the first positional is a
+    known subcommand, argv is unchanged and free_prompt is None.
+    """
+    prefix: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":
+            rest = " ".join(argv[i + 1 :]).strip()
+            return prefix, rest or None
+        if tok.startswith("-"):
+            prefix.append(tok)
+            key = tok.split("=", 1)[0]
+            if key in _VALUE_OPTIONS and "=" not in tok:
+                i += 1
+                if i < len(argv):
+                    prefix.append(argv[i])
+            i += 1
+            continue
+        # first positional token
+        if tok in _KNOWN_COMMANDS:
+            return list(argv), None
+        prompt = " ".join(argv[i:]).strip()
+        return prefix, prompt or None
+    return prefix, None
+
 
 def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
     """Global flags. suppress=True lets subcommands accept them after the
@@ -84,21 +152,60 @@ def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ariadne",
-        description="Ariadne — personal shell agent (CLI host over the agent kernel).",
+        description=(
+            "Ariadne — personal shell agent. "
+            "With no subcommand, starts the interactive CLI (codex-style). "
+            "Pass an optional prompt to seed the first turn."
+        ),
+        epilog="Examples:\n  ariadne\n  ariadne \"summarize this repo\"\n  ariadne run \"…\"\n  ariadne exec \"…\"",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"ariadne {__version__}")
     _add_global_flags(parser, suppress=False)
+    # Interactive defaults (also usable with bare entry / chat)
+    parser.add_argument(
+        "--no-welcome",
+        action="store_true",
+        default=False,
+        help="Suppress interactive welcome banner",
+    )
+    parser.add_argument(
+        "--no-stream",
+        action="store_true",
+        default=False,
+        help="Disable streaming in interactive mode",
+    )
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=False)
 
-    run_p = sub.add_parser("run", help="Run one agent turn")
+    run_p = sub.add_parser(
+        "run",
+        aliases=["exec"],
+        help="Run one agent turn non-interactively (alias: exec)",
+    )
     _add_global_flags(run_p, suppress=True)
     run_p.add_argument("prompt", nargs="+", help="User prompt")
 
-    chat_p = sub.add_parser("chat", help="Interactive multi-turn shell agent")
+    chat_p = sub.add_parser("chat", help="Interactive multi-turn shell agent (default entry alias)")
     _add_global_flags(chat_p, suppress=True)
-    chat_p.add_argument("--no-welcome", action="store_true", help="Suppress welcome banner")
-    chat_p.add_argument("--no-stream", action="store_true", help="Disable streaming in chat")
+    chat_p.add_argument("--no-welcome", action="store_true", default=False, help=argparse.SUPPRESS)
+    chat_p.add_argument("--no-stream", action="store_true", default=False, help=argparse.SUPPRESS)
+
+    resume_p = sub.add_parser("resume", help="Resume a session in interactive mode")
+    _add_global_flags(resume_p, suppress=True)
+    resume_p.add_argument(
+        "session_id",
+        nargs="?",
+        default=None,
+        help="Session id to resume (omit to list sessions)",
+    )
+    resume_p.add_argument(
+        "--last",
+        action="store_true",
+        help="Resume the most recent session",
+    )
+    resume_p.add_argument("--no-welcome", action="store_true", default=False, help=argparse.SUPPRESS)
+    resume_p.add_argument("--no-stream", action="store_true", default=False, help=argparse.SUPPRESS)
 
     sub.add_parser("doctor", help="Check configuration")
     sub.add_parser("tools", help="List tools")
@@ -256,14 +363,53 @@ async def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.status == "completed" else 1
 
 
-def cmd_chat(args: argparse.Namespace) -> int:
-    # chat defaults to active_session lifecycle when not specified
+def cmd_interactive(
+    args: argparse.Namespace,
+    *,
+    initial_prompt: str | None = None,
+    force_session: str | None = None,
+) -> int:
+    """Interactive REPL (default bare-entry path; also used by chat/resume)."""
     settings = _settings_from_args(args, default_lifecycle="active_session")
     _apply_continue(args, settings)
+    if force_session:
+        settings.session_id = force_session
     agent = _compose_with_approval(settings)
     from .repl import run_repl
 
-    return run_repl(args, settings, agent, welcome=not args.no_welcome)
+    return run_repl(
+        args,
+        settings,
+        agent,
+        welcome=not getattr(args, "no_welcome", False),
+        initial_prompt=initial_prompt,
+    )
+
+
+def cmd_chat(args: argparse.Namespace) -> int:
+    return cmd_interactive(args)
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    from .sessions import list_sessions, most_recent
+
+    settings = _settings_from_args(args, default_lifecycle="active_session")
+    data = settings.resolved_data_dir
+    if getattr(args, "last", False) or getattr(args, "continue_last", False):
+        recent = most_recent(data)
+        if not recent:
+            print("No sessions recorded.", file=sys.stderr)
+            return 1
+        return cmd_interactive(args, force_session=recent)
+    sid = getattr(args, "session_id", None)
+    if not sid:
+        # list only (picker-style listing without TUI)
+        return cmd_sessions(args)
+    known = {s.session_id for s in list_sessions(data)}
+    if sid not in known:
+        print(f"Unknown session: {sid}", file=sys.stderr)
+        return 1
+    return cmd_interactive(args, force_session=sid)
 
 
 async def cmd_doctor(args: argparse.Namespace) -> int:
@@ -459,12 +605,35 @@ async def cmd_toolbox(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    parse_argv, free_prompt = extract_free_prompt(raw)
+    args = parser.parse_args(parse_argv)
+
     try:
-        if args.command == "run":
+        if args.command is None:
+            # Bare entry / free prompt → interactive (TTY) or safe non-TTY path
+            if not sys.stdin.isatty():
+                if free_prompt:
+                    args.prompt = [free_prompt]
+                    code = asyncio.run(cmd_run(args))
+                else:
+                    print(
+                        "ariadne: interactive mode requires a TTY.\n"
+                        "  ariadne                  # interactive REPL\n"
+                        "  ariadne \"prompt\"         # REPL seeded with prompt\n"
+                        "  ariadne run \"prompt\"     # one-shot\n"
+                        "  ariadne --help",
+                        file=sys.stderr,
+                    )
+                    code = 2
+            else:
+                code = cmd_interactive(args, initial_prompt=free_prompt)
+        elif args.command in ("run", "exec"):
             code = asyncio.run(cmd_run(args))
         elif args.command == "chat":
             code = cmd_chat(args)
+        elif args.command == "resume":
+            code = cmd_resume(args)
         elif args.command == "doctor":
             code = asyncio.run(cmd_doctor(args))
         elif args.command == "tools":
