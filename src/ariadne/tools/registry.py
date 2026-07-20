@@ -387,6 +387,9 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=conversation_state_tool,
+            # Large schema — design center is deferred (TOOLCALL §3.2).
+            tool_exposure="named_deferred",
+            title="Conversation state",
         )
     )
 
@@ -397,10 +400,14 @@ def build_default_registry(
         limit = int(args.get("limit") or 5)
         mode = str(args.get("mode") or "lexical").lower()
         if mode == "hybrid":
-            hits = await ctx.skills.search_hybrid(query, limit=max(1, min(limit, 20)))
-            scored_hits = [(None, s) for s in hits]
+            scored_hits = await ctx.skills.search_hybrid_scored(
+                query, limit=max(1, min(limit, 20))
+            )
         else:
-            scored_hits = ctx.skills.search_scored(query, limit=max(1, min(limit, 20)))
+            scored_hits = [
+                (float(score), s)
+                for score, s in ctx.skills.search_scored(query, limit=max(1, min(limit, 20)))
+            ]
         if ctx.skill_events is not None:
             from ..types import SkillEvent
 
@@ -415,7 +422,7 @@ def build_default_registry(
                     "keywords": s.keywords,
                     "requires_tools": s.requires_tools,
                     "namespace": s.namespace,
-                    **({"score": score} if score is not None else {}),
+                    "score": round(float(score), 4),
                 }
                 for score, s in scored_hits
             ],
@@ -516,6 +523,8 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=skill_manage,
+            tool_exposure="named_deferred",
+            title="Skill manage",
         )
     )
 
