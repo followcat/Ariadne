@@ -91,13 +91,16 @@ def main() -> int:
                 """() => {
                     const msgs = document.querySelectorAll('.msg.assistant');
                     if (!msgs.length) return false;
-                    const t = msgs[msgs.length-1].textContent;
-                    return t && t !== '…' && t.length > 0;
+                    const last = msgs[msgs.length - 1];
+                    if (last.classList.contains('streaming')) return false;
+                    const raw = last.dataset.raw || '';
+                    return raw.length > 0 && raw !== '…';
                 }""",
                 timeout=120_000,
             )
             reply = page.eval_on_selector_all(
-                ".msg.assistant", "els => els[els.length-1].textContent"
+                ".msg.assistant",
+                "els => els[els.length-1].dataset.raw || els[els.length-1].textContent",
             )
             assert "webtest" in reply.lower(), f"unexpected reply: {reply!r}"
             print(f"ok: streamed reply: {reply!r}")
@@ -108,7 +111,7 @@ def main() -> int:
             # enable a plugin through the web UI (user attribute)
             page.click("#editplugins")
             page.wait_for_selector("#plugins:not(.hidden)", timeout=5_000)
-            cards = page.query_selector_all("#plugins > div")
+            cards = page.query_selector_all("#plugins .plugin-card")
             gitlab_card = None
             for card in cards:
                 if "gitlab" in (card.text_content() or ""):
@@ -121,7 +124,7 @@ def main() -> int:
             inputs[1].fill("e2e-token")
             gitlab_card.query_selector("button").click()
             page.wait_for_function(
-                """() => [...document.querySelectorAll('#plugins > div')].some(
+                """() => [...document.querySelectorAll('#plugins .plugin-card')].some(
                     d => d.textContent.includes('gitlab') && d.textContent.includes('已启用'))""",
                 timeout=10_000,
             )
