@@ -20,20 +20,29 @@ CLI is not a second agent implementation — it is a **host** over the same kern
 
 ## 2. Product shape
 
-### 2.1 One-shot
+Codex-style entry: **no subcommand → interactive CLI**. Subcommands are for
+one-shot / admin. (Aligns with `codex [OPTIONS] [PROMPT]` vs `codex <COMMAND>`.)
+
+### 2.1 Interactive REPL (default)
 
 ```bash
-ariadne run "list python files and summarize what this repo does"
-```
-
-### 2.2 Interactive REPL
-
-```bash
-ariadne chat
-ariadne> create notes.md with a short outline
+ariadne
+ariadne "create notes.md with a short outline"   # REPL + first user turn
+ariadne chat                                       # explicit alias of default
 ariadne> /session
 ariadne> /tools
 ariadne> /exit
+```
+
+Defaults for interactive: `sandbox-lifecycle=active_session`, streaming on.
+Non-TTY bare `ariadne` must not hang (print help / exit 2, or one-shot if a
+prompt was provided on argv).
+
+### 2.2 One-shot (non-interactive)
+
+```bash
+ariadne run "list python files and summarize what this repo does"
+ariadne exec "…"    # alias of run
 ```
 
 ### 2.3 Session-bound workspace
@@ -41,7 +50,9 @@ ariadne> /exit
 ```bash
 ariadne --session demo --workspace . run "..."
 # or
-cd my-project && ariadne chat
+cd my-project && ariadne
+ariadne -c                 # continue most recent session in REPL
+ariadne resume --last      # same idea via subcommand
 ```
 
 Default mental model: **current project directory is the agent's hands**;  
@@ -63,11 +74,15 @@ management); the kernel stays free of terminal concerns.
 ## 4. Command surface (v1)
 
 ```text
-ariadne run   PROMPT...     # one turn
-ariadne chat                # multi-turn REPL
+ariadne [PROMPT...]         # interactive REPL (default); optional first turn
+ariadne chat                # alias of default interactive
+ariadne run|exec PROMPT...  # one non-interactive turn
+ariadne resume [id]         # list sessions, or enter REPL on id / --last
 ariadne tools               # list exposed tools
 ariadne sessions            # list recorded sessions
 ariadne doctor              # check .env model + sandbox backend
+ariadne plugins / plugin …  # official plugins (user attributes)
+ariadne serve               # web UI
 ariadne version
 ```
 
@@ -84,7 +99,8 @@ Global flags:
 --tool-loop-limit N
 --approval-mode auto|on-request|readonly   tool approval policy
 -c / --continue       resume most recent session
---stream / --no-stream (chat streams by default)
+--stream / --no-stream (interactive streams by default)
+--no-welcome          suppress REPL banner
 ```
 
 REPL meta-commands:
@@ -92,6 +108,8 @@ REPL meta-commands:
 ```text
 /help
 /exit | /quit
+/status               # compact host status
+/mode [auto|on-request|readonly]
 /session
 /workspace
 /tools
@@ -101,7 +119,7 @@ REPL meta-commands:
 /usage                # cumulative tokens this REPL
 /compact              # archive transcript, summaries keep history
 /resume [id]          # list or switch sessions
-/reset-session        # new session id, keep workspace
+/new | /reset-session # new session id, keep workspace
 /sandbox-status
 /clear-session-files  # wipe /session scratch (not /workspace)
 /clear                # clear screen
@@ -265,4 +283,4 @@ No separate tool loop in CLI.
 | Core entry | same Agent/TurnApplication | no dual implementation |
 | Default hands | sandbox.exec on workspace | real computer use |
 | Default workspace | cwd | feels like project shell |
-| REPL | `ariadne chat` | multi-turn coding |
+| REPL | bare `ariadne` (chat alias) | multi-turn coding; codex-style default entry |

@@ -147,6 +147,15 @@ hosts and kernel code.
   with optional `--workspace-scope`; Web per-account store + Settings UI
   (`GET/PUT/DELETE /api/me/plugins`); compose merges user → workspace
 
+### Phase 10 — Default CLI mode (codex-style entry)
+- [x] Bare `ariadne` → interactive REPL (`active_session`, stream on)
+- [x] Optional argv prompt seeds the first REPL turn
+- [x] `exec` alias of `run`; `chat` remains explicit interactive alias
+- [x] `resume` subcommand (`--last` / session id)
+- [x] Slash: `/status`, `/mode`, `/new`, grouped `/help`
+- [x] Non-TTY bare entry does not hang
+- [x] Docs EN+ZH + design/cli-shell-agent updated
+
 ## Explicitly deferred forever (unless product changes)
 
 - Company Pack system (superseded by official optional plugins)
