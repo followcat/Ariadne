@@ -3,7 +3,8 @@
 > Language: **English** · [简体中文](zh/USAGE_CLI.md)
 
 Ariadne’s primary host is a **CLI shell agent** over a project workspace.  
-Optional hosts: **web UI** (`ariadne serve`) and the **Python** `Agent` API.
+**Bare `ariadne` enters interactive mode** (codex-style). Optional hosts: **web UI**
+(`ariadne serve`) and the **Python** `Agent` API.
 
 ## Requirements
 
@@ -64,11 +65,17 @@ ariadne doctor
 ## Commands
 
 ```bash
-# one-shot turn (cwd → /workspace)
-ariadne run "create NOTES.md with a one-line outline of this project"
+# interactive REPL (default entry — codex-style)
+ariadne
+ariadne "create NOTES.md with a one-line outline of this project"  # REPL + first turn
+ariadne chat                    # explicit alias of interactive
+ariadne -c                      # continue most recent session in REPL
+ariadne resume --last
+ariadne resume                  # list sessions
 
-# interactive multi-turn (default sandbox lifecycle: active_session)
-ariadne chat
+# one-shot turn (cwd → /workspace), non-interactive
+ariadne run "create NOTES.md with a one-line outline of this project"
+ariadne exec "…"                # alias of run
 
 # streaming tokens / turn events + verbose tool traces
 ariadne --stream -v run "summarize README.md"
@@ -119,17 +126,21 @@ Global flags work both before and after the subcommand
 --no-stream                   disable streaming in chat (chat streams by default)
 --sandbox-prestart            start sandbox in parallel with memory build
 --approval-mode MODE          auto | on-request | readonly tool approval
--c / --continue               resume the most recent session
+-c / --continue               resume the most recent session (interactive or run)
+--no-welcome                  suppress interactive banner
+--no-stream                   disable streaming in interactive mode
 -v / --verbose                tool traces, usage, schema metrics
 --json                        print TurnResult JSON (includes schema_metrics);
                               with --stream, NDJSON events then final result
 ```
 
-## Chat meta-commands
+## Interactive meta-commands
 
 ```text
 /help
 /exit /quit
+/status                     compact host status
+/mode [auto|on-request|readonly]
 /session
 /workspace
 /tools
@@ -139,7 +150,7 @@ Global flags work both before and after the subcommand
 /usage                      cumulative tokens this REPL
 /compact                    archive transcript (summaries keep history)
 /resume [id]                list or switch sessions
-/reset-session              new session id, keep workspace
+/new | /reset-session       new session id, keep workspace
 /sandbox-status
 /clear-session-files
 /clear
@@ -147,7 +158,8 @@ Global flags work both before and after the subcommand
 
 REPL notes: history persists under the data dir; `\` continuation and  
 \`\`\` fences give multiline input; Ctrl+C cancels the running turn (the  
-sandbox is still cleaned up); Ctrl+C at an empty prompt exits.
+sandbox is still cleaned up); Ctrl+C at an empty prompt exits.  
+Non-TTY bare `ariadne` does not hang (prints help, or runs one-shot if a prompt was given).
 
 ## File tools
 

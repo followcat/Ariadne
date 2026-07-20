@@ -125,11 +125,13 @@ MODEL=LongCat-2.0                             # 该主机上的模型 id
 # 健康检查
 ariadne doctor
 
-# 对当前目录（映射为 /workspace）跑一轮
-ariadne run "create NOTES.md with a one-line outline of this project"
+# 交互 CLI（默认入口，对齐 `codex`）
+ariadne
+ariadne "create NOTES.md with a one-line outline of this project"
 
-# 多轮 REPL（默认流式）
-ariadne chat
+# 非交互单轮
+ariadne run "summarize README.md"
+ariadne exec "…"   # run 的别名
 
 # Web UI（注册用户，绑定自己的 Provider）
 ariadne serve --host 127.0.0.1 --port 8420
@@ -148,10 +150,14 @@ PYTHONPATH=src python3 -m pytest -q
 ### CLI 速查
 
 ```bash
-ariadne run "…"                 # 单轮
-ariadne chat                    # REPL
+ariadne                         # 交互 REPL（默认）
+ariadne "…"                     # REPL + 首轮 prompt
+ariadne run "…"                 # 非交互单轮
+ariadne exec "…"                # run 的别名
+ariadne chat                    # 交互模式显式别名
 ariadne --stream -v run "…"     # 流式 + 工具轨迹
-ariadne -c chat                 # 继续最近会话
+ariadne -c                      # 在 REPL 中续最近会话
+ariadne resume --last
 ariadne sessions                # 列出会话
 ariadne tools / skills / toolbox
 ariadne plugins

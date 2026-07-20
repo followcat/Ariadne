@@ -3,7 +3,8 @@
 > 语言：[English](../USAGE_CLI.md) · **简体中文**
 
 Ariadne 的主宿主是面向项目工作区的 **CLI 终端 Agent**。  
-可选宿主：**Web UI**（`ariadne serve`）与 **Python** `Agent` API。
+**直接运行 `ariadne` 即进入交互模式**（对齐 codex 入口）。可选宿主：**Web UI**
+（`ariadne serve`）与 **Python** `Agent` API。
 
 ## 环境要求
 
@@ -64,11 +65,17 @@ ariadne doctor
 ## 命令
 
 ```bash
-# 单轮（cwd → /workspace）
-ariadne run "create NOTES.md with a one-line outline of this project"
+# 交互 REPL（默认入口，对齐 codex）
+ariadne
+ariadne "create NOTES.md with a one-line outline of this project"  # REPL + 首轮
+ariadne chat                    # 交互模式的显式别名
+ariadne -c                      # 在 REPL 中续最近会话
+ariadne resume --last
+ariadne resume                  # 列出会话
 
-# 多轮交互（默认 sandbox 生命周期：active_session）
-ariadne chat
+# 非交互单轮（cwd → /workspace）
+ariadne run "create NOTES.md with a one-line outline of this project"
+ariadne exec "…"                # run 的别名
 
 # 流式 token / turn 事件 + 详细工具轨迹
 ariadne --stream -v run "summarize README.md"
@@ -119,17 +126,20 @@ ariadne plugin enable gitlab --workspace-scope --url ... --token ...
 --no-stream                   chat 中关闭流式（chat 默认开流式）
 --sandbox-prestart            与 memory build 并行预热沙箱
 --approval-mode MODE          auto | on-request | readonly 工具审批
--c / --continue               继续最近一次会话
+-c / --continue               续最近一次会话（交互或 run）
+--no-welcome                  隐藏交互欢迎横幅
+--no-stream                   交互模式关闭流式
 -v / --verbose                工具轨迹、用量、schema 指标
 --json                        输出 TurnResult JSON（含 schema_metrics）；
                               配合 --stream 时先 NDJSON 事件再最终结果
 ```
-
-## Chat 元命令
+## 交互元命令
 
 ```text
 /help
 /exit /quit
+/status                     紧凑宿主状态
+/mode [auto|on-request|readonly]
 /session
 /workspace
 /tools
@@ -139,14 +149,15 @@ ariadne plugin enable gitlab --workspace-scope --url ... --token ...
 /usage                      本 REPL 累计 token
 /compact                    归档 transcript（摘要仍保留历史）
 /resume [id]                列出或切换会话
-/reset-session              新 session id，保留工作区
+/new | /reset-session       新 session id，保留工作区
 /sandbox-status
 /clear-session-files
 /clear
 ```
 
 REPL 说明：历史保存在 data dir；`\` 续行与 \`\`\` 围栏支持多行输入；  
-Ctrl+C 中断当前 turn（沙箱仍会清理）；空提示符再 Ctrl+C 退出。
+Ctrl+C 中断当前 turn（沙箱仍会清理）；空提示符再 Ctrl+C 退出。  
+非 TTY 下裸 `ariadne` 不会挂死（打印帮助；若带了 prompt 则走单轮）。
 
 ## 文件工具
 

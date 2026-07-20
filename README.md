@@ -125,11 +125,13 @@ Ariadne also reads a workspace `.env` and process environment (`OPENAI_BASE_URL`
 # health check
 ariadne doctor
 
-# one-shot turn over the current directory (as /workspace)
-ariadne run "create NOTES.md with a one-line outline of this project"
+# interactive CLI (default — like `codex`)
+ariadne
+ariadne "create NOTES.md with a one-line outline of this project"
 
-# interactive multi-turn REPL (streams by default)
-ariadne chat
+# one-shot non-interactive turn
+ariadne run "summarize README.md"
+ariadne exec "…"   # alias of run
 
 # web UI (register users, bind your own provider)
 ariadne serve --host 127.0.0.1 --port 8420
@@ -148,10 +150,14 @@ Full CLI reference: **[docs/USAGE_CLI.md](docs/USAGE_CLI.md)** (English) · **[d
 ### CLI cheatsheet
 
 ```bash
-ariadne run "…"                 # single turn
-ariadne chat                    # REPL
+ariadne                         # interactive REPL (default)
+ariadne "…"                     # REPL seeded with first prompt
+ariadne run "…"                 # single non-interactive turn
+ariadne exec "…"                # alias of run
+ariadne chat                    # explicit interactive alias
 ariadne --stream -v run "…"     # stream + tool traces
-ariadne -c chat                 # continue last session
+ariadne -c                      # continue last session in REPL
+ariadne resume --last
 ariadne sessions                # list sessions
 ariadne tools / skills / toolbox
 ariadne plugins
