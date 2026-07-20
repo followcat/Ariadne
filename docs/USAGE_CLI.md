@@ -41,13 +41,19 @@ ariadne version
 # web UI
 ariadne serve --port 8420   # register users, bind their own provider (BYOK)
 
-# official plugins
+# official plugins (user attributes by default)
+# enable writes ~/.ariadne/plugins.json (mode 0600), cross-workspace
 ariadne plugins
 ariadne plugin enable gitlab --url https://gitlab.example.com --token ...
 ariadne plugin enable redmine --url https://redmine.example.com --api-key ...
 ariadne plugin enable odoo --url https://odoo.example.com \
     --database db --login user --password ...
 ariadne plugin disable gitlab
+# optional project override (workspace data_dir/plugins.json wins on name clash)
+ariadne plugin enable gitlab --workspace-scope --url ... --token ...
+
+# web UI: ariadne serve — each registered user has their own plugins under
+# data_dir/web/users/<username>/plugins.json (API: /api/me/plugins)
 ```
 
 Global flags work both before and after the subcommand

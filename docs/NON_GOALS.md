@@ -6,10 +6,12 @@ This list protects Ariadne from becoming an accidental enterprise platform rewri
 
 1. **Company Pack / multi-company extension model** — replaced by **official
    optional plugins** (`src/ariadne/plugins/`): odoo / gitlab / redmine are
-   supported integrations the host enables with its own URL + token/api key
-   (`ariadne plugin enable <name> ...`). Plugin tools register into the one
-   capability registry at compose time. The kernel core never depends on
-   them, and there is no multi-company pack manifest/namespace system.
+   supported integrations enabled with a URL + token/api key. Config is a
+   **user attribute** (CLI: `~/.ariadne/plugins.json` by default, optional
+   workspace override; Web: per registered account via `/api/me/plugins`).
+   Plugin tools register into the one capability registry at compose time.
+   The kernel core never depends on them, and there is no multi-company pack
+   manifest/namespace system.
 2. **First-class WeCom / Feishu / Telegram / Slack connectors**
 3. **Business system adapters inside core** — they live in the official
    plugin modules, configured per host, never as required kernel code

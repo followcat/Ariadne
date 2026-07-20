@@ -143,6 +143,9 @@ hosts and kernel code.
 - [x] in/out bound: secret redaction + injection warnings (`guardrails.py`)
 - [x] Official plugin mechanism (odoo/gitlab/redmine, token-configured)
 - [x] `ariadne plugins` / `ariadne plugin enable|disable` + 0600 credential store
+- [x] Plugin configs as **user attributes**: CLI `~/.ariadne/plugins.json` (default)
+  with optional `--workspace-scope`; Web per-account store + Settings UI
+  (`GET/PUT/DELETE /api/me/plugins`); compose merges user → workspace
 
 ## Explicitly deferred forever (unless product changes)
 
