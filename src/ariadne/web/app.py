@@ -135,15 +135,51 @@ def create_app(settings: Settings) -> FastAPI:
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
+    def _user_data(username: str) -> Path:
+        return settings.resolved_data_dir / "web" / "users" / username
+
     @app.get("/api/sessions")
     def sessions(username: str = Depends(current_user)) -> Any:
         from ..cli.sessions import list_sessions
 
-        user_data = settings.resolved_data_dir / "web" / "users" / username
+        user_data = _user_data(username)
         return [
-            {"session_id": s.session_id, "turns": s.turns, "mtime": s.mtime}
+            {
+                "session_id": s.session_id,
+                "turns": s.turns,
+                "mtime": s.mtime,
+                "preview": s.preview,
+            }
             for s in list_sessions(user_data)
         ]
+
+    @app.post("/api/sessions")
+    def create_session(username: str = Depends(current_user)) -> Any:
+        """Allocate a new empty session id (transcript created on first turn)."""
+        import secrets
+
+        sid = f"web-{secrets.token_hex(4)}"
+        return {"session_id": sid}
+
+    @app.get("/api/sessions/{session_id}")
+    def get_session(session_id: str, username: str = Depends(current_user)) -> Any:
+        from ..cli.sessions import load_session_messages, session_exists
+
+        user_data = _user_data(username)
+        if not session_exists(user_data, session_id):
+            # Brand-new id (not yet written) — empty history is fine for UI
+            return {"session_id": session_id, "messages": [], "exists": False}
+        messages = load_session_messages(user_data, session_id, limit=200)
+        return {"session_id": session_id, "messages": messages, "exists": True}
+
+    @app.delete("/api/sessions/{session_id}")
+    def remove_session(session_id: str, username: str = Depends(current_user)) -> Any:
+        from ..cli.sessions import delete_session
+
+        ok = delete_session(_user_data(username), session_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+        return {"status": "deleted", "session_id": session_id}
 
     def _plugin_store_for(username: str) -> Any:
         from ..plugins import PluginStore

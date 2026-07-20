@@ -122,6 +122,65 @@ def test_users_file_permissions(tmp_path: Path) -> None:
     assert (users_file.stat().st_mode & 0o777) == 0o600
 
 
+def test_sessions_api(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with _client(tmp_path) as client:
+            r = await client.post(
+                "/api/auth/register", json={"username": "sessuser", "password": "password123"}
+            )
+            token = r.json()["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+            # create empty session id
+            r = await client.post("/api/sessions", headers=headers)
+            assert r.status_code == 200
+            sid = r.json()["session_id"]
+            assert sid.startswith("web-")
+            # brand-new session has empty history
+            r = await client.get(f"/api/sessions/{sid}", headers=headers)
+            assert r.status_code == 200
+            assert r.json()["messages"] == []
+            assert r.json()["exists"] is False
+            # write a transcript as the runtime would
+            from ariadne.cli.sessions import session_path
+
+            user_data = tmp_path / "data" / "web" / "users" / "sessuser"
+            path = session_path(user_data, sid)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                '{"role":"user","content":"hello session"}\n'
+                '{"role":"assistant","content":"hi there"}\n',
+                encoding="utf-8",
+            )
+            r = await client.get("/api/sessions", headers=headers)
+            assert r.status_code == 200
+            rows = r.json()
+            assert any(s["session_id"] == sid for s in rows)
+            row = next(s for s in rows if s["session_id"] == sid)
+            assert row["turns"] == 1
+            assert "hello" in row["preview"]
+            r = await client.get(f"/api/sessions/{sid}", headers=headers)
+            msgs = r.json()["messages"]
+            assert msgs == [
+                {"role": "user", "content": "hello session"},
+                {"role": "assistant", "content": "hi there"},
+            ]
+            # isolation: other user sees no sessions
+            r2 = await client.post(
+                "/api/auth/register", json={"username": "other", "password": "password123"}
+            )
+            r = await client.get(
+                "/api/sessions", headers={"Authorization": f"Bearer {r2.json()['token']}"}
+            )
+            assert r.json() == []
+            # delete
+            r = await client.delete(f"/api/sessions/{sid}", headers=headers)
+            assert r.status_code == 200
+            r = await client.delete(f"/api/sessions/{sid}", headers=headers)
+            assert r.status_code == 404
+
+    asyncio.run(run())
+
+
 def test_per_user_plugins(tmp_path: Path) -> None:
     async def run() -> None:
         async with _client(tmp_path) as client:
