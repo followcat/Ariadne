@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import AuthView from './components/AuthView.vue'
 import MarkdownView from './components/MarkdownView.vue'
+import PluginsModal from './components/PluginsModal.vue'
 import ThinkingBlock from './components/ThinkingBlock.vue'
 import ToolsPanel, { type ToolEntry } from './components/ToolsPanel.vue'
 import { api, parseSseBuffer, type Me, type SessionRow, type StreamEvent } from './api/client'
@@ -494,8 +495,9 @@ function pushTurnInfo(res: {
   }
 }
 
-// Provider modal
+// Provider / plugins modals
 const showProvider = ref(false)
+const showPlugins = ref(false)
 const baseUrl = ref('')
 const apiKey = ref('')
 const modelName = ref('')
@@ -578,6 +580,13 @@ onMounted(() => {
           <span>
             <span>Provider</span>
             <span class="sub">{{ me?.model || '未配置' }}</span>
+          </span>
+        </button>
+        <button type="button" class="sb-item" @click="showPlugins = true">
+          <span class="ico">▣</span>
+          <span>
+            <span>插件</span>
+            <span class="sub">GitLab / Redmine / Odoo</span>
           </span>
         </button>
         <button type="button" class="sb-item" @click="logout">
@@ -701,6 +710,12 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <PluginsModal
+      :open="showPlugins"
+      :token="token"
+      @close="showPlugins = false"
+    />
   </div>
 </template>
 
