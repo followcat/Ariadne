@@ -582,6 +582,7 @@ def build_default_registry(
             raise AriadneError(app_error("ARIADNE_SKILL_NOT_FOUND", f"skill not found: {name}", name=name))
         include_refs = bool(args.get("include_references") or False)
         ref_names = args.get("references")
+        section = str(args.get("section") or "").strip() or None
         targeted: list[str] | None = None
         if isinstance(ref_names, list) and ref_names:
             targeted = [str(x) for x in ref_names]
@@ -593,16 +594,21 @@ def build_default_registry(
         # requires_tools enforcement: report missing tools (do not invent handlers).
         available = set(registry.tools.keys())
         missing = ctx.skills.missing_tools(skill, available)
+        body_text = skill.body_section(section) if section else skill.body
         payload: dict[str, Any] = {
             "name": skill.name,
             "description": skill.description,
-            "body": skill.body,
+            "body": body_text,
+            "section": section or "full",
             "requires_tools": skill.requires_tools,
             "missing_tools": missing,
             "requires_tools_ok": not missing,
             "namespace": skill.namespace,
             "version": skill.version,
             "tags": skill.tags,
+            "distinct_from": skill.distinct_from,
+            "trigger_clues": skill.trigger_clues,
+            "key_difference": skill.key_difference,
         }
         if include_refs:
             refs = skill.select_references(targeted)
@@ -624,6 +630,7 @@ def build_default_registry(
             catalog_description="load full skill body",
             description=(
                 "Load skill body for this turn (tool result scope). "
+                "Optional section=usage|schema|examples|… loads only that ## heading. "
                 "Optional references=[name.md,…] loads only those files; "
                 "include_references=true loads all. Reports missing requires_tools."
             ),
@@ -631,6 +638,10 @@ def build_default_registry(
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
+                    "section": {
+                        "type": "string",
+                        "description": "Markdown ## section name, or full",
+                    },
                     "include_references": {"type": "boolean"},
                     "references": {
                         "type": "array",

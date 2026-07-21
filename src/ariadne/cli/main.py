@@ -335,6 +335,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Spawn out-of-process worker (python -m ariadne.memory.worker_main)",
     )
+    mem_w.add_argument(
+        "--consolidate",
+        action="store_true",
+        default=False,
+        help="Propose L3 curated consolidation from session signals (dry-run unless --apply)",
+    )
+    mem_w.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="With --consolidate: write proposed entries to curated user scope",
+    )
+    mem_w.add_argument(
+        "--text",
+        action="append",
+        default=None,
+        help="With --consolidate: extra signal text (repeatable)",
+    )
     return parser
 
 
@@ -382,9 +400,15 @@ def _apply_continue(args: argparse.Namespace, settings) -> None:
 
 def _compose_with_approval(settings):
     from .approval import make_approval_hook
+    from .grants import GrantStore
 
     agent = compose_agent(settings)
-    agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
+    grant_path = settings.resolved_data_dir / "grants.json"
+    agent.turn_app.approval_hook = make_approval_hook(
+        settings.approval_mode,
+        grant_store=GrantStore(path=grant_path),
+        session_id=settings.session_id,
+    )
     return agent
 
 
@@ -721,6 +745,7 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 
 
 async def cmd_memory_worker(args: argparse.Namespace) -> int:
+    from ..memory.consolidation import consolidate
     from ..memory.curated import CuratedStore
     from ..memory.facade import MemoryFacade
     from ..memory.projection import ProjectionWorker
@@ -746,10 +771,42 @@ async def cmd_memory_worker(args: argparse.Namespace) -> int:
         if err:
             print(err, end="" if err.endswith("\n") else "\n", file=__import__("sys").stderr)
         return int(proc.returncode or 0)
+    curated = CuratedStore(path=data / "memory" / "curated.json")
+    if getattr(args, "consolidate", False):
+        texts = list(getattr(args, "text", None) or [])
+        # Also scan recent transcript lines if present
+        tpath = data / "sessions" / f"{settings.session_id}.jsonl"
+        if tpath.is_file() and not texts:
+            for line in tpath.read_text(encoding="utf-8").splitlines()[-50:]:
+                try:
+                    import json as _json
+
+                    row = _json.loads(line)
+                    if row.get("role") == "user" and row.get("content"):
+                        texts.append(str(row["content"]))
+                except Exception:
+                    continue
+        report = consolidate(
+            curated,
+            session_id=settings.session_id,
+            texts=texts or None,
+            include_session_curated=True,
+            apply=bool(getattr(args, "apply", False)),
+        )
+        print(
+            "memory-worker consolidate: "
+            f"apply={report['apply']} proposed={report['proposed_count']} "
+            f"applied={report['applied_count']} skipped={len(report['skipped'])}"
+        )
+        for c in report.get("candidates") or []:
+            print(f"  - ({c.get('confidence')}) {c.get('content')}")
+        for s in report.get("skipped") or []:
+            print(f"  skip: {s.get('reason')}: {s.get('content')}")
+        return 0
     state = ConversationStateStore(path=data / "memory" / "state.json")
     memory = MemoryFacade(
         transcript=TranscriptStore(path=data / "sessions" / f"{settings.session_id}.jsonl"),
-        curated=CuratedStore(path=data / "memory" / "curated.json"),
+        curated=curated,
         state=state,
         summaries=TurnSummaryStore(path=data / "memory" / "summaries.json"),
         semantic=SemanticIndex(path=data / "memory" / "semantic.json"),

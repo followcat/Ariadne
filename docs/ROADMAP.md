@@ -158,6 +158,13 @@ hosts and kernel code.
 - [x] Non-TTY bare entry does not hang
 - [x] Docs EN+ZH + design/cli-shell-agent updated
 
+### Phase 11 — Personal kernel completeness (calibrated A–C)
+- [x] Acceptance matrix: [ACCEPTANCE.md](ACCEPTANCE.md)
+- [x] Skill body `section=` load + optional discriminator frontmatter
+- [x] Memory consolidation (dry-run / apply) → L3 curated;
+  `ariadne memory-worker --consolidate [--apply]`
+- [x] Persistent approval grants (`data_dir/grants.json`) for on-request mode
+
 ## Explicitly deferred forever (unless product changes)
 
 - Company Pack system (superseded by official optional plugins)

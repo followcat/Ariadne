@@ -158,14 +158,23 @@ def _print_status(settings: Settings, agent: Agent) -> None:
         ui.out.print(f"active:     {agent.active_sessions.status()}")
 
 
+def _attach_approval(settings: Settings, agent: Agent) -> None:
+    from .approval import make_approval_hook
+    from .grants import GrantStore
+
+    agent.turn_app.approval_hook = make_approval_hook(
+        settings.approval_mode,
+        grant_store=GrantStore(path=settings.resolved_data_dir / "grants.json"),
+        session_id=settings.session_id,
+    )
+
+
 def _reset_session(settings: Settings, agent: Agent) -> Agent:
     if agent.active_sessions is not None:
         asyncio.run(agent.active_sessions.close(settings.session_id, reason="reset_session"))
     settings.session_id = f"reset-{uuid.uuid4().hex[:8]}"
-    from .approval import make_approval_hook
-
     agent = compose_agent(settings)
-    agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
+    _attach_approval(settings, agent)
     return agent
 
 
@@ -366,10 +375,8 @@ def run_repl(
                 if mode not in {"auto", "on-request", "readonly"}:
                     ui.print_error("MODE", "usage: /mode [auto|on-request|readonly]")
                     continue
-                from .approval import make_approval_hook
-
                 settings.approval_mode = mode
-                agent.turn_app.approval_hook = make_approval_hook(mode)
+                _attach_approval(settings, agent)
                 ui.print_info(f"approval -> {mode}")
                 continue
             if line == "/session":
@@ -430,7 +437,6 @@ def run_repl(
             if line.startswith("/resume"):
                 from datetime import datetime
 
-                from .approval import make_approval_hook
                 from .sessions import list_sessions
 
                 parts = line.split(maxsplit=1)
@@ -460,7 +466,7 @@ def run_repl(
                     asyncio.run(agent.active_sessions.close(settings.session_id, reason="resume"))
                 settings.session_id = target
                 agent = compose_agent(settings)
-                agent.turn_app.approval_hook = make_approval_hook(settings.approval_mode)
+                _attach_approval(settings, agent)
                 ui.print_info(f"resumed session: {target}")
                 continue
             if line in {"/reset-session", "/new"}:

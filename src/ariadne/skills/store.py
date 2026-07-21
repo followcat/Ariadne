@@ -43,6 +43,10 @@ class Skill:
     display_name: str = ""
     short_description: str = ""
     tags: list[str] = field(default_factory=list)
+    # Optional discriminators (selection precision; empty = legacy packs OK)
+    distinct_from: list[str] = field(default_factory=list)
+    trigger_clues: list[str] = field(default_factory=list)
+    key_difference: str = ""
 
     def index_line(self) -> str:
         tag_bit = f" [{', '.join(self.tags)}]" if self.tags else ""
@@ -55,9 +59,38 @@ class Skill:
                 self.description,
                 " ".join(self.keywords),
                 " ".join(self.tags),
+                " ".join(self.trigger_clues),
+                self.key_difference,
                 self.body[:2000],
             ]
         )
+
+    def body_section(self, section: str | None = None) -> str:
+        """Return full body or a named Markdown section (## / ### heading).
+
+        Section names are matched case-insensitively against heading text.
+        Special values: empty / full / all / * → entire body.
+        """
+        key = (section or "").strip().lower()
+        if not key or key in {"full", "all", "*"}:
+            return self.body
+        heading = re.compile(r"(?m)^(#{2,3})\s+(.+?)\s*$")
+        matches = list(heading.finditer(self.body))
+        if not matches:
+            # No headings — only return full for generic aliases
+            if key in {"schema", "usage", "examples", "body"}:
+                return self.body
+            return ""
+        key_slug = re.sub(r"[^a-z0-9]+", "", key)
+        for i, m in enumerate(matches):
+            title = m.group(2).strip().lower()
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(self.body)
+            content = self.body[start:end].strip("\n")
+            slug = re.sub(r"[^a-z0-9]+", "", title)
+            if title == key or key in title.split() or slug == key_slug:
+                return content
+        return ""
 
     def select_references(self, names: list[str] | None = None) -> dict[str, str]:
         """Return all refs or only named ones (targeted load)."""
@@ -305,6 +338,12 @@ class SkillStore:
             ns = "user" if "user" in [p.lower() for p in path.parts[-3:]] else "builtin"
         else:
             ns = namespace
+        distinct = meta.get("distinct_from") or []
+        clues = meta.get("trigger_clues") or []
+        if not isinstance(distinct, list):
+            distinct = [str(distinct)]
+        if not isinstance(clues, list):
+            clues = [str(clues)]
         return Skill(
             name=name,
             description=description,
@@ -318,6 +357,9 @@ class SkillStore:
             display_name=display_name,
             short_description=short_description,
             tags=[str(x) for x in tags if str(x).strip()],
+            distinct_from=[str(x).strip() for x in distinct if str(x).strip()],
+            trigger_clues=[str(x).strip() for x in clues if str(x).strip()],
+            key_difference=str(meta.get("key_difference") or "").strip(),
         )
 
     def list(self) -> list[Skill]:
@@ -352,6 +394,24 @@ class SkillStore:
                     score += 2
                 if tok in skill.body.lower():
                     score += 1
+            # Discriminators: boost on trigger_clues; slight boost for key_difference hits
+            for clue in skill.trigger_clues:
+                c = clue.lower().strip()
+                if not c:
+                    continue
+                if c in q or any(t and t in c for t in tokens):
+                    score += 6
+                elif any(t in c for t in tokens):
+                    score += 3
+            if skill.key_difference:
+                kd = skill.key_difference.lower()
+                if any(t in kd for t in tokens):
+                    score += 2
+            # If query clearly names a skill listed in distinct_from, demote this pack
+            for other in skill.distinct_from:
+                o = other.lower().strip()
+                if o and (o == q or o in tokens or o in q.split()):
+                    score = max(0, score - 8)
             if score > 0:
                 scored.append((score, skill))
         scored.sort(key=lambda item: (-item[0], item[1].name))

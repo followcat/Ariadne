@@ -56,6 +56,14 @@ The compressor runs the model via a **thread-bound event loop** when called from
 an already-running asyncio loop (turn end / worker), so it no longer silent-
 falls-back to grounded solely due to nested `asyncio.run`.
 
+## Landed (Phase 11 personal completeness)
+
+| Area | Fix |
+| --- | --- |
+| Skills | `load_skill(section=…)` body slice; optional `trigger_clues` / `distinct_from` / `key_difference` |
+| Memory | `memory/consolidation.py` + `memory-worker --consolidate [--apply]` → L3 curated |
+| Host approval | `cli/grants.py` durable pending→approved→executed/expired for on-request |
+
 ## Remaining (optional later)
 
 | Topic | Notes |
@@ -63,6 +71,7 @@ falls-back to grounded solely due to nested `asyncio.run`.
 | Provider-native API field | Wire deferred catalog into vendor-specific “tools search” fields when a provider documents them |
 | LLM projector default | Hosts plug in via `make_projector`; no cloud dependency in core |
 | Skill budget CLI UX | Already flags; TUI knobs optional |
+| MCP / OTel | Optional host adapters — not core dependencies |
 
 ## Explicit non-goals
 
