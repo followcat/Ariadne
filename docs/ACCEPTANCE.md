@@ -24,6 +24,9 @@ Run: `pytest -q` from repo root. Optional web browser: `python scripts/verify_we
 
 | ID | Scenario | Coverage |
 | --- | --- | --- |
+| A1 | Atelier create/list + shared workspace + branch merge/discard | `tests/test_atelier_manager.py` |
+| A2 | Atelier knowledge template/heuristic/history | `tests/test_atelier_knowledge.py` |
+| A3 | Atelier prompt inject + settings bind | `tests/test_atelier_runner.py` |
 | C1 | Parser: bare entry, subcommands, flags | `tests/test_cli_parser.py` |
 | C2 | Sessions list/continue helpers | `tests/test_sessions.py` |
 | C3 | Approval modes auto / on-request / readonly | `tests/test_approval.py` |

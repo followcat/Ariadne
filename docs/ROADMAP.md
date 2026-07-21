@@ -172,6 +172,13 @@ hosts and kernel code.
 - [x] In-process RuntimeAgent (command policy + audit); host `web_fetch` + egress allowlist
 - [x] Semantic file tools preferred over shell in prompts/descriptions
 
+### Phase 13 — Atelier（工坊）
+- [x] Design: [design/atelier.md](design/atelier.md) — project workshop naming
+- [x] `ariadne atelier create|list|open|delete`
+- [x] Shared workspace + main/branch sessions; merge/discard
+- [x] `KNOWLEDGE.md` template, heuristic refresh, history, merge update
+- [x] Tests: `test_atelier_*`
+
 ## Explicitly deferred forever (unless product changes)
 
 - Company Pack system (superseded by official optional plugins)

@@ -353,6 +353,38 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="With --consolidate: extra signal text (repeatable)",
     )
+    # ── Atelier (project workshop) ──
+    at = sub.add_parser("atelier", help="Project workshop (workspace + knowledge + branch sessions)")
+    at_sub = at.add_subparsers(dest="atelier_cmd")
+    at_create = at_sub.add_parser("create", help="Create an atelier")
+    at_create.add_argument("name", help="Atelier id/name (slug)")
+    at_create.add_argument("--from", dest="from_path", default=None, help="Use existing code dir as workspace")
+    at_create.add_argument("--no-scan", action="store_true", help="Skip knowledge scan")
+    at_sub.add_parser("list", help="List ateliers")
+    at_open = at_sub.add_parser("open", help="Open atelier REPL (main or --session)")
+    at_open.add_argument("name")
+    at_open.add_argument("--session", "-s", default=None, help="Session id (default main)")
+    at_del = at_sub.add_parser("delete", help="Delete atelier")
+    at_del.add_argument("name")
+    at_del.add_argument("-y", "--yes", action="store_true")
+    at_br = at_sub.add_parser("branch", help="Branch sessions")
+    at_br_sub = at_br.add_subparsers(dest="branch_cmd")
+    at_br_c = at_br_sub.add_parser("create")
+    at_br_c.add_argument("project")
+    at_br_c.add_argument("branch_name")
+    at_br_l = at_br_sub.add_parser("list")
+    at_br_l.add_argument("project")
+    at_br_m = at_br_sub.add_parser("merge")
+    at_br_m.add_argument("project")
+    at_br_m.add_argument("branch_name")
+    at_br_d = at_br_sub.add_parser("discard")
+    at_br_d.add_argument("project")
+    at_br_d.add_argument("branch_name")
+    at_kn = at_sub.add_parser("knowledge", help="KNOWLEDGE.md")
+    at_kn_sub = at_kn.add_subparsers(dest="knowledge_cmd")
+    for kn in ("show", "edit", "refresh", "history"):
+        p = at_kn_sub.add_parser(kn)
+        p.add_argument("project")
     return parser
 
 
@@ -906,6 +938,10 @@ def main(argv: list[str] | None = None) -> None:
             code = cmd_plugin(args)
         elif args.command == "toolbox":
             code = asyncio.run(cmd_toolbox(args))
+        elif args.command == "atelier":
+            from ..atelier.cli import cmd_atelier
+
+            code = cmd_atelier(args)
         elif args.command == "version":
             print(__version__)
             code = 0
