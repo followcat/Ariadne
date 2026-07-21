@@ -36,6 +36,8 @@ class ProviderBody(BaseModel):
 class TurnBody(BaseModel):
     input: str
     session_id: str | None = None
+    atelier_id: str | None = None
+    atelier_session: str | None = None  # main | branch-<name> | bare branch name
 
 
 class ImagePart(BaseModel):
@@ -48,6 +50,38 @@ class TurnStreamBody(BaseModel):
     input: str = ""
     session_id: str | None = None
     images: list[ImagePart] = []
+    atelier_id: str | None = None
+    atelier_session: str | None = None
+
+
+class AtelierCreateBody(BaseModel):
+    """name = display title (中文可用); optional id = filesystem slug."""
+
+    name: str
+    id: str | None = None
+    from_path: str | None = None
+    no_scan: bool = False
+
+
+class AtelierBranchBody(BaseModel):
+    name: str
+    initial_message: str | None = None
+
+
+class KnowledgePutBody(BaseModel):
+    content: str
+
+
+class KnowledgeApplyItem(BaseModel):
+    section: str = "关键决策"
+    type: str = "add"  # add | modify | remove
+    old_text: str = ""
+    new_text: str = ""
+    evidence: str = ""
+
+
+class KnowledgeApplyBody(BaseModel):
+    updates: list[KnowledgeApplyItem]
 
 
 class SessionPatchBody(BaseModel):
@@ -80,12 +114,22 @@ def create_app(settings: Settings) -> FastAPI:
     def _user_data_dir(username: str) -> Path:
         return settings.resolved_data_dir / "web" / "users" / username
 
-    def _workspace_root_for(username: str) -> Path:
+    def _workspace_root_for(username: str, *, atelier_id: str | None = None) -> Path:
         """Active /workspace binding for this account (design/web-workspace.md).
 
         project  — shared serve workspace (Codex-like open folder)
         per_user — durable tree under the account data dir
+        atelier  — when atelier_id set, use that workshop's workspace_path
         """
+        if atelier_id:
+            mgr = _atelier_mgr(username)
+            try:
+                project = mgr.get_project(atelier_id)
+            except AriadneError as exc:
+                raise HTTPException(status_code=404, detail=exc.error.message) from exc
+            root = project.workspace_path.resolve()
+            root.mkdir(parents=True, exist_ok=True)
+            return root
         mode = (settings.web_workspace_mode or "project").strip().lower()
         if mode == "per_user":
             root = _user_data_dir(username) / "workspace"
@@ -114,6 +158,40 @@ def create_app(settings: Settings) -> FastAPI:
             data_dir=user_data,
             merge_home_plugins=False,  # web users only get their own plugins
         )
+
+    def _atelier_mgr(username: str) -> Any:
+        from ..atelier.manager import AtelierManager
+
+        root = _user_data_dir(username) / "ateliers"
+        root.mkdir(parents=True, exist_ok=True)
+        return AtelierManager(root=root)
+
+    def _resolve_atelier_session(mgr: Any, project_id: str, session_ref: str | None) -> Any:
+        sid = (session_ref or "main").strip() or "main"
+        if sid == "main":
+            return mgr.get_or_create_main_session(project_id)
+        try:
+            return mgr.get_session(project_id, sid)
+        except AriadneError:
+            return mgr.get_session(project_id, f"branch-{sid}")
+
+    def _settings_for_atelier(
+        username: str, *, atelier_id: str, atelier_session: str | None
+    ) -> tuple[Settings, Any, Any]:
+        """Bind workspace + knowledge prompt + atelier data_dir for a turn."""
+        from ..atelier.runner import settings_for_atelier
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+            session = _resolve_atelier_session(mgr, atelier_id, atelier_session)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        base = _settings_for(username)
+        # Prefer local sandbox in web atelier when docker unavailable is handled
+        # by compose; keep user sandbox preference from serve settings.
+        bound = settings_for_atelier(project, session, base)
+        return bound, project, session
 
     @app.post("/api/auth/register")
     def register(body: RegisterBody) -> dict[str, str]:
@@ -147,10 +225,14 @@ def create_app(settings: Settings) -> FastAPI:
         }
 
     def _resolve_workspace_path(
-        raw_path: str, *, username: str, must_exist: bool = True
+        raw_path: str,
+        *,
+        username: str,
+        must_exist: bool = True,
+        atelier_id: str | None = None,
     ) -> Path:
         """Map /workspace/... , relative, or host-absolute-under-root into active workspace."""
-        root = _workspace_root_for(username)
+        root = _workspace_root_for(username, atelier_id=atelier_id)
         raw = (raw_path or "").strip() or "/workspace"
         if raw in {"/workspace", "workspace", ".", ""}:
             target = root
@@ -186,8 +268,10 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"path not found: {raw}")
         return target
 
-    def _virtual_path(target: Path, *, username: str) -> str:
-        root = _workspace_root_for(username)
+    def _virtual_path(
+        target: Path, *, username: str, atelier_id: str | None = None
+    ) -> str:
+        root = _workspace_root_for(username, atelier_id=atelier_id)
         if target == root:
             return "/workspace"
         try:
@@ -199,10 +283,11 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/workspace/list")
     def workspace_list(
         path: str = Query(default="/workspace", description="Directory under /workspace"),
+        atelier_id: str | None = Query(default=None),
         username: str = Depends(current_user),
     ) -> dict[str, Any]:
         """List a directory in the sandbox workspace (Codex-style file browser)."""
-        target = _resolve_workspace_path(path, username=username)
+        target = _resolve_workspace_path(path, username=username, atelier_id=atelier_id)
         if not target.is_dir():
             raise HTTPException(status_code=400, detail="path is not a directory")
         # Hide common noise / secrets at listing time
@@ -237,34 +322,36 @@ def create_app(settings: Settings) -> FastAPI:
             entries.append(
                 {
                     "name": name,
-                    "path": _virtual_path(child, username=username),
+                    "path": _virtual_path(child, username=username, atelier_id=atelier_id),
                     "kind": kind,
                     "size": int(st.st_size) if kind == "file" else 0,
                     "mtime": float(st.st_mtime),
                 }
             )
         parent = target.parent
-        root = _workspace_root_for(username)
+        root = _workspace_root_for(username, atelier_id=atelier_id)
         parent_path = None
         if target != root and (root in parent.parents or parent == root):
-            parent_path = _virtual_path(parent, username=username)
+            parent_path = _virtual_path(parent, username=username, atelier_id=atelier_id)
         return {
-            "path": _virtual_path(target, username=username),
+            "path": _virtual_path(target, username=username, atelier_id=atelier_id),
             "parent": parent_path,
             "entries": entries,
             "workspace": str(root),
-            "workspace_mode": settings.web_workspace_mode,
+            "workspace_mode": "atelier" if atelier_id else settings.web_workspace_mode,
             "project_root": str(_project_root()),
+            "atelier_id": atelier_id,
         }
 
     @app.get("/api/workspace/read")
     def workspace_read(
         path: str = Query(..., description="File path under /workspace"),
         max_bytes: int = Query(default=512_000, ge=1024, le=2_000_000),
+        atelier_id: str | None = Query(default=None),
         username: str = Depends(current_user),
     ) -> dict[str, Any]:
         """Read a text file from workspace (preview). Binary files are flagged."""
-        target = _resolve_workspace_path(path, username=username)
+        target = _resolve_workspace_path(path, username=username, atelier_id=atelier_id)
         if not target.is_file():
             raise HTTPException(status_code=400, detail="path is not a file")
         size = target.stat().st_size
@@ -285,7 +372,10 @@ def create_app(settings: Settings) -> FastAPI:
                 except UnicodeDecodeError:
                     binary = True
                     text = ""
-        vpath = _virtual_path(target, username=username)
+        vpath = _virtual_path(target, username=username, atelier_id=atelier_id)
+        dl = f"/api/workspace/file?path={vpath}"
+        if atelier_id:
+            dl += f"&atelier_id={atelier_id}"
         return {
             "path": vpath,
             "name": target.name,
@@ -294,12 +384,13 @@ def create_app(settings: Settings) -> FastAPI:
             "binary": binary,
             "encoding": encoding if not binary else None,
             "text": text if not binary else None,
-            "download_path": f"/api/workspace/file?path={vpath}",
+            "download_path": dl,
         }
 
     @app.get("/api/workspace/file")
     def workspace_file(
         path: str = Query(..., description="Sandbox path e.g. /workspace/plot.png"),
+        atelier_id: str | None = Query(default=None),
         username: str = Depends(current_user),
     ) -> FileResponse:
         """Serve a file from the account's active /workspace root.
@@ -307,7 +398,7 @@ def create_app(settings: Settings) -> FastAPI:
         Used by the web UI to inline 走势图 / plots written by sandbox tools.
         Auth required; path confined to project or per_user root (web-workspace.md).
         """
-        target = _resolve_workspace_path(path, username=username)
+        target = _resolve_workspace_path(path, username=username, atelier_id=atelier_id)
         if not target.is_file():
             raise HTTPException(status_code=404, detail=f"file not found: {path}")
         media = "application/octet-stream"
@@ -354,15 +445,40 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/turns")
     async def run_turn(body: TurnBody, username: str = Depends(current_user)) -> Any:
-        user_settings = _settings_for(username)
-        if body.session_id:
-            user_settings = dataclasses.replace(user_settings, session_id=body.session_id)
+        project = None
+        session = None
+        if body.atelier_id:
+            user_settings, project, session = _settings_for_atelier(
+                username,
+                atelier_id=body.atelier_id,
+                atelier_session=body.atelier_session,
+            )
+        else:
+            user_settings = _settings_for(username)
+            if body.session_id:
+                user_settings = dataclasses.replace(user_settings, session_id=body.session_id)
         agent = compose_agent(user_settings)
         try:
             result = await agent.run(body.input)
         except AriadneError as exc:
             raise HTTPException(status_code=400, detail=exc.error.message) from exc
-        return json.loads(render_json(result))
+        out = json.loads(render_json(result))
+        if project is not None and session is not None:
+            from ..atelier.models import append_transcript
+
+            # Dual-write atelier transcript for branch merge notes; no auto KNOWLEDGE extract.
+            asst = str(getattr(result, "text", None) or out.get("text") or "")
+            append_transcript(
+                project,
+                session.id,
+                {"role": "user", "content": body.input, "session_id": session.id},
+            )
+            append_transcript(
+                project,
+                session.id,
+                {"role": "assistant", "content": asst, "session_id": session.id},
+            )
+        return out
 
     async def _sse_for_turn(
         *,
@@ -370,15 +486,25 @@ def create_app(settings: Settings) -> FastAPI:
         text: str,
         session_id: str | None,
         images: list[Any] | None,
+        atelier_id: str | None = None,
+        atelier_session: str | None = None,
     ) -> StreamingResponse:
-        user_settings = _settings_for(username)
-        # SSE path always wants model token streaming (answer + thinking deltas).
-        if session_id:
-            user_settings = dataclasses.replace(
-                user_settings, session_id=session_id, stream=True
+        project = None
+        session = None
+        if atelier_id:
+            user_settings, project, session = _settings_for_atelier(
+                username, atelier_id=atelier_id, atelier_session=atelier_session
             )
-        else:
             user_settings = dataclasses.replace(user_settings, stream=True)
+        else:
+            user_settings = _settings_for(username)
+            # SSE path always wants model token streaming (answer + thinking deltas).
+            if session_id:
+                user_settings = dataclasses.replace(
+                    user_settings, session_id=session_id, stream=True
+                )
+            else:
+                user_settings = dataclasses.replace(user_settings, stream=True)
         agent = compose_agent(user_settings)
 
         async def events():
@@ -386,10 +512,39 @@ def create_app(settings: Settings) -> FastAPI:
                 async for event in agent.run_stream(text, images=images or None):
                     if event.kind in {"turn_completed", "turn_failed"}:
                         result = event.data.get("result")
-                        payload = {
+                        payload: dict[str, Any] = {
                             "kind": event.kind,
                             "result": json.loads(render_json(result)) if result else None,
                         }
+                        if (
+                            event.kind == "turn_completed"
+                            and project is not None
+                            and session is not None
+                            and result is not None
+                        ):
+                            from ..atelier.models import append_transcript
+
+                            asst = str(getattr(result, "text", None) or "")
+                            if not asst and payload.get("result"):
+                                asst = str((payload["result"] or {}).get("text") or "")
+                            append_transcript(
+                                project,
+                                session.id,
+                                {
+                                    "role": "user",
+                                    "content": text,
+                                    "session_id": session.id,
+                                },
+                            )
+                            append_transcript(
+                                project,
+                                session.id,
+                                {
+                                    "role": "assistant",
+                                    "content": asst,
+                                    "session_id": session.id,
+                                },
+                            )
                     else:
                         payload = {"kind": event.kind, "data": event.data}
                     yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
@@ -411,11 +566,20 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/turns/stream")
     async def stream_turn(
-        input: str, session_id: str | None = None, username: str = Depends(current_user)
+        input: str,
+        session_id: str | None = None,
+        atelier_id: str | None = None,
+        atelier_session: str | None = None,
+        username: str = Depends(current_user),
     ) -> StreamingResponse:
         # Text-only GET (kept for simple clients / e2e)
         return await _sse_for_turn(
-            username=username, text=input, session_id=session_id, images=None
+            username=username,
+            text=input,
+            session_id=session_id,
+            images=None,
+            atelier_id=atelier_id,
+            atelier_session=atelier_session,
         )
 
     @app.post("/api/turns/stream")
@@ -431,6 +595,8 @@ def create_app(settings: Settings) -> FastAPI:
             text=body.input or "",
             session_id=body.session_id,
             images=images,
+            atelier_id=body.atelier_id,
+            atelier_session=body.atelier_session,
         )
 
     def _user_data(username: str) -> Path:
@@ -537,6 +703,303 @@ def create_app(settings: Settings) -> FastAPI:
 
         user_data = settings.resolved_data_dir / "web" / "users" / username
         return PluginStore(user_data / "plugins.json")
+
+    # ── Atelier (project workshop) ──────────────────────────────────────────
+
+    @app.get("/api/ateliers")
+    def list_ateliers(username: str = Depends(current_user)) -> Any:
+        mgr = _atelier_mgr(username)
+        return [
+            {
+                "id": p.id,
+                "name": p.name,
+                "workspace_path": str(p.workspace_path),
+                "path": str(p.path),
+                "created_at": p.created_at,
+                "updated_at": p.updated_at,
+            }
+            for p in mgr.list_projects()
+        ]
+
+    @app.post("/api/ateliers")
+    def create_atelier(body: AtelierCreateBody, username: str = Depends(current_user)) -> Any:
+        mgr = _atelier_mgr(username)
+        from_path = Path(body.from_path).expanduser() if body.from_path else None
+        # Security: only allow from_path under serve project root or user data
+        if from_path is not None:
+            try:
+                resolved = from_path.resolve()
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"invalid from_path: {exc}") from exc
+            allowed_roots = {_project_root(), _user_data_dir(username).resolve()}
+            if not any(
+                resolved == root or root in resolved.parents for root in allowed_roots
+            ):
+                # Also allow if path is inside an existing atelier of this user
+                ateliers_root = (_user_data_dir(username) / "ateliers").resolve()
+                if ateliers_root not in resolved.parents and resolved != ateliers_root:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="from_path must be under project root or your data dir",
+                    )
+            from_path = resolved
+        try:
+            project = mgr.create_project(
+                body.name,
+                project_id=body.id,
+                from_path=from_path,
+                no_scan=bool(body.no_scan),
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {
+            "id": project.id,
+            "name": project.name,
+            "workspace_path": str(project.workspace_path),
+            "path": str(project.path),
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+        }
+
+    @app.get("/api/ateliers/{atelier_id}")
+    def get_atelier(atelier_id: str, username: str = Depends(current_user)) -> Any:
+        from ..atelier.knowledge import read_knowledge
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        sessions = [
+            {
+                "id": s.id,
+                "title": s.title,
+                "type": s.type.value,
+                "status": s.status.value,
+                "branch_name": s.branch_name,
+                "parent_session_id": s.parent_session_id,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+            }
+            for s in mgr.list_sessions(atelier_id)
+        ]
+        return {
+            "id": project.id,
+            "name": project.name,
+            "workspace_path": str(project.workspace_path),
+            "path": str(project.path),
+            "created_at": project.created_at,
+            "updated_at": project.updated_at,
+            "config": project.config.to_dict(),
+            "sessions": sessions,
+            "knowledge_preview": read_knowledge(project)[:400],
+        }
+
+    @app.delete("/api/ateliers/{atelier_id}")
+    def delete_atelier(
+        atelier_id: str,
+        yes: bool = Query(default=False),
+        username: str = Depends(current_user),
+    ) -> Any:
+        mgr = _atelier_mgr(username)
+        try:
+            mgr.delete_project(atelier_id, yes=yes)
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {"status": "deleted", "id": atelier_id}
+
+    @app.get("/api/ateliers/{atelier_id}/sessions")
+    def atelier_sessions(atelier_id: str, username: str = Depends(current_user)) -> Any:
+        mgr = _atelier_mgr(username)
+        try:
+            sessions = mgr.list_sessions(atelier_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        return [
+            {
+                "id": s.id,
+                "title": s.title,
+                "type": s.type.value,
+                "status": s.status.value,
+                "branch_name": s.branch_name,
+                "parent_session_id": s.parent_session_id,
+                "created_at": s.created_at,
+                "updated_at": s.updated_at,
+            }
+            for s in sessions
+        ]
+
+    @app.get("/api/ateliers/{atelier_id}/sessions/{session_id}/messages")
+    def atelier_session_messages(
+        atelier_id: str, session_id: str, username: str = Depends(current_user)
+    ) -> Any:
+        from ..atelier.models import read_transcript
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+            session = _resolve_atelier_session(mgr, atelier_id, session_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        rows = read_transcript(project, session.id, limit=200)
+        messages = [
+            {"role": r.get("role"), "content": r.get("content") or ""}
+            for r in rows
+            if r.get("role") in {"user", "assistant", "system"}
+        ]
+        return {
+            "atelier_id": atelier_id,
+            "session_id": session.id,
+            "type": session.type.value,
+            "status": session.status.value,
+            "messages": messages,
+        }
+
+    @app.post("/api/ateliers/{atelier_id}/branches")
+    def create_branch(
+        atelier_id: str, body: AtelierBranchBody, username: str = Depends(current_user)
+    ) -> Any:
+        mgr = _atelier_mgr(username)
+        try:
+            meta = mgr.create_branch(
+                atelier_id, body.name, initial_message=body.initial_message
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {
+            "id": meta.id,
+            "title": meta.title,
+            "type": meta.type.value,
+            "status": meta.status.value,
+            "branch_name": meta.branch_name,
+        }
+
+    @app.post("/api/ateliers/{atelier_id}/branches/{branch_name}/merge")
+    def merge_branch(
+        atelier_id: str, branch_name: str, username: str = Depends(current_user)
+    ) -> Any:
+        mgr = _atelier_mgr(username)
+        try:
+            # Append short merge note only — no LLM/heuristic decision extract.
+            summary = mgr.merge_branch(atelier_id, branch_name)
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {"status": "merged", "branch": branch_name, "summary": summary}
+
+    @app.post("/api/ateliers/{atelier_id}/branches/{branch_name}/discard")
+    def discard_branch(
+        atelier_id: str, branch_name: str, username: str = Depends(current_user)
+    ) -> Any:
+        mgr = _atelier_mgr(username)
+        try:
+            mgr.discard_branch(atelier_id, branch_name)
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {"status": "discarded", "branch": branch_name}
+
+    @app.get("/api/ateliers/{atelier_id}/knowledge")
+    def get_knowledge(atelier_id: str, username: str = Depends(current_user)) -> Any:
+        from ..atelier.knowledge import list_knowledge_history, read_knowledge
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        hist = list_knowledge_history(project)
+        return {
+            "atelier_id": atelier_id,
+            "content": read_knowledge(project),
+            "path": str(project.knowledge_path),
+            "history": [p.name for p in hist[:30]],
+        }
+
+    @app.put("/api/ateliers/{atelier_id}/knowledge")
+    def put_knowledge(
+        atelier_id: str, body: KnowledgePutBody, username: str = Depends(current_user)
+    ) -> Any:
+        from ..atelier.knowledge import write_knowledge
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        write_knowledge(project, body.content or "", session_id="web-edit")
+        return {"status": "ok", "atelier_id": atelier_id}
+
+    @app.post("/api/ateliers/{atelier_id}/knowledge/apply")
+    def apply_knowledge(
+        atelier_id: str, body: KnowledgeApplyBody, username: str = Depends(current_user)
+    ) -> Any:
+        from ..atelier.knowledge import (
+            KnowledgeUpdate,
+            KnowledgeUpdateItem,
+            apply_updates,
+            read_knowledge,
+            write_knowledge,
+        )
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        items = []
+        for u in body.updates:
+            op = (u.type or "add").strip().lower()
+            if op not in {"add", "modify", "remove"}:
+                raise HTTPException(status_code=400, detail=f"invalid update type: {u.type}")
+            items.append(
+                KnowledgeUpdateItem(
+                    section=u.section or "关键决策",
+                    type=op,
+                    old_text=u.old_text or "",
+                    new_text=u.new_text or "",
+                    evidence=u.evidence or "",
+                )
+            )
+        update = KnowledgeUpdate(has_update=bool(items), updates=items)
+        current = read_knowledge(project)
+        new_content = apply_updates(current, update)
+        if new_content != current:
+            write_knowledge(project, new_content, session_id="web-apply")
+        return {
+            "status": "ok",
+            "changed": new_content != current,
+            "content": new_content,
+            "ops": len(items),
+        }
+
+    @app.post("/api/ateliers/{atelier_id}/knowledge/refresh")
+    def refresh_knowledge(atelier_id: str, username: str = Depends(current_user)) -> Any:
+        from ..atelier.knowledge import heuristic_refresh, write_knowledge
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        content = heuristic_refresh(project)
+        write_knowledge(project, content, session_id="web-refresh")
+        return {"status": "ok", "content": content}
+
+    @app.get("/api/ateliers/{atelier_id}/knowledge/history")
+    def knowledge_history(atelier_id: str, username: str = Depends(current_user)) -> Any:
+        from ..atelier.knowledge import list_knowledge_history
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        return {
+            "atelier_id": atelier_id,
+            "history": [
+                {"name": p.name, "mtime": p.stat().st_mtime, "size": p.stat().st_size}
+                for p in list_knowledge_history(project)[:50]
+            ],
+        }
 
     @app.get("/api/me/plugins")
     def list_my_plugins(username: str = Depends(current_user)) -> Any:

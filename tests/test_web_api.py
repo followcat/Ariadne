@@ -441,3 +441,176 @@ def test_per_user_plugins(tmp_path: Path) -> None:
             assert r.status_code == 404
 
     asyncio.run(run())
+
+
+def test_atelier_api_crud_and_knowledge(tmp_path: Path) -> None:
+    """Web Atelier: create, branch, knowledge add/modify/remove, workspace bind."""
+
+    async def run() -> None:
+        async with _client(tmp_path) as client:
+            r = await client.post(
+                "/api/auth/register",
+                json={"username": "atelieruser", "password": "password123"},
+            )
+            token = r.json()["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+
+            r = await client.get("/api/ateliers", headers=headers)
+            assert r.status_code == 200 and r.json() == []
+
+            r = await client.post(
+                "/api/ateliers",
+                json={"name": "demo-app", "no_scan": True},
+                headers=headers,
+            )
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["id"] == "demo-app"
+            aid = body["id"]
+
+            # Chinese display name → auto id, keep 中文 name
+            r = await client.post(
+                "/api/ateliers",
+                json={"name": "画画", "no_scan": True},
+                headers=headers,
+            )
+            assert r.status_code == 200, r.text
+            zh = r.json()
+            assert zh["name"] == "画画"
+            assert zh["id"].startswith("atelier-")
+            r = await client.delete(
+                f"/api/ateliers/{zh['id']}?yes=true", headers=headers
+            )
+            assert r.status_code == 200
+
+            r = await client.get(f"/api/ateliers/{aid}", headers=headers)
+            assert r.status_code == 200
+            assert any(s["id"] == "main" for s in r.json()["sessions"])
+
+            # knowledge get + apply add/modify/remove
+            r = await client.get(f"/api/ateliers/{aid}/knowledge", headers=headers)
+            assert r.status_code == 200
+            assert "决策与约定" in r.json()["content"] or "AGENTS.md" in r.json()["content"]
+
+            # Power API still supports structured apply; primary UX is full PUT edit.
+            r = await client.post(
+                f"/api/ateliers/{aid}/knowledge/apply",
+                json={
+                    "updates": [
+                        {
+                            "section": "决策与约定",
+                            "type": "add",
+                            "new_text": "采用 SQLite 起步",
+                        }
+                    ]
+                },
+                headers=headers,
+            )
+            assert r.status_code == 200 and r.json()["changed"] is True
+            assert "SQLite" in r.json()["content"]
+
+            r = await client.post(
+                f"/api/ateliers/{aid}/knowledge/apply",
+                json={
+                    "updates": [
+                        {
+                            "section": "决策与约定",
+                            "type": "modify",
+                            "old_text": "SQLite",
+                            "new_text": "采用 Postgres 生产库",
+                        }
+                    ]
+                },
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert "Postgres" in r.json()["content"]
+            assert "SQLite 起步" not in r.json()["content"]
+
+            r = await client.post(
+                f"/api/ateliers/{aid}/knowledge/apply",
+                json={
+                    "updates": [
+                        {
+                            "section": "决策与约定",
+                            "type": "remove",
+                            "old_text": "Postgres",
+                        }
+                    ]
+                },
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert "Postgres" not in r.json()["content"]
+
+            # full put
+            r = await client.put(
+                f"/api/ateliers/{aid}/knowledge",
+                json={"content": "# demo\n\n## 约定\n- hello\n"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            r = await client.get(f"/api/ateliers/{aid}/knowledge", headers=headers)
+            assert "hello" in r.json()["content"]
+            assert len(r.json()["history"]) >= 1
+
+            # branch lifecycle
+            r = await client.post(
+                f"/api/ateliers/{aid}/branches",
+                json={"name": "exp-auth", "initial_message": "try JWT"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert r.json()["id"] == "branch-exp-auth"
+
+            r = await client.get(
+                f"/api/ateliers/{aid}/sessions/branch-exp-auth/messages",
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert r.json()["type"] == "branch"
+
+            r = await client.post(
+                f"/api/ateliers/{aid}/branches/exp-auth/merge",
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert r.json()["status"] == "merged"
+
+            r = await client.post(
+                f"/api/ateliers/{aid}/branches",
+                json={"name": "throwaway"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            r = await client.post(
+                f"/api/ateliers/{aid}/branches/throwaway/discard",
+                headers=headers,
+            )
+            assert r.status_code == 200 and r.json()["status"] == "discarded"
+
+            # workspace browser scoped to atelier
+            r = await client.get(
+                "/api/workspace/list",
+                params={"atelier_id": aid},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert r.json()["workspace_mode"] == "atelier"
+            assert r.json()["atelier_id"] == aid
+
+            # isolation: other user cannot see
+            r2 = await client.post(
+                "/api/auth/register",
+                json={"username": "otheratelier", "password": "password123"},
+            )
+            other = {"Authorization": f"Bearer {r2.json()['token']}"}
+            r = await client.get("/api/ateliers", headers=other)
+            assert r.json() == []
+            r = await client.get(f"/api/ateliers/{aid}", headers=other)
+            assert r.status_code == 404
+
+            r = await client.delete(f"/api/ateliers/{aid}?yes=true", headers=headers)
+            assert r.status_code == 200
+
+    asyncio.run(run())
