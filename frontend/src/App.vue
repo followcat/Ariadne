@@ -5,7 +5,10 @@ import MarkdownView from './components/MarkdownView.vue'
 import PluginsModal from './components/PluginsModal.vue'
 import ThinkingBlock from './components/ThinkingBlock.vue'
 import ToolsPanel, { type ToolEntry } from './components/ToolsPanel.vue'
+import WorkspaceBrowser from './components/WorkspaceBrowser.vue'
 import { api, parseSseBuffer, type Me, type SessionRow, type StreamEvent } from './api/client'
+
+type LeftTab = 'sessions' | 'workspace'
 
 type ChatMsg =
   | { id: string; role: 'user'; content: string }
@@ -29,6 +32,11 @@ const input = ref('')
 const busy = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('ariadne_sidebar') === '0')
 const toolsCollapsed = ref(localStorage.getItem('ariadne_tools_panel') !== '1')
+const leftTab = ref<LeftTab>(
+  localStorage.getItem('ariadne_left_tab') === 'workspace' ? 'workspace' : 'sessions',
+)
+/** Bumped after turns so workspace browser reloads new agent outputs. */
+const workspaceRefreshKey = ref(0)
 const theme = ref(document.documentElement.getAttribute('data-theme') || 'dark')
 
 const tools = ref<ToolEntry[]>([])
@@ -61,6 +69,15 @@ function toggleTheme() {
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
   localStorage.setItem('ariadne_sidebar', sidebarCollapsed.value ? '0' : '1')
+}
+function setLeftTab(tab: LeftTab) {
+  leftTab.value = tab
+  localStorage.setItem('ariadne_left_tab', tab)
+  // Opening workspace while sidebar is collapsed expands it (Codex-style browse).
+  if (tab === 'workspace' && sidebarCollapsed.value) {
+    sidebarCollapsed.value = false
+    localStorage.setItem('ariadne_sidebar', '1')
+  }
 }
 function toggleTools() {
   toolsCollapsed.value = !toolsCollapsed.value
@@ -349,6 +366,8 @@ async function send() {
     // Refresh topic title then reload session list so sidebar shows the new name.
     await refreshSessionTitle(false)
     await loadSessions()
+    // Agent may have written files under /workspace — refresh file browser.
+    workspaceRefreshKey.value += 1
     inputEl.value?.focus()
   }
 }
@@ -538,16 +557,44 @@ onMounted(() => {
 
 <template>
   <AuthView v-if="!authed" @authed="onAuthed" />
-  <div v-else class="shell" :class="{ 'sb-collapsed': sidebarCollapsed }">
-    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+  <div
+    v-else
+    class="shell"
+    :class="{ 'sb-collapsed': sidebarCollapsed, 'ws-mode': leftTab === 'workspace' }"
+  >
+    <aside
+      class="sidebar"
+      :class="{ collapsed: sidebarCollapsed, 'ws-open': leftTab === 'workspace' }"
+    >
       <div class="sb-top">
         <div class="sb-brand"><span class="mark">A</span> Ariadne</div>
         <button type="button" class="new-chat" @click="createSession">
           <span class="plus">+</span> 新对话
         </button>
+        <div class="sb-tabs" role="tablist" aria-label="侧栏">
+          <button
+            type="button"
+            role="tab"
+            class="sb-tab"
+            :class="{ active: leftTab === 'sessions' }"
+            :aria-selected="leftTab === 'sessions'"
+            @click="setLeftTab('sessions')"
+          >
+            历史
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="sb-tab"
+            :class="{ active: leftTab === 'workspace' }"
+            :aria-selected="leftTab === 'workspace'"
+            @click="setLeftTab('workspace')"
+          >
+            工作区
+          </button>
+        </div>
       </div>
-      <div class="sb-section">历史</div>
-      <div class="sess-list">
+      <div v-show="leftTab === 'sessions'" class="sess-list">
         <div v-if="!sessions.length" class="sb-empty">暂无会话</div>
         <button
           v-for="s in sessions"
@@ -568,6 +615,12 @@ onMounted(() => {
           >×</span>
         </button>
       </div>
+      <WorkspaceBrowser
+        v-show="leftTab === 'workspace'"
+        :token="token"
+        :active="leftTab === 'workspace'"
+        :refresh-key="workspaceRefreshKey"
+      />
       <div class="sb-bottom">
         <button type="button" class="sb-item" @click="toggleTheme">
           <span class="ico">{{ theme === 'light' ? '☾' : '☀' }}</span>
@@ -603,6 +656,13 @@ onMounted(() => {
     <div class="main">
       <div class="topbar">
         <button type="button" class="icon-btn" title="侧栏" @click="toggleSidebar">☰</button>
+        <button
+          type="button"
+          class="icon-btn"
+          title="工作区 /workspace"
+          :class="{ on: leftTab === 'workspace' && !sidebarCollapsed }"
+          @click="setLeftTab(leftTab === 'workspace' ? 'sessions' : 'workspace')"
+        >📂</button>
         <span
           class="title"
           title="点击可重命名；留空确定则自动重总结主题"
@@ -733,14 +793,43 @@ onMounted(() => {
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  transition: margin 0.2s, opacity 0.2s;
+  transition: margin 0.2s, opacity 0.2s, width 0.2s;
+}
+/* Codex-style: file browser needs more room for tree + preview */
+.sidebar.ws-open {
+  width: var(--sidebar-ws-w, 380px);
 }
 .sidebar.collapsed {
   margin-left: calc(-1 * var(--sidebar-w));
   opacity: 0;
   pointer-events: none;
 }
+.sidebar.collapsed.ws-open {
+  margin-left: calc(-1 * var(--sidebar-ws-w, 380px));
+}
 .sb-top { padding: 14px 12px 8px; display: flex; flex-direction: column; gap: 8px; }
+.sb-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+}
+.sb-tab {
+  padding: 7px 8px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--dim);
+}
+.sb-tab:hover { color: var(--fg-2); }
+.sb-tab.active {
+  background: var(--bg-2);
+  color: var(--fg);
+  box-shadow: 0 0 0 1px var(--line);
+}
 .sb-brand {
   display: flex;
   align-items: center;
@@ -877,6 +966,7 @@ onMounted(() => {
   position: relative;
 }
 .icon-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.icon-btn.on { background: var(--bg-3); color: var(--fg); }
 .tools-btn .badge {
   position: absolute;
   top: 4px;
