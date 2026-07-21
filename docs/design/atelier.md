@@ -26,11 +26,10 @@ Branch 是 **对话上下文隔离**，**不是** git branch。代码始终共�
 
 ## 3. Non-goals
 
-- Web 完整 Atelier UI（可后续挂 project_id）  
 - Git 自动 merge / PR  
 - 替换 Memory L0–L4  
 - 多租户 / 团队工坊  
-- 强制 LLM 才能用（离线时知识库为手写文件）
+- 强制 LLM 才能用（离线时知识库为手写文件 / 启发式）
 
 ## 4. Layout
 
@@ -75,16 +74,40 @@ ariadne atelier knowledge show|edit|refresh|history PROJECT
 
 `open` → get_or_create main → existing REPL (`run_repl`) with workspace + session bound.
 
-## 7. Knowledge
+## 7. Knowledge (Codex AGENTS.md model)
 
-Sections (template): 技术栈 / 关键决策 / 约定 / 经验教训 / 进行中的工作.
+**Value:** cross-session project continuity — a short user-owned brief, always injected.
 
-- **P0:** template + heuristic tree/README fill.  
-- **P1:** optional LLM extract with evidence quotes.  
-- Updates: snapshot to `knowledge_history/` then rewrite.
+| Do | Don't |
+| --- | --- |
+| User writes stable decisions / conventions | Auto-extract every turn (default **off**) |
+| Always inject (capped, ~4k chars) | Treat as second Memory / full archive |
+| Optional create-time tree scaffold | Rely on heuristic/LLM as source of truth |
+| Merge appends a short note for humans to edit | Auto-merge “decisions” from branch dialogue |
 
-## 8. Related
+Template is minimal (`决策与约定` / `备注`). Programmatic `apply_updates` / `extract_*` remain as **opt-in libraries** (tests / power tools), not the host default path.
+
+Automatic recall / sedimentation → **Memory L0–L4** (CuratedStore, summaries, etc.).
+
+## 8. Web UI
+
+Per-account ateliers live under `{user_data}/ateliers/` (not multi-tenant SaaS).
+
+| API | Role |
+| --- | --- |
+| `GET/POST /api/ateliers` | list / create |
+| `GET/DELETE /api/ateliers/{id}` | detail / delete (`?yes=true`) |
+| `GET …/sessions`, `…/sessions/{sid}/messages` | main + branch transcripts |
+| `POST …/branches`, `…/branches/{name}/merge\|discard` | branch lifecycle |
+| `GET/PUT …/knowledge` | project brief view/edit |
+| `POST …/knowledge/apply\|refresh` | optional power API (not primary UX) |
+| `POST /api/turns/stream` + `atelier_id` / `atelier_session` | turns + KNOWLEDGE inject (no auto-write) |
+
+Vue: left tab **工坊** · **项目说明** panel (view / full markdown edit) · workspace browser with `atelier_id`.
+
+## 9. Related
 
 - [web-workspace.md](web-workspace.md) — project files vs chat threads  
 - [sandbox-v1.md](sandbox-v1.md) — /workspace vs /session  
 - [cli-shell-agent.md](cli-shell-agent.md) — REPL host  
+- [web-vue-frontend.md](web-vue-frontend.md) — SPA shell  

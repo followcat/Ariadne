@@ -36,7 +36,7 @@
 **Ariadne** is a callable runtime that turns one user turn into model reasoning, skill guidance, tool calls, layered memory, and **Docker-isolated** execution (Codex-style containers on *your* machine).
 
 Default human interface: a **CLI shell agent** over your project workspace (bare `ariadne` → REPL).  
-Optional: **Atelier** project workshops (`ariadne atelier`) and a **Grok-style Vue web UI** (`ariadne serve`) — history · chat · tools panel · workspace browser.
+Optional: **Atelier** project workshops (`ariadne atelier` / Web **工坊** tab) and a **Grok-style Vue web UI** (`ariadne serve`) — history · chat · tools · workspace · project brief.
 
 It is **not** an enterprise multi-tenant platform, connector hub, or company packaging stack.
 
@@ -114,12 +114,12 @@ Useful in-REPL commands: `/help`, `/title`, `/image`, `/resume`, `/status`, `/mo
 
 ### Atelier — project workshop
 
-A **Codex-like project room**: shared code tree, continuous main chat, optional experiment branches, and a living `KNOWLEDGE.md`.
+A **Codex-like project room**: shared code tree, continuous main chat, optional experiment branches, and a short user-owned `KNOWLEDGE.md` (like **AGENTS.md**).
 
 ```text
 Atelier = workshop
 ├── workspace/       shared code (all sessions see the same files)
-├── KNOWLEDGE.md     project knowledge wall (decisions, conventions)
+├── KNOWLEDGE.md     project brief — user-written, always injected
 ├── Main session     daily continuous dialogue (zero ceremony)
 └── Branch session*  isolated conversation + own sandbox scope
                      (not a git branch)
@@ -129,9 +129,14 @@ Atelier = workshop
 ariadne atelier create my-app --from .     # workshop from existing code
 ariadne atelier open my-app                # REPL on main (shared workspace)
 ariadne atelier branch create my-app exp   # experiment conversation
-ariadne atelier branch merge my-app exp    # summary → KNOWLEDGE + notify main
-ariadne atelier knowledge show my-app
+ariadne atelier branch merge my-app exp    # short merge note + notify main
+ariadne atelier knowledge show my-app      # edit with: knowledge edit
 ```
+
+**Project brief (`KNOWLEDGE.md`):** Codex-style — **you write** stable decisions/conventions; every turn injects a capped copy.  
+**No auto-extract by default** (heuristic/LLM helpers are opt-in only). Turn-level memory stays in **Memory L0–L4**. Keep the file short.
+
+**Web UI:** `ariadne serve` → **工坊** tab — workshops, main/branch sessions, markdown editor for the brief, turns with `atelier_id`. Store: `{data}/web/users/<user>/ateliers/`.
 
 Design: [docs/design/atelier.md](docs/design/atelier.md).
 

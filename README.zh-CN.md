@@ -36,7 +36,7 @@
 **Ariadne** 是一个可调用的运行时：把一次用户 turn 变成模型推理、技能引导、工具调用、分层记忆，以及 **Docker 隔离执行**（对标 Codex 的容器模型，跑在你本机）。
 
 默认人机界面：面向项目工作区的 **CLI 终端 Agent**（直接运行 `ariadne` 进入 REPL）。  
-可选：**Atelier 工坊**（`ariadne atelier`）与 **Grok 风格 Vue Web UI**（`ariadne serve`）——历史 · 对话 · 工具面板 · 工作区浏览器。
+可选：**Atelier 工坊**（`ariadne atelier` / Web **工坊** 页）与 **Grok 风格 Vue Web UI**（`ariadne serve`）——历史 · 对话 · 工具 · 工作区 · 项目说明。
 
 它**不是**企业多租户平台、连接器中枢或公司打包栈。
 
@@ -114,12 +114,12 @@ REPL 常用：`/help`、`/title`、`/image`、`/resume`、`/status`、`/mode`、
 
 ### Atelier — 项目工坊
 
-对标 Codex「打开项目」体验：共享代码、连续主会话、可选实验分支、可持续的 `KNOWLEDGE.md`。
+对标 Codex「打开项目」体验：共享代码、连续主会话、可选实验分支，以及手写的 `KNOWLEDGE.md`（类似 **AGENTS.md**）。
 
 ```text
 Atelier = 工坊
 ├── workspace/       共享代码（所有 session 同一份）
-├── KNOWLEDGE.md     项目知识墙（决策 / 约定 / 教训）
+├── KNOWLEDGE.md     项目说明 — 用户维护，始终注入
 ├── Main session     日常连续对话（零管理）
 └── Branch session*  隔离对话 + 独立沙箱 scope
                      （不是 git 分支）
@@ -129,12 +129,16 @@ Atelier = 工坊
 ariadne atelier create my-app --from .     # 从已有代码建工坊
 ariadne atelier open my-app                # 进入 main REPL
 ariadne atelier branch create my-app exp   # 实验会话
-ariadne atelier branch merge my-app exp    # 摘要 → 知识库 + 通知 main
-ariadne atelier knowledge show my-app
+ariadne atelier branch merge my-app exp    # 附简短合并笔记 + 通知 main
+ariadne atelier knowledge show my-app      # 编辑: knowledge edit
 ```
 
-设计：[docs/design/atelier.md](docs/design/atelier.md)。
+**项目说明（`KNOWLEDGE.md`）：** Codex 式——**你来写**稳定决策/约定；每轮注入有长度上限。  
+**默认不做自动提取**（启发式/LLM 仅 opt-in）。轮次记忆交给 **Memory L0–L4**。请保持文件精简。
 
+**Web UI：** `ariadne serve` → **工坊** 页——创建/打开、主/分支会话、Markdown 编辑说明文件、`atelier_id` 对话。路径：`{data}/web/users/<user>/ateliers/`。
+
+设计：[docs/design/atelier.md](docs/design/atelier.md)。
 ### Docker 沙箱（默认）
 
 默认后端为 **Docker**（本机 Codex 式隔离）。无隔离逃生：
