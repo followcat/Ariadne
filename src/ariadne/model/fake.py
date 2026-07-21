@@ -32,6 +32,7 @@ class FakeModel:
             role="assistant",
             content=str(msg.get("content") or ""),
             tool_calls=msg.get("tool_calls"),
+            reasoning_content=str(msg.get("reasoning_content") or ""),
         )
         return ModelExchange(
             message=message,
@@ -57,6 +58,10 @@ class FakeModel:
             max_tokens=max_tokens,
             model=model,
         )
+        if exchange.message.reasoning_content:
+            yield ModelStreamEvent(
+                kind="thinking_delta", text=exchange.message.reasoning_content
+            )
         if exchange.message.content:
             # yield in small chunks for stream tests
             text = exchange.message.content

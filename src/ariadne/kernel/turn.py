@@ -122,6 +122,57 @@ def _public_messages(messages: list[dict[str, Any]]) -> list[Message]:
     return out
 
 
+_EMPTY_RECOVERY_REASONING_LIMIT = 1200
+
+
+def _recover_empty_assistant_text(
+    *,
+    reasoning: str,
+    tool_calls: list[Any],
+) -> str:
+    """When the model ends a turn with empty content, surface something usable.
+
+    Prefer truncated reasoning (honest, not invented business conclusions).
+    If tools ran, append a short delivery nudge so workshop tasks can continue.
+    """
+    reason = (reasoning or "").strip()
+    completed = [
+        c
+        for c in tool_calls
+        if getattr(c, "status", None) == "completed" or getattr(c, "name", None)
+    ]
+    tool_names = []
+    for c in completed:
+        name = getattr(c, "name", None) or ""
+        if name and name not in tool_names:
+            tool_names.append(name)
+
+    parts: list[str] = []
+    if reason:
+        clipped = reason
+        if len(clipped) > _EMPTY_RECOVERY_REASONING_LIMIT:
+            clipped = clipped[: _EMPTY_RECOVERY_REASONING_LIMIT - 20].rstrip() + "…"
+        parts.append("（模型未返回可见正文，以下为思考摘要）\n\n" + clipped)
+
+    if tool_names:
+        names = "、".join(tool_names[:12])
+        parts.append(
+            "本轮已执行工具："
+            + names
+            + "。\n"
+            "但模型没有给出最终说明或写回结果。"
+            "请再发一条，明确要求：继续用 sandbox_write_file / sandbox_edit_file "
+            "把改动写入 /workspace，并说明如何验证。"
+        )
+    elif not reason:
+        parts.append(
+            "模型未返回可见正文。"
+            "请重试，并要求给出明确结果；若是实现任务，请写明需要写入的文件路径。"
+        )
+
+    return "\n\n".join(parts).strip()
+
+
 @dataclass
 class TurnApplication:
     model: ModelPort
@@ -522,6 +573,19 @@ class TurnApplication:
 
                 if not tool_calls_payload:
                     text = (assistant.content or "").strip()
+                    if not text:
+                        text = _recover_empty_assistant_text(
+                            reasoning=getattr(assistant, "reasoning_content", "") or "",
+                            tool_calls=tool_calls,
+                        )
+                        if text:
+                            yield TurnEvent(
+                                "model_delta",
+                                {
+                                    "text": text,
+                                    "recovered_empty_content": True,
+                                },
+                            )
                     if self.guardrails_enabled:
                         text, out_findings = scan_output(text)
                         for finding in out_findings:
