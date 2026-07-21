@@ -33,10 +33,10 @@
 
 ---
 
-**Ariadne** 是一个可调用的运行时：把一次用户 turn 变成模型推理、技能引导、工具调用、分层记忆，以及可选的沙箱执行。
+**Ariadne** 是一个可调用的运行时：把一次用户 turn 变成模型推理、技能引导、工具调用、分层记忆，以及 **Docker 隔离执行**（对标 Codex 的容器模型，跑在你本机）。
 
-默认人机界面：面向项目工作区的 **CLI 终端 Agent**（直接运行 `ariadne` 进入 REPL，对齐 codex）。  
-可选：**Grok 风格 Vue Web UI**（`ariadne serve`）——左侧会话历史、右侧可折叠工具面板、流式 Markdown（GFM 表格）、thinking 折叠、回合耗时/token 统计。
+默认人机界面：面向项目工作区的 **CLI 终端 Agent**（直接运行 `ariadne` 进入 REPL）。  
+可选：**Atelier 工坊**（`ariadne atelier`）与 **Grok 风格 Vue Web UI**（`ariadne serve`）——历史 · 对话 · 工具面板 · 工作区浏览器。
 
 它**不是**企业多租户平台、连接器中枢或公司打包栈。
 
@@ -45,7 +45,7 @@
   → 组装记忆上下文
   → 技能发现 / 加载
   → 单一能力注册表 + 工具循环
-  → 可选沙箱（/workspace · /session）
+  → Docker 沙箱（/workspace 持久 · /session 临时 · 默认无网）
   → 持久化 transcript / 状态 / 结果
 ```
 
@@ -79,20 +79,24 @@
 | **Skills** | 按需过程性指导 + 紧凑选择计划 |
 | **Toolcall** | **唯一**能力注册表、延迟 schema、可审计循环 |
 | **Memory** | 分层召回 + 精选事实 + 会话状态 |
-| **Sandbox** | 可插拔执行（`local` / `docker` / `null`） |
-| **宿主体验** | 终端 Agent + Vue Web UI + 官方插件 |
+| **Sandbox** | **Docker 优先**加固容器（可选 `local` / `null`） |
+| **Atelier** | 项目工坊：共享 workspace + `KNOWLEDGE.md` + 主/分支会话 |
+| **宿主体验** | 终端 Agent + Vue Web UI + 工作区浏览器 + 插件 |
 
 ## 功能特性
 
 - **CLI 优先** — 裸 `ariadne` 进交互 REPL；`run` / `exec` 单轮；流式、diff、审批
-- **会话** — continue / resume；**主题标题**（每轮结束后自动总结 + `/title` 或点击 Web 顶栏标题改名）
-- **图片** — CLI `/image`（路径或剪贴板）；Web 粘贴/拖拽；非多模态模型明确报错（`ARIADNE_VISION`）
-- **文件工具** — `sandbox_read_file` / `write` / `edit` + 统一 diff
-- **记忆 L0–L4** — transcript、摘要、精选事实、语义召回、L2 会话状态
-- **Skills** — pack、混合检索、带分数的选择计划（不倾倒全量 index）
-- **护栏** — 入站/出站 secret 脱敏；注入警告
+- **Docker 优先沙箱** — 默认 `ARIADNE_SANDBOX=docker`：cap-drop ALL、`--network none`、内存/CPU/pids 限制、非 root、只读根文件系统；官方镜像 `ariadne-sandbox:minimal`
+- **语义化工具优先** — 优先 `sandbox_read_file` / `write` / `edit` / `list_dir`；`sandbox_exec` 为受策略约束的 shell 兜底；**`web_fetch` 在 host 执行**（外联白名单），容器默认无网
+- **进程内 Runtime Agent** — 命令允许/拒绝 + 脱敏 + 审计 JSONL（非独立守护进程）
+- **Atelier（工坊）** — `ariadne atelier`：共享代码树、`KNOWLEDGE.md`、主会话零管理；可选 **branch** 会话（对话隔离，**不是** git 分支）
+- **会话** — continue / resume；**主题标题**（每轮自动总结 + `/title` 或点 Web 顶栏）
+- **图片** — CLI `/image`；Web 粘贴/拖拽；非多模态明确报错（`ARIADNE_VISION`）
+- **记忆 L0–L4** — transcript、摘要、精选事实、语义召回、L2 状态；可选巩固写入 L3
+- **Skills** — pack、混合检索、分节加载、可选 discriminator、选择计划
+- **护栏** — secret 脱敏；注入警告；on-request 审批可持久化 grant
 - **官方插件** — GitLab / Redmine / Odoo 为**用户属性**（密钥显示为 `***`）
-- **Web UI（Vue 3）** — 三栏 Grok 壳层：历史 · 对话 · 工具；markdown-it GFM 表格；thinking 折叠；回合耗时/token/tool 统计
+- **Web UI（Vue 3）** — 三栏：历史 · 对话 · 工具；**工作区浏览器**（project / per_user）；markdown-it 表格；thinking 折叠；回合统计；workspace 走势图内联
 - **OpenAI 兼容模型** — chat completions + tools + 可选 reasoning 流
 
 ## 宿主与界面
@@ -108,6 +112,55 @@ ariadne exec "…"        # run 别名
 
 REPL 常用：`/help`、`/title`、`/image`、`/resume`、`/status`、`/mode`、`/exit`。
 
+### Atelier — 项目工坊
+
+对标 Codex「打开项目」体验：共享代码、连续主会话、可选实验分支、可持续的 `KNOWLEDGE.md`。
+
+```text
+Atelier = 工坊
+├── workspace/       共享代码（所有 session 同一份）
+├── KNOWLEDGE.md     项目知识墙（决策 / 约定 / 教训）
+├── Main session     日常连续对话（零管理）
+└── Branch session*  隔离对话 + 独立沙箱 scope
+                     （不是 git 分支）
+```
+
+```bash
+ariadne atelier create my-app --from .     # 从已有代码建工坊
+ariadne atelier open my-app                # 进入 main REPL
+ariadne atelier branch create my-app exp   # 实验会话
+ariadne atelier branch merge my-app exp    # 摘要 → 知识库 + 通知 main
+ariadne atelier knowledge show my-app
+```
+
+设计：[docs/design/atelier.md](docs/design/atelier.md)。
+
+### Docker 沙箱（默认）
+
+默认后端为 **Docker**（本机 Codex 式隔离）。无隔离逃生：
+
+```bash
+ariadne --sandbox local     # 主机目录，无隔离
+ariadne --sandbox null      # 禁用 exec
+```
+
+```bash
+# 构建官方 minimal 镜像（bash/git/curl + 非 root）
+./scripts/build_sandbox_image.sh
+# → ariadne-sandbox:minimal
+
+ariadne doctor              # Docker / 镜像 / Provider
+```
+
+| 默认 | 值 |
+| --- | --- |
+| 网络 | `--network none`（HTTP 用 host `web_fetch` + 外联白名单） |
+| 权限 | `--cap-drop ALL`、`no-new-privileges` |
+| 资源 | 512m / 0.5 CPU / 128 PIDs（可按 profile 调） |
+| 文件系统 | `/workspace` 挂项目 · `/session` 临时 · 可选只读根 |
+
+详见：[docs/SANDBOX.md](docs/SANDBOX.md) · [docs/design/sandbox-v1.md](docs/design/sandbox-v1.md)。
+
 ### Web UI（Vue）
 
 ```bash
@@ -115,42 +168,38 @@ ariadne serve --host 127.0.0.1 --port 8420
 # → http://127.0.0.1:8420
 ```
 
-三栏壳层（对齐当前产品界面）：
-
 | 区域 | 行为 |
 | --- | --- |
-| **左侧栏** | 新对话 · 带**主题标题**的历史 · 外观 / Provider / 退出 |
-| **主栏** | 顶栏（会话标题 · 模型 chip · 工具开关）· 对话区 · 底部输入 |
-| **右侧工具面板** | 可折叠 · 单次调用参数/输出/错误 · 回合结束 **info**：耗时 · tokens · tool 次数 |
-| **Markdown** | **markdown-it** + GFM 表格、代码高亮（非手写子集） |
-| **Thinking** | 模型返回 reasoning 时流式展示；**出答后自动折叠**（可再展开） |
-| **主题** | 浅色/深色（localStorage + 系统默认） |
-| **会话** | 切换加载历史；点顶栏标题改名或强制重总结 |
-
-前端源码：[`frontend/`](frontend/)（Vite）。生产构建输出到 `src/ariadne/web/static/dist/`，由 FastAPI 托管。
+| **左侧栏** | **历史 \| 工作区** · 会话标题 · 外观 / Provider / 插件 |
+| **工作区浏览器** | 浏览 `/workspace`（`project` 或 `per_user` 模式） |
+| **主栏** | 顶栏 · 对话 · thinking 折叠 · 回合统计 |
+| **右侧工具面板** | 可折叠 · 调用详情 · 耗时 / tokens / tool 数 |
+| **Markdown** | markdown-it 表格 · workspace 图片内联（走势图） |
 
 ```bash
-cd frontend && npm ci && npm run build:fast   # UI 变更后刷新 static/dist
-cd frontend && npm run dev                   # 热更新；/api 代理到 :8420
+cd frontend && npm ci && npm run build:fast
+cd frontend && npm run dev
 ```
 
 ## 快速开始
 
-### 1. 安装
+### 1. 前置
+
+- **Python 3.13+**
+- **Docker**（默认沙箱需要 daemon）  
+  无 Docker 时：`ariadne --sandbox local`（无隔离）
+
+### 2. 安装
 
 ```bash
 git clone <your-fork-or-url>/Ariadne.git
 cd Ariadne
+python3 -m venv .venv && source .venv/bin/activate
 python3 -m pip install -e ".[dev]"
+./scripts/build_sandbox_image.sh
 ```
 
-需要 **Python 3.13+**。不安装时：
-
-```bash
-export PYTHONPATH=$PWD/src
-```
-
-### 2. 配置 OpenAI 兼容 LLM
+### 3. 配置 OpenAI 兼容 LLM
 
 ```bash
 cp .env.example .env
@@ -161,19 +210,24 @@ cp .env.example .env
 BASE_URL=https://api.longcat.chat/openai/v1
 API_KEY=sk-...
 MODEL=LongCat-2.0
-# 可选：ARIADNE_VISION=auto|on|off
+# 可选：
+# ARIADNE_SANDBOX=docker
+# ARIADNE_SANDBOX_NETWORK=none
+# ARIADNE_EGRESS_ALLOWED=api.github.com,example.com
+# ARIADNE_VISION=auto|on|off
 ```
 
-### 3. 运行
+### 4. 运行
 
 ```bash
 ariadne doctor
 ariadne
+ariadne atelier create demo --from .
 ariadne serve --port 8420
 ```
 
 ```bash
-PYTHONPATH=src python3 -m pytest -q
+python -m pytest -q
 ```
 
 完整用法：**[docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md)** · **[docs/USAGE_CLI.md](docs/USAGE_CLI.md)**。
@@ -189,8 +243,17 @@ ariadne run "summarize README.md"
 ariadne -c
 ariadne resume --last
 ariadne sessions
+ariadne doctor
 ariadne plugins
 ariadne plugin enable gitlab --url … --token …
+
+# Atelier 工坊
+ariadne atelier create my-app --from .
+ariadne atelier open my-app
+ariadne atelier branch create my-app jwt-vs-session
+ariadne atelier branch merge my-app jwt-vs-session
+ariadne atelier knowledge show my-app
+
 # REPL 内：
 #   /title 部署脚本     /title --refresh
 #   /image ./shot.png   /image
@@ -213,19 +276,23 @@ print(result.text)
 ## 架构
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│  宿主:  CLI（默认 REPL）  ·  Web (serve)  ·  库 API           │
-└────────────────────────────┬────────────────────────────────┘
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│  TurnApplication — 记忆 · 技能计划 · 工具循环                 │
-│       ├─ Memory facade                                      │
-│       ├─ SkillStore（紧凑 SKILL_SELECTION + search/load）   │
-│       ├─ ToolRegistry（单一注册表）                          │
-│       ├─ Model（OpenAI 兼容 + 可选 vision）                  │
-│       └─ Sandbox port                                       │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  宿主：CLI REPL · Atelier 工坊 · Web (serve) · 库 API             │
+└──────────────────────────────┬───────────────────────────────────┘
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  TurnApplication — 记忆 · 技能计划 · 工具循环                       │
+│    ├─ Memory L0–L4 · 可选巩固 → L3                                │
+│    ├─ SkillStore（选择计划 · 分节加载）                             │
+│    ├─ ToolRegistry（语义文件工具 · web_fetch · shell）              │
+│    ├─ RuntimeAgent（进程内策略 · 审计 · 外联）                      │
+│    ├─ Model（OpenAI 兼容 + 可选 vision）                            │
+│    └─ Sandbox port → Docker（默认）/ local / null                   │
+│         加固容器 · /workspace · /session · 默认无网                 │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+设计支柱：单一注册表 · skills ≠ tools · 分层记忆 · 延迟细节 · fastfail · 沙箱端口 · **Docker 优先个人隔离** · **Atelier 工坊** 作为宿主 UX。
 
 ## 文档
 
@@ -233,8 +300,11 @@ print(result.text)
 | --- | --- |
 | [README.md](README.md) | English overview |
 | [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | 中文宿主用法 |
-| [docs/design/alignment-skills-toolcall-memory.md](docs/design/alignment-skills-toolcall-memory.md) | 设计对齐说明 |
+| [docs/design/atelier.md](docs/design/atelier.md) | **Atelier 工坊**（main/branch + KNOWLEDGE） |
+| [docs/design/sandbox-v1.md](docs/design/sandbox-v1.md) · [docs/SANDBOX.md](docs/SANDBOX.md) | **Docker 优先**沙箱 |
+| [docs/design/web-workspace.md](docs/design/web-workspace.md) | Web 工作区模式（project / per_user） |
 | [docs/design/web-vue-frontend.md](docs/design/web-vue-frontend.md) | Vue Web UI 与 markdown-it 栈 |
+| [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | 验收矩阵 → 测试 |
 | [docs/](docs/) | 英文设计规范索引 |
 
 ## 非目标
@@ -249,16 +319,18 @@ print(result.text)
 ## 仓库结构
 
 ```text
-src/ariadne/          内核、记忆、工具、技能、沙箱、CLI、Web API
-src/ariadne/web/static/dist/   Vue 生产构建（ariadne serve 托管）
-frontend/             Vue 3 + Vite 前端源码
-skills/builtin/       示例 skill packs
-tests/                离线 pytest
-docs/                 设计规范 + 用法
-docs/zh/              中文用户文档
-docs/assets/          README 配图（hero、CLI、Web 深/浅色）
-docs/design/web-vue-frontend.md   Web UI / Markdown 栈说明
-scripts/              llm_smoke.py、verify_web.py
+src/ariadne/                 内核、记忆、工具、技能、沙箱、atelier、CLI、Web
+src/ariadne/atelier/         工坊（manager / knowledge / runner）
+src/ariadne/sandbox/         Docker 优先端口 + RuntimeAgent + 策略
+src/ariadne/web/static/dist/ Vue 生产构建
+frontend/                    Vue 3 + Vite 源码
+docker/sandbox/              官方 minimal 沙箱 Dockerfile
+scripts/                     build_sandbox_image.sh、verify_web.py …
+skills/builtin/              示例 skill packs
+tests/                       离线 pytest
+docs/design/atelier.md       Atelier 设计
+docs/design/sandbox-v1.md    沙箱契约
+docs/assets/                 README 配图
 ```
 
 ## 名字
