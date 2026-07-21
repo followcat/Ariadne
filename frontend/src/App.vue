@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
 import AuthView from './components/AuthView.vue'
 import MarkdownView from './components/MarkdownView.vue'
 import PluginsModal from './components/PluginsModal.vue'
@@ -19,6 +19,7 @@ type ChatMsg =
     }
 
 const token = ref(localStorage.getItem('ariadne_token') || '')
+provide('authToken', token)
 const username = ref('')
 const me = ref<Me | null>(null)
 const sessionId = ref(localStorage.getItem('ariadne_session') || '')

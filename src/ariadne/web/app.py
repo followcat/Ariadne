@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -110,6 +110,59 @@ def create_app(settings: Settings) -> FastAPI:
             "base_url": provider.get("base_url", ""),
             "model": provider.get("model", ""),
         }
+
+    def _resolve_workspace_file(raw_path: str) -> Path:
+        """Map /workspace/... (or relative) into settings.workspace; never escape."""
+        root = settings.workspace.resolve()
+        raw = (raw_path or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="path required")
+        # Accept sandbox virtual paths and bare relative names.
+        if raw.startswith("/workspace/"):
+            rel = raw[len("/workspace/") :]
+        elif raw.startswith("workspace/"):
+            rel = raw[len("workspace/") :]
+        elif raw.startswith("/"):
+            raise HTTPException(
+                status_code=400,
+                detail="path must be under /workspace (sandbox root)",
+            )
+        else:
+            rel = raw
+        if ".." in Path(rel).parts:
+            raise HTTPException(status_code=400, detail="path escapes workspace")
+        target = (root / rel).resolve()
+        if root not in target.parents and target != root:
+            raise HTTPException(status_code=400, detail="path escapes workspace")
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"file not found: {raw}")
+        return target
+
+    @app.get("/api/workspace/file")
+    def workspace_file(
+        path: str = Query(..., description="Sandbox path e.g. /workspace/plot.png"),
+        username: str = Depends(current_user),
+    ) -> FileResponse:
+        """Serve a file from the host workspace (agent /workspace mount).
+
+        Used by the web UI to inline 走势图 / plots written by sandbox tools.
+        Auth required; path confined to settings.workspace.
+        """
+        _ = username  # auth gate only; workspace is host-scoped for personal serve
+        target = _resolve_workspace_file(path)
+        media = "application/octet-stream"
+        suffix = target.suffix.lower()
+        if suffix in {".png"}:
+            media = "image/png"
+        elif suffix in {".jpg", ".jpeg"}:
+            media = "image/jpeg"
+        elif suffix in {".gif"}:
+            media = "image/gif"
+        elif suffix in {".webp"}:
+            media = "image/webp"
+        elif suffix in {".svg"}:
+            media = "image/svg+xml"
+        return FileResponse(target, media_type=media, filename=target.name)
 
     @app.put("/api/me/provider")
     def put_provider(body: ProviderBody, username: str = Depends(current_user)) -> dict[str, str]:

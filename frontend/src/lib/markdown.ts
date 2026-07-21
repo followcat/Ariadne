@@ -93,12 +93,33 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
 
 const PURIFY: DOMPurify.Config = {
   USE_PROFILES: { html: true },
-  ADD_ATTR: ['target', 'rel', 'class'],
+  ADD_ATTR: ['target', 'rel', 'class', 'src', 'alt', 'data-workspace-src'],
+  ALLOWED_URI_REGEXP:
+    /^(?:(?:https?|mailto):|data:image\/|\/api\/workspace\/file\?|#)/i,
+}
+
+const IMG_EXT = String.raw`png|jpe?g|gif|webp|svg`
+const WORKSPACE_IMG =
+  new RegExp(String.raw`(?<!\]\()(\/?workspace\/[^\s)\]\`"'<>]+\.(?:${IMG_EXT}))`, 'gi')
+
+/** Turn bare /workspace/*.png paths into markdown images (走势图). */
+export function rewriteWorkspaceImages(src: string): string {
+  return String(src || '').replace(WORKSPACE_IMG, (_full, path: string) => {
+    const p = path.startsWith('/') ? path : '/' + path
+    const api = '/api/workspace/file?path=' + encodeURIComponent(p)
+    // data-workspace-src kept via title; MarkdownView upgrades to blob with auth
+    return `\n\n![走势图](${api})\n\n`
+  })
 }
 
 /** Normalize model quirks so tables parse more reliably. */
 export function normalizeMarkdown(src: string): string {
   let s = String(src || '').replace(/\r\n?/g, '\n')
+  // Prefer 走势图 wording over generic 图表 when models describe plots
+  s = s.replace(/完整图表/g, '完整走势图')
+  s = s.replace(/图表内容/g, '走势图内容')
+  s = s.replace(/查看完整图表/g, '查看完整走势图')
+  s = s.replace(/图表已保存/g, '走势图已保存')
   // Some models emit a single-line "table" with spaces around pipes — ensure
   // blank line before a table block so markdown-it starts a table context.
   s = s.replace(/([^\n])\n(\|[^\n]+\|\s*\n\|[-:| ]+\|)/g, '$1\n\n$2')
@@ -107,6 +128,7 @@ export function normalizeMarkdown(src: string): string {
     if (line.trim().startsWith('|')) return line
     return '| ' + line.trim().split('|').filter(Boolean).join(' | ') + ' |'
   })
+  s = rewriteWorkspaceImages(s)
   return s
 }
 
