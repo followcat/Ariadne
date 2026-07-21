@@ -11,10 +11,23 @@ def test_system_prompt_includes_knowledge_and_branch(tmp_path: Path) -> None:
     main = mgr.get_or_create_main_session("r1")
     prompt = build_system_prompt(proj, main)
     assert "KNOWLEDGE" in prompt or "项目说明" in prompt
+    assert "Delivery rules" in prompt or "写入" in prompt or "sandbox_write_file" in prompt
     assert proj.name in prompt
     br = mgr.create_branch("r1", "exp")
     bprompt = build_system_prompt(proj, br)
     assert "分支" in bprompt or "branch" in bprompt.lower()
+
+
+def test_build_prompt_includes_workspace_tree(tmp_path: Path) -> None:
+    mgr = AtelierManager(root=tmp_path / "a")
+    proj = mgr.create_project("tree1", no_scan=True)
+    (proj.workspace_path / "index.html").write_text("<html></html>\n", encoding="utf-8")
+    (proj.workspace_path / "crayon.js").write_text("// js\n", encoding="utf-8")
+    main = mgr.get_or_create_main_session("tree1")
+    prompt = build_system_prompt(proj, main)
+    assert "index.html" in prompt
+    assert "crayon.js" in prompt
+    assert "文件树" in prompt
 
 
 def test_auto_extract_off_by_default(tmp_path: Path) -> None:
@@ -46,5 +59,6 @@ def test_settings_for_atelier_binds_workspace(tmp_path: Path) -> None:
     base = load_settings(workspace=tmp_path / "other", force_workspace=True, sandbox="local")
     s = settings_for_atelier(proj, main, base)
     assert s.workspace == proj.workspace_path
-    assert "atelier-r3-main" in s.session_id
+    assert s.session_id == "aw-r3-main"
+    assert "atelier-atelier-" not in s.session_id
     assert s.data_dir == proj.data_dir

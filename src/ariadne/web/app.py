@@ -899,19 +899,25 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/ateliers/{atelier_id}/knowledge")
     def get_knowledge(atelier_id: str, username: str = Depends(current_user)) -> Any:
-        from ..atelier.knowledge import list_knowledge_history, read_knowledge
+        from ..atelier.knowledge import (
+            list_knowledge_history,
+            read_knowledge,
+            sync_knowledge_from_workspace_if_empty,
+        )
 
         mgr = _atelier_mgr(username)
         try:
             project = mgr.get_project(atelier_id)
         except AriadneError as exc:
             raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        synced = sync_knowledge_from_workspace_if_empty(project)
         hist = list_knowledge_history(project)
         return {
             "atelier_id": atelier_id,
             "content": read_knowledge(project),
             "path": str(project.knowledge_path),
             "history": [p.name for p in hist[:30]],
+            "synced_from_workspace": synced,
         }
 
     @app.put("/api/ateliers/{atelier_id}/knowledge")

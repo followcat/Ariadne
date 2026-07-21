@@ -1,26 +1,94 @@
-"""Atelier session: inject user-owned KNOWLEDGE.md into system context.
+"""Atelier session: inject user-owned KNOWLEDGE.md + workspace snapshot.
 
 Auto-extract after turns is **off by default** (Codex AGENTS.md model).
-Optional extract helpers remain on knowledge.py for opt-in / tests only.
+Delivery policy steers implement tasks to write files and non-empty replies.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from .knowledge import knowledge_for_inject, read_knowledge
+from .knowledge import knowledge_for_inject, read_knowledge, workspace_tree_lines
 from .models import Project, SessionMeta, SessionType, append_transcript
 
 
 DEFAULT_ATELIER_POLICY = """You are working inside an Ariadne Atelier (project workshop).
-KNOWLEDGE.md is the user's project brief (like Codex AGENTS.md) — treat it as durable policy.
-Do not invent project decisions; when the user states a lasting convention, remind them they can edit KNOWLEDGE.md.
-Turn-level memory is handled by the Memory system, not by rewriting KNOWLEDGE.md automatically.
+
+## Delivery rules (mandatory)
+1. Implement / change / draw-in-code tasks MUST write files under `/workspace` using
+   `sandbox_write_file`, `sandbox_edit_file`, or shell redirects. Never end after only
+   reading or thinking.
+2. Your final message MUST be non-empty visible text (Chinese preferred): what changed,
+   which paths, how to verify (e.g. open `index.html` in a browser).
+3. "画出来 / 绘制" in a code project means: add runnable code (function, button, demo)
+   in the existing stack — not a headless browser screenshot, and not reasoning alone.
+4. Prefer editing existing entry files (`index.html`, main scripts) over inventing a
+   parallel stack.
+
+## Knowledge
+KNOWLEDGE.md is the user's short project brief (like Codex AGENTS.md). Treat it as
+durable policy. Do not invent decisions; if the user states a lasting convention,
+remind them they can edit KNOWLEDGE.md. Turn-level memory is Memory L0–L4, not
+automatic KNOWLEDGE rewrites.
 """
+
+
+def agent_session_id(project: Project, session: SessionMeta) -> str:
+    """Stable agent session id without double ``atelier-`` prefixes."""
+    return f"aw-{project.id}-{session.id}"
+
+
+def _main_session_summary_line(project: Project) -> str | None:
+    """Best-effort last L1 summary from main agent session (branch continuity)."""
+    path = project.data_dir / "memory" / "summaries.json"
+    if not path.is_file():
+        return None
+    try:
+        import json
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Prefer current id scheme; also probe legacy double-atelier prefix.
+    candidates = [
+        agent_session_id(project, SessionMeta(
+            id="main",
+            project_id=project.id,
+            title="Main",
+            type=SessionType.MAIN,
+        )),
+        f"atelier-{project.id}-main",
+        f"atelier-atelier-{project.id}-main" if project.id.startswith("atelier-") else "",
+        "main",
+    ]
+    for sid in candidates:
+        if not sid:
+            continue
+        bucket = data.get(sid)
+        if not isinstance(bucket, dict) or not bucket:
+            continue
+        # latest by updated_at
+        best_text = ""
+        best_ts = -1.0
+        for _tid, row in bucket.items():
+            if not isinstance(row, dict):
+                continue
+            ts = float(row.get("updated_at") or 0)
+            text = str(row.get("summary_text") or row.get("source_text") or "").strip()
+            if text and ts >= best_ts:
+                best_ts = ts
+                best_text = text
+        if best_text:
+            return best_text[:400]
+    return None
 
 
 def build_system_prompt(project: Project, session: SessionMeta, base: str = "") -> str:
     knowledge = knowledge_for_inject(project)
+    tree = workspace_tree_lines(project.workspace_path, max_entries=40)
     parts = [
         base.strip() or DEFAULT_ATELIER_POLICY,
         "",
@@ -30,17 +98,37 @@ def build_system_prompt(project: Project, session: SessionMeta, base: str = "") 
         "## 项目说明 (KNOWLEDGE.md · 用户维护)",
         knowledge,
         "",
+        "## Workspace 文件树（共享代码，跨会话）",
     ]
+    if tree:
+        parts.extend(f"- `{p}`" for p in tree)
+        entries = {Path(p).name for p in tree}
+        if "index.html" in entries:
+            parts.append("- 入口提示: 打开 `/workspace/index.html` 验证 UI")
+    else:
+        parts.append("- （workspace 为空）")
+    parts.append("")
+
     if session.type == SessionType.BRANCH:
         parts.extend(
             [
                 "## 分支信息",
                 f"你正在实验分支 `{session.branch_name or session.title}` 中。",
-                "对话上下文与主会话隔离；代码 workspace 与主会话共享。",
+                "对话上下文与主会话隔离；**代码 workspace 与主会话共享**（先读再改）。",
                 "实验完成后由用户 merge 或 discard。",
                 "",
             ]
         )
+        main_sum = _main_session_summary_line(project)
+        if main_sum:
+            parts.extend(
+                [
+                    "## 主会话摘要（仅供背景，非完整对话）",
+                    main_sum,
+                    "",
+                ]
+            )
+
     parts.extend(
         [
             "## 工作目录",
@@ -62,10 +150,7 @@ async def update_knowledge_after_turn(
     use_llm: bool = False,
     enabled: bool = False,
 ) -> dict[str, Any]:
-    """Opt-in post-turn extract. Default enabled=False (no auto write).
-
-    Automatic sedimentation belongs to Memory; KNOWLEDGE is user-led.
-    """
+    """Opt-in post-turn extract. Default enabled=False (no auto write)."""
     if not enabled:
         return {"updated": False, "reason": "disabled", "source": "none"}
     if session.type != SessionType.MAIN:
@@ -122,7 +207,7 @@ def maybe_update_knowledge_after_turn(
     assistant_text: str,
     enabled: bool = False,
 ) -> bool:
-    """Legacy sync helper. Default no-op unless enabled=True (tests opt-in)."""
+    """Legacy sync helper. Default no-op unless enabled=True."""
     if not enabled:
         return False
     if session.type != SessionType.MAIN:
@@ -146,14 +231,14 @@ def maybe_update_knowledge_after_turn(
 
 
 def settings_for_atelier(project: Project, session: SessionMeta, base_settings: Any) -> Any:
-    """Bind workspace + session + KNOWLEDGE inject."""
+    """Bind workspace + session + KNOWLEDGE / tree inject."""
     import dataclasses
 
     extra = build_system_prompt(project, session)
     return dataclasses.replace(
         base_settings,
         workspace=project.workspace_path,
-        session_id=f"atelier-{project.id}-{session.id}",
+        session_id=agent_session_id(project, session),
         data_dir=project.data_dir,
         tool_loop_limit=project.config.max_tool_loop,
         sandbox_profile=project.config.sandbox_profile,

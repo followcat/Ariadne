@@ -23,6 +23,29 @@ def test_template_is_short_agents_style() -> None:
     assert len(t) < 800
 
 
+def test_knowledge_prefer_workspace_when_root_thin(tmp_path: Path) -> None:
+    from ariadne.atelier.knowledge import knowledge_for_inject, sync_knowledge_from_workspace_if_empty
+    from ariadne.atelier.models import Project
+
+    root = tmp_path / "atelier-x"
+    ws = root / "workspace"
+    ws.mkdir(parents=True)
+    (root / ".ariadne" / "knowledge_history").mkdir(parents=True)
+    # polluted root (old auto-extract junk)
+    (root / "KNOWLEDGE.md").write_text(
+        '# x\n\n## 关键决策\n- "has_update": true,\n- "updates": [\n- "section": "技术栈",\n',
+        encoding="utf-8",
+    )
+    rich = "# 画画\n\n## 决策与约定\n- Canvas 蜡笔粒子\n- 入口 index.html\n"
+    (ws / "KNOWLEDGE.md").write_text(rich, encoding="utf-8")
+    proj = Project(id="x", name="x", path=root, workspace_path=ws)
+    inj = knowledge_for_inject(proj)
+    assert "蜡笔" in inj or "index.html" in inj
+    assert '"has_update"' not in inj
+    assert sync_knowledge_from_workspace_if_empty(proj) is True
+    assert "蜡笔" in (root / "KNOWLEDGE.md").read_text(encoding="utf-8")
+
+
 def test_heuristic_and_history(tmp_path: Path) -> None:
     mgr = AtelierManager(root=tmp_path / "a")
     code = tmp_path / "src"

@@ -67,18 +67,99 @@ def knowledge_template(name: str) -> str:
     return KNOWLEDGE_TEMPLATE.format(name=name)
 
 
+def _workspace_knowledge_path(project: Project) -> Path:
+    return project.workspace_path / "KNOWLEDGE.md"
+
+
+def _looks_polluted(text: str) -> bool:
+    """True when text looks like failed auto-extract / JSON dump."""
+    s = text or ""
+    junk_hits = sum(
+        1
+        for frag in ('"has_update"', '"updates"', '"section"', '"type": "add"', '"old_text"')
+        if frag in s
+    )
+    return junk_hits >= 2
+
+
+def _looks_thin_or_polluted(text: str) -> bool:
+    """True when root brief is empty shell or auto-extract garbage."""
+    s = (text or "").strip()
+    if not s:
+        return True
+    if _looks_polluted(s):
+        return True
+    if len(s) < 60:
+        return True
+    # mostly placeholders
+    placeholders = s.count("（初始为空）") + s.count("[待确认]") + s.count("（在此记录")
+    if placeholders >= 3 and len(s) < 600:
+        return True
+    return False
+
+
 def read_knowledge(project: Project) -> str:
+    """Canonical project brief at atelier root (user-edited)."""
     if project.knowledge_path.is_file():
         return project.knowledge_path.read_text(encoding="utf-8")
     return knowledge_template(project.name)
 
 
 def knowledge_for_inject(project: Project, *, limit: int = INJECT_CHAR_LIMIT) -> str:
-    """Text injected into system prompt (truncated, not full archive)."""
-    text = read_knowledge(project).strip()
+    """Text injected into system prompt (truncated).
+
+    Prefer root KNOWLEDGE.md; if it is thin/polluted and workspace/KNOWLEDGE.md
+    is richer, inject the workspace copy (does not overwrite root).
+    """
+    root = read_knowledge(project).strip()
+    ws_path = _workspace_knowledge_path(project)
+    ws = ""
+    if ws_path.is_file():
+        try:
+            ws = ws_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            ws = ""
+    if ws and (not root or _looks_thin_or_polluted(root)):
+        # Prefer non-polluted workspace notes over thin/polluted root.
+        if not _looks_polluted(ws) and (
+            _looks_polluted(root) or not _looks_thin_or_polluted(ws) or len(ws) >= len(root)
+        ):
+            text = ws
+        else:
+            text = root or knowledge_template(project.name).strip()
+    else:
+        text = root or knowledge_template(project.name).strip()
     if len(text) <= limit:
         return text
     return text[: limit - 40].rstrip() + "\n\n…(截断；请精简 KNOWLEDGE.md)"
+
+
+def sync_knowledge_from_workspace_if_empty(project: Project) -> bool:
+    """If root brief is empty/thin and workspace has a richer copy, promote it.
+
+    Returns True when root was rewritten. Snapshots via write_knowledge.
+    """
+    root = ""
+    if project.knowledge_path.is_file():
+        root = project.knowledge_path.read_text(encoding="utf-8")
+    ws_path = _workspace_knowledge_path(project)
+    if not ws_path.is_file():
+        return False
+    try:
+        ws = ws_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not ws.strip():
+        return False
+    if root and not _looks_thin_or_polluted(root):
+        return False
+    # Do not promote polluted workspace notes.
+    if _looks_polluted(ws.strip()):
+        return False
+    if not ws.strip():
+        return False
+    write_knowledge(project, ws, session_id="sync-workspace")
+    return True
 
 
 def write_knowledge(project: Project, content: str, *, session_id: str = "system") -> None:
@@ -115,6 +196,11 @@ def _scan_tree(root: Path, *, max_entries: int = 80) -> list[str]:
             if len(out) >= max_entries:
                 break
     return out
+
+
+def workspace_tree_lines(workspace: Path, *, max_entries: int = 40) -> list[str]:
+    """Relative file paths under workspace for system inject."""
+    return _scan_tree(workspace, max_entries=max_entries)
 
 
 def heuristic_refresh(project: Project) -> str:
