@@ -219,7 +219,14 @@ function fmtTime(ts: number) {
 
 async function scrollChat() {
   await nextTick()
-  if (chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight
+  const el = chatEl.value
+  if (!el) return
+  // Pin the conversation to the latest assistant / thinking output.
+  el.scrollTop = el.scrollHeight
+  // Second frame: thinking-body max-height layout may grow after paint.
+  requestAnimationFrame(() => {
+    if (chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight
+  })
 }
 
 function upsertTool(entry: Partial<ToolEntry> & { call_id: string; name: string }) {

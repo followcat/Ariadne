@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 const props = defineProps<{
   text: string
@@ -7,14 +7,50 @@ const props = defineProps<{
 }>()
 
 const open = ref(false)
+const bodyEl = ref<HTMLElement | null>(null)
+/** While true, keep pinning the body to the latest token. */
+const stickBottom = ref(true)
 
 watch(
   () => props.live,
   (live) => {
     // Live: force expanded visually via CSS .live; after done stay collapsed
-    if (!live) open.value = false
+    if (live) {
+      stickBottom.value = true
+    } else {
+      open.value = false
+    }
   },
 )
+
+// Stream: always show the newest thinking at the bottom of the panel
+// (same behavior as ChatGPT / Grok reasoning blocks).
+watch(
+  () => props.text,
+  async () => {
+    if (!props.live || !stickBottom.value) return
+    await nextTick()
+    const el = bodyEl.value
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  },
+)
+
+function onBodyScroll() {
+  const el = bodyEl.value
+  if (!el || !props.live) return
+  // If user scrolls up to read earlier reasoning, stop auto-pin until they
+  // re-join the bottom (within 24px).
+  const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+  stickBottom.value = dist < 24
+}
+
+watch(open, async (v) => {
+  if (!v) return
+  await nextTick()
+  const el = bodyEl.value
+  if (el) el.scrollTop = el.scrollHeight
+})
 
 const label = computed(() => (props.live ? '思考中' : '已思考'))
 const visible = computed(() => !!(props.text && props.text.trim()))
@@ -35,7 +71,11 @@ const visible = computed(() => !!(props.text && props.text.trim()))
       <span class="label">{{ label }}</span>
       <span class="chev">›</span>
     </button>
-    <div class="thinking-body">{{ text }}</div>
+    <div
+      ref="bodyEl"
+      class="thinking-body"
+      @scroll.passive="onBodyScroll"
+    >{{ text }}</div>
   </div>
 </template>
 
@@ -91,6 +131,8 @@ const visible = computed(() => !!(props.text && props.text.trim()))
   white-space: pre-wrap;
   word-break: break-word;
   border-top: 1px solid transparent;
+  /* Prefer bottom-aligned feel: new tokens appear under previous lines */
+  scroll-behavior: auto;
 }
 .open .thinking-body,
 .live .thinking-body {
