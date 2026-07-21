@@ -11,8 +11,12 @@ export type Me = {
   provider_configured: boolean
   model?: string
   base_url?: string
-  /** Host absolute workspace root (models often print real FS paths). */
+  /** Host absolute path of the active /workspace root for this account. */
   workspace?: string
+  /** project (shared serve cwd) | per_user (account tree). */
+  workspace_mode?: 'project' | 'per_user' | string
+  /** Serve-process project folder (always the open-folder root). */
+  project_root?: string
 }
 
 function authHeaders(token: string): HeadersInit {

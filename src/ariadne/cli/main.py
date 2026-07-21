@@ -283,6 +283,16 @@ def build_parser() -> argparse.ArgumentParser:
     serve_p = sub.add_parser("serve", help="Start the web UI (FastAPI + SSE)")
     serve_p.add_argument("--host", default="127.0.0.1")
     serve_p.add_argument("--port", type=int, default=8420)
+    serve_p.add_argument(
+        "--workspace-mode",
+        choices=["project", "per_user"],
+        default=None,
+        help=(
+            "Web /workspace binding: project (default, serve cwd shared) "
+            "or per_user (each account gets user_data/workspace). "
+            "Env: ARIADNE_WEB_WORKSPACE_MODE"
+        ),
+    )
     sub.add_parser("toolbox", help="List toolbox profiles")
     sub.add_parser("version", help="Print version")
     mem_w = sub.add_parser(
@@ -357,6 +367,7 @@ def _settings_from_args(args: argparse.Namespace, *, default_lifecycle: str | No
         skill_plan_chars=getattr(args, "skill_plan_chars", None),
         tool_search_mode=getattr(args, "tool_search_mode", None),
         summary_mode=getattr(args, "summary_mode", None),
+        web_workspace_mode=getattr(args, "workspace_mode", None),
     )
 
 
@@ -614,6 +625,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     settings = _settings_from_args(args)
     app = create_app(settings)
     ui.print_info(f"Ariadne web UI: http://{args.host}:{args.port}")
+    ui.print_info(
+        f"workspace: {settings.workspace}  mode={settings.web_workspace_mode}  "
+        f"(see docs/design/web-workspace.md)"
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 

@@ -59,6 +59,8 @@ class Settings:
     tool_search_mode: str = "function"
     # L1 summary compressor: grounded | llm
     summary_mode: str = "grounded"
+    # Web host /workspace binding (design/web-workspace.md): project | per_user
+    web_workspace_mode: str = "project"
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -106,6 +108,7 @@ def load_settings(
     skill_plan_chars: int | None = None,
     tool_search_mode: str | None = None,
     summary_mode: str | None = None,
+    web_workspace_mode: str | None = None,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
     if workspace in {Path("/"), Path.home()} and not force_workspace:
@@ -220,6 +223,16 @@ def load_settings(
                 f"unknown summary mode: {sum_mode!r} (grounded|llm)",
             )
         )
+    ws_mode = (
+        web_workspace_mode or pick("ARIADNE_WEB_WORKSPACE_MODE", default="project")
+    ).strip().lower()
+    if ws_mode not in {"project", "per_user"}:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"unknown web workspace mode: {ws_mode!r} (project|per_user)",
+            )
+        )
 
     return Settings(
         base_url=base_url,
@@ -251,4 +264,5 @@ def load_settings(
         skill_plan_chars=skill_plan,
         tool_search_mode=search_mode,
         summary_mode=sum_mode,
+        web_workspace_mode=ws_mode,
     )

@@ -15,6 +15,10 @@ const props = defineProps<{
   active: boolean
   /** Bump after agent turns so listing picks up new files. */
   refreshKey?: number
+  /** project | per_user — from /api/me */
+  workspaceMode?: string
+  /** Host absolute active root */
+  hostPath?: string
 }>()
 
 const cwd = ref('/workspace')
@@ -29,6 +33,17 @@ const previewTruncated = ref(false)
 const previewName = ref('')
 const previewImgUrl = ref('')
 const blobUrls = ref<string[]>([])
+const listedHost = ref('')
+
+const modeLabel = computed(() => {
+  const m = (props.workspaceMode || 'project').toLowerCase()
+  if (m === 'per_user') return '用户工作区 · 本账号独立'
+  return '项目工作区 · 多会话共用'
+})
+
+const hostDisplay = computed(
+  () => listedHost.value || props.hostPath || '',
+)
 
 const crumbs = computed(() => {
   const p = cwd.value.replace(/^\/workspace\/?/, '')
@@ -77,6 +92,7 @@ async function loadDir(path = cwd.value) {
     cwd.value = data.path
     parent.value = data.parent
     entries.value = data.entries || []
+    listedHost.value = data.workspace || ''
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -156,6 +172,10 @@ onMounted(() => {
 
 <template>
   <div class="ws">
+    <div class="ws-scope" :title="hostDisplay">
+      <span class="scope-mode">{{ modeLabel }}</span>
+      <span v-if="hostDisplay" class="scope-path mono">{{ hostDisplay }}</span>
+    </div>
     <div class="ws-toolbar">
       <button
         type="button"
@@ -225,6 +245,28 @@ onMounted(() => {
   flex: 1;
   min-height: 0;
 }
+.ws-scope {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-3);
+}
+.scope-mode {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--fg-2);
+  letter-spacing: 0.02em;
+}
+.scope-path {
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mono { font-family: var(--mono); }
 .ws-toolbar {
   display: flex;
   align-items: center;

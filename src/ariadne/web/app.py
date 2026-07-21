@@ -71,16 +71,46 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=401, detail="invalid or missing token")
         return username
 
+    def _project_root() -> Path:
+        """Serve-process project folder (CLI cwd / --workspace). Always the project root."""
+        root = settings.workspace.resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _user_data_dir(username: str) -> Path:
+        return settings.resolved_data_dir / "web" / "users" / username
+
+    def _workspace_root_for(username: str) -> Path:
+        """Active /workspace binding for this account (design/web-workspace.md).
+
+        project  — shared serve workspace (Codex-like open folder)
+        per_user — durable tree under the account data dir
+        """
+        mode = (settings.web_workspace_mode or "project").strip().lower()
+        if mode == "per_user":
+            root = _user_data_dir(username) / "workspace"
+            root.mkdir(parents=True, exist_ok=True)
+            return root.resolve()
+        if mode != "project":
+            raise HTTPException(
+                status_code=500,
+                detail=f"invalid web_workspace_mode: {mode!r}",
+            )
+        return _project_root()
+
     def _settings_for(username: str) -> Settings:
         provider = users.get_provider(username)
         if not provider:
             raise HTTPException(status_code=400, detail="provider not configured (PUT /api/me/provider)")
-        user_data = settings.resolved_data_dir / "web" / "users" / username
+        user_data = _user_data_dir(username)
+        user_data.mkdir(parents=True, exist_ok=True)
+        # Agent sandbox /workspace must match browse APIs for this user + mode.
         return dataclasses.replace(
             settings,
             base_url=provider["base_url"],
             api_key=provider["api_key"],
             model=provider["model"],
+            workspace=_workspace_root_for(username),
             data_dir=user_data,
             merge_home_plugins=False,  # web users only get their own plugins
         )
@@ -104,23 +134,23 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/me")
     def me(username: str = Depends(current_user)) -> dict[str, Any]:
         provider = users.get_provider(username)
+        ws = _workspace_root_for(username)
         return {
             "username": username,
             "provider_configured": bool(provider),
             "base_url": provider.get("base_url", ""),
             "model": provider.get("model", ""),
-            # Host absolute workspace root — models often print real paths; UI maps them.
-            "workspace": str(_workspace_root()),
+            # Active /workspace host path — models often print real FS paths; UI maps them.
+            "workspace": str(ws),
+            "workspace_mode": settings.web_workspace_mode,
+            "project_root": str(_project_root()),
         }
 
-    def _workspace_root() -> Path:
-        root = settings.workspace.resolve()
-        root.mkdir(parents=True, exist_ok=True)
-        return root
-
-    def _resolve_workspace_path(raw_path: str, *, must_exist: bool = True) -> Path:
-        """Map /workspace/... , relative, or host-absolute-under-root into settings.workspace."""
-        root = _workspace_root()
+    def _resolve_workspace_path(
+        raw_path: str, *, username: str, must_exist: bool = True
+    ) -> Path:
+        """Map /workspace/... , relative, or host-absolute-under-root into active workspace."""
+        root = _workspace_root_for(username)
         raw = (raw_path or "").strip() or "/workspace"
         if raw in {"/workspace", "workspace", ".", ""}:
             target = root
@@ -156,8 +186,8 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"path not found: {raw}")
         return target
 
-    def _virtual_path(target: Path) -> str:
-        root = _workspace_root()
+    def _virtual_path(target: Path, *, username: str) -> str:
+        root = _workspace_root_for(username)
         if target == root:
             return "/workspace"
         try:
@@ -172,8 +202,7 @@ def create_app(settings: Settings) -> FastAPI:
         username: str = Depends(current_user),
     ) -> dict[str, Any]:
         """List a directory in the sandbox workspace (Codex-style file browser)."""
-        _ = username
-        target = _resolve_workspace_path(path)
+        target = _resolve_workspace_path(path, username=username)
         if not target.is_dir():
             raise HTTPException(status_code=400, detail="path is not a directory")
         # Hide common noise / secrets at listing time
@@ -208,22 +237,24 @@ def create_app(settings: Settings) -> FastAPI:
             entries.append(
                 {
                     "name": name,
-                    "path": _virtual_path(child),
+                    "path": _virtual_path(child, username=username),
                     "kind": kind,
                     "size": int(st.st_size) if kind == "file" else 0,
                     "mtime": float(st.st_mtime),
                 }
             )
         parent = target.parent
-        root = _workspace_root()
+        root = _workspace_root_for(username)
         parent_path = None
         if target != root and (root in parent.parents or parent == root):
-            parent_path = _virtual_path(parent)
+            parent_path = _virtual_path(parent, username=username)
         return {
-            "path": _virtual_path(target),
+            "path": _virtual_path(target, username=username),
             "parent": parent_path,
             "entries": entries,
             "workspace": str(root),
+            "workspace_mode": settings.web_workspace_mode,
+            "project_root": str(_project_root()),
         }
 
     @app.get("/api/workspace/read")
@@ -233,8 +264,7 @@ def create_app(settings: Settings) -> FastAPI:
         username: str = Depends(current_user),
     ) -> dict[str, Any]:
         """Read a text file from workspace (preview). Binary files are flagged."""
-        _ = username
-        target = _resolve_workspace_path(path)
+        target = _resolve_workspace_path(path, username=username)
         if not target.is_file():
             raise HTTPException(status_code=400, detail="path is not a file")
         size = target.stat().st_size
@@ -255,15 +285,16 @@ def create_app(settings: Settings) -> FastAPI:
                 except UnicodeDecodeError:
                     binary = True
                     text = ""
+        vpath = _virtual_path(target, username=username)
         return {
-            "path": _virtual_path(target),
+            "path": vpath,
             "name": target.name,
             "size": size,
             "truncated": truncated,
             "binary": binary,
             "encoding": encoding if not binary else None,
             "text": text if not binary else None,
-            "download_path": f"/api/workspace/file?path={_virtual_path(target)}",
+            "download_path": f"/api/workspace/file?path={vpath}",
         }
 
     @app.get("/api/workspace/file")
@@ -271,13 +302,12 @@ def create_app(settings: Settings) -> FastAPI:
         path: str = Query(..., description="Sandbox path e.g. /workspace/plot.png"),
         username: str = Depends(current_user),
     ) -> FileResponse:
-        """Serve a file from the host workspace (agent /workspace mount).
+        """Serve a file from the account's active /workspace root.
 
         Used by the web UI to inline 走势图 / plots written by sandbox tools.
-        Auth required; path confined to settings.workspace.
+        Auth required; path confined to project or per_user root (web-workspace.md).
         """
-        _ = username  # auth gate only; workspace is host-scoped for personal serve
-        target = _resolve_workspace_path(path)
+        target = _resolve_workspace_path(path, username=username)
         if not target.is_file():
             raise HTTPException(status_code=404, detail=f"file not found: {path}")
         media = "application/octet-stream"

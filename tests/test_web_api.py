@@ -13,9 +13,13 @@ from ariadne.config import load_settings
 from ariadne.web.app import create_app
 
 
-def _client(tmp_path: Path) -> httpx.AsyncClient:
+def _client(
+    tmp_path: Path, *, web_workspace_mode: str = "project"
+) -> httpx.AsyncClient:
     settings = dataclasses.replace(
-        load_settings(workspace=tmp_path / "ws"), data_dir=tmp_path / "data"
+        load_settings(workspace=tmp_path / "ws"),
+        data_dir=tmp_path / "data",
+        web_workspace_mode=web_workspace_mode,
     )
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
@@ -304,7 +308,65 @@ def test_workspace_browse_api(tmp_path: Path) -> None:
             # /api/me exposes workspace root for UI path rewrite
             r = await client.get("/api/me", headers=headers)
             assert r.status_code == 200
-            assert r.json().get("workspace") == str(ws.resolve())
+            body = r.json()
+            assert body.get("workspace") == str(ws.resolve())
+            assert body.get("workspace_mode") == "project"
+            assert body.get("project_root") == str(ws.resolve())
+
+    asyncio.run(run())
+
+
+def test_web_workspace_mode_per_user(tmp_path: Path) -> None:
+    """per_user mode: each account gets its own durable /workspace tree."""
+
+    async def run() -> None:
+        async with _client(tmp_path, web_workspace_mode="per_user") as client:
+            r = await client.post(
+                "/api/auth/register", json={"username": "alice", "password": "password123"}
+            )
+            alice = r.json()["token"]
+            ha = {"Authorization": f"Bearer {alice}"}
+            r = await client.post(
+                "/api/auth/register", json={"username": "bob", "password": "password123"}
+            )
+            bob = r.json()["token"]
+            hb = {"Authorization": f"Bearer {bob}"}
+
+            r = await client.get("/api/me", headers=ha)
+            assert r.status_code == 200
+            ma = r.json()
+            assert ma["workspace_mode"] == "per_user"
+            assert ma["workspace"].endswith("users/alice/workspace")
+            assert Path(ma["project_root"]).resolve() == (tmp_path / "ws").resolve()
+
+            # Alice writes a file via API path (host absolute under her root)
+            alice_ws = Path(ma["workspace"])
+            alice_ws.mkdir(parents=True, exist_ok=True)
+            (alice_ws / "secret_a.txt").write_text("alice-only", encoding="utf-8")
+
+            r = await client.get("/api/me", headers=hb)
+            bob_ws = Path(r.json()["workspace"])
+            bob_ws.mkdir(parents=True, exist_ok=True)
+            (bob_ws / "secret_b.txt").write_text("bob-only", encoding="utf-8")
+
+            r = await client.get("/api/workspace/list", headers=ha)
+            assert r.status_code == 200
+            names_a = {e["name"] for e in r.json()["entries"]}
+            assert "secret_a.txt" in names_a
+            assert "secret_b.txt" not in names_a
+
+            r = await client.get("/api/workspace/list", headers=hb)
+            names_b = {e["name"] for e in r.json()["entries"]}
+            assert "secret_b.txt" in names_b
+            assert "secret_a.txt" not in names_b
+
+            # Alice cannot read Bob's host path
+            r = await client.get(
+                "/api/workspace/file",
+                params={"path": str(bob_ws / "secret_b.txt")},
+                headers=ha,
+            )
+            assert r.status_code in {400, 404}
 
     asyncio.run(run())
 

@@ -630,6 +630,8 @@ onMounted(() => {
         :token="token"
         :active="leftTab === 'workspace'"
         :refresh-key="workspaceRefreshKey"
+        :workspace-mode="me?.workspace_mode"
+        :host-path="me?.workspace"
       />
       <div class="sb-bottom">
         <button type="button" class="sb-item" @click="toggleTheme">
