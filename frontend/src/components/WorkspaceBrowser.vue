@@ -15,10 +15,12 @@ const props = defineProps<{
   active: boolean
   /** Bump after agent turns so listing picks up new files. */
   refreshKey?: number
-  /** project | per_user — from /api/me */
+  /** project | per_user | atelier — from /api/me or atelier mode */
   workspaceMode?: string
   /** Host absolute active root */
   hostPath?: string
+  /** When set, browse this atelier's workspace */
+  atelierId?: string
 }>()
 
 const cwd = ref('/workspace')
@@ -37,9 +39,16 @@ const listedHost = ref('')
 
 const modeLabel = computed(() => {
   const m = (props.workspaceMode || 'project').toLowerCase()
+  if (m === 'atelier' || props.atelierId) return '工坊工作区 · 共享代码树'
   if (m === 'per_user') return '用户工作区 · 本账号独立'
   return '项目工作区 · 多会话共用'
 })
+
+function atelierQs(): string {
+  return props.atelierId
+    ? '&atelier_id=' + encodeURIComponent(props.atelierId)
+    : ''
+}
 
 const hostDisplay = computed(
   () => listedHost.value || props.hostPath || '',
@@ -80,7 +89,7 @@ async function loadDir(path = cwd.value) {
   err.value = ''
   try {
     const r = await api(
-      '/api/workspace/list?path=' + encodeURIComponent(path),
+      '/api/workspace/list?path=' + encodeURIComponent(path) + atelierQs(),
       props.token,
     )
     if (!r.ok) {
@@ -118,7 +127,7 @@ async function openEntry(e: Entry) {
   if (isImage(e.name)) {
     try {
       const r = await fetch(
-        '/api/workspace/file?path=' + encodeURIComponent(e.path),
+        '/api/workspace/file?path=' + encodeURIComponent(e.path) + atelierQs(),
         { headers: { Authorization: 'Bearer ' + props.token } },
       )
       if (!r.ok) {
@@ -137,7 +146,7 @@ async function openEntry(e: Entry) {
   }
 
   const r = await api(
-    '/api/workspace/read?path=' + encodeURIComponent(e.path),
+    '/api/workspace/read?path=' + encodeURIComponent(e.path) + atelierQs(),
     props.token,
   )
   if (!r.ok) {
@@ -162,6 +171,16 @@ watch(
   () => props.refreshKey,
   () => {
     if (props.active) loadDir(cwd.value)
+  },
+)
+
+watch(
+  () => props.atelierId,
+  () => {
+    cwd.value = '/workspace'
+    selected.value = null
+    revokeBlobs()
+    if (props.active) loadDir('/workspace')
   },
 )
 

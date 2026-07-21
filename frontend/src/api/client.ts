@@ -62,6 +62,13 @@ export type StreamEvent = {
   data?: Record<string, unknown>
   result?: Record<string, unknown> | null
   error?: { code?: string; message?: string; details?: unknown }
+  /** Atelier post-turn knowledge extract report (main session only). */
+  atelier_knowledge?: {
+    updated?: boolean
+    source?: string
+    reason?: string
+    ops?: Array<{ type?: string; section?: string; new_text?: string; old_text?: string }>
+  }
 }
 
 /** Parse SSE body chunks into discrete events. */

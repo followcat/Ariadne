@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
+import AtelierPanel from './components/AtelierPanel.vue'
 import AuthView from './components/AuthView.vue'
+import KnowledgePanel from './components/KnowledgePanel.vue'
 import MarkdownView from './components/MarkdownView.vue'
 import PluginsModal from './components/PluginsModal.vue'
 import ThinkingBlock from './components/ThinkingBlock.vue'
@@ -9,7 +11,7 @@ import WorkspaceBrowser from './components/WorkspaceBrowser.vue'
 import { api, parseSseBuffer, type Me, type SessionRow, type StreamEvent } from './api/client'
 import { setHostWorkspaceRoot } from './lib/markdown'
 
-type LeftTab = 'sessions' | 'workspace'
+type LeftTab = 'sessions' | 'workspace' | 'atelier'
 
 type ChatMsg =
   | { id: string; role: 'user'; content: string }
@@ -33,12 +35,20 @@ const input = ref('')
 const busy = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('ariadne_sidebar') === '0')
 const toolsCollapsed = ref(localStorage.getItem('ariadne_tools_panel') !== '1')
-const leftTab = ref<LeftTab>(
-  localStorage.getItem('ariadne_left_tab') === 'workspace' ? 'workspace' : 'sessions',
-)
+const leftTab = ref<LeftTab>((() => {
+  const t = localStorage.getItem('ariadne_left_tab')
+  if (t === 'workspace' || t === 'atelier') return t
+  return 'sessions'
+})())
 /** Bumped after turns so workspace browser reloads new agent outputs. */
 const workspaceRefreshKey = ref(0)
 const theme = ref(document.documentElement.getAttribute('data-theme') || 'dark')
+
+/** Atelier workshop context (personal project room). */
+const atelierId = ref(localStorage.getItem('ariadne_atelier') || '')
+const atelierSession = ref(localStorage.getItem('ariadne_atelier_session') || 'main')
+const knowledgeOpen = ref(false)
+const knowledgeRefresh = ref(0)
 
 const tools = ref<ToolEntry[]>([])
 const toolsOpenIds = ref(new Set<string>())
@@ -55,9 +65,13 @@ const sessionLabel = computed(() => {
 })
 const providerOk = computed(() => !!me.value?.provider_configured)
 const topTitle = computed(() => {
+  if (atelierId.value) {
+    return `◈ ${atelierId.value} · ${atelierSession.value}`
+  }
   const s = sessions.value.find((x) => x.session_id === sessionId.value)
   return s?.title || 'Ariadne'
 })
+const inAtelier = computed(() => !!atelierId.value)
 
 function setTheme(t: string) {
   theme.value = t === 'light' ? 'light' : 'dark'
@@ -74,11 +88,73 @@ function toggleSidebar() {
 function setLeftTab(tab: LeftTab) {
   leftTab.value = tab
   localStorage.setItem('ariadne_left_tab', tab)
-  // Opening workspace while sidebar is collapsed expands it (Codex-style browse).
-  if (tab === 'workspace' && sidebarCollapsed.value) {
+  // Opening workspace/atelier while sidebar is collapsed expands it.
+  if ((tab === 'workspace' || tab === 'atelier') && sidebarCollapsed.value) {
     sidebarCollapsed.value = false
     localStorage.setItem('ariadne_sidebar', '1')
   }
+}
+
+function selectAtelier(id: string) {
+  atelierId.value = id
+  localStorage.setItem('ariadne_atelier', id)
+  atelierSession.value = 'main'
+  localStorage.setItem('ariadne_atelier_session', 'main')
+  messages.value = []
+  tools.value = []
+  knowledgeOpen.value = false
+  void loadAtelierHistory()
+  workspaceRefreshKey.value += 1
+}
+
+function selectAtelierSession(sid: string) {
+  atelierSession.value = sid
+  localStorage.setItem('ariadne_atelier_session', sid)
+  messages.value = []
+  tools.value = []
+  void loadAtelierHistory()
+}
+
+function exitAtelier() {
+  atelierId.value = ''
+  atelierSession.value = 'main'
+  localStorage.removeItem('ariadne_atelier')
+  localStorage.removeItem('ariadne_atelier_session')
+  knowledgeOpen.value = false
+  messages.value = []
+  void loadHistory()
+  workspaceRefreshKey.value += 1
+}
+
+async function loadAtelierHistory() {
+  if (!atelierId.value) {
+    messages.value = []
+    return
+  }
+  const r = await api(
+    `/api/ateliers/${encodeURIComponent(atelierId.value)}/sessions/${encodeURIComponent(atelierSession.value)}/messages`,
+    token.value,
+  )
+  if (!r.ok) {
+    messages.value = []
+    return
+  }
+  const data = await r.json()
+  messages.value = (data.messages || [])
+    .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
+    .map((m: { role: string; content: string }, i: number) =>
+      m.role === 'user'
+        ? { id: 'h-u-' + i, role: 'user' as const, content: m.content || '' }
+        : {
+            id: 'h-a-' + i,
+            role: 'assistant' as const,
+            content: m.content || '',
+            thinking: '',
+            streaming: false,
+            thinkingLive: false,
+          },
+    )
+  await scrollChat()
 }
 function toggleTools() {
   toolsCollapsed.value = !toolsCollapsed.value
@@ -104,14 +180,19 @@ async function bootstrap() {
     username.value = me.value?.username || ''
     // So chat can rewrite host absolute paths like /home/…/plot.png → workspace images
     setHostWorkspaceRoot(me.value?.workspace || '')
-    if (!sessionId.value) {
+    if (!sessionId.value && !atelierId.value) {
       const sr = await api('/api/sessions', token.value, { method: 'POST' })
       if (sr.ok) {
         const data = await sr.json()
         setSession(data.session_id)
       }
     }
-    await Promise.all([loadSessions(), loadHistory()])
+    if (atelierId.value) {
+      await loadAtelierHistory()
+      await loadSessions()
+    } else {
+      await Promise.all([loadSessions(), loadHistory()])
+    }
   } catch (e) {
     if ((e as { status?: number }).status === 401) logout()
   }
@@ -324,13 +405,20 @@ async function send() {
   const asst = () => messages.value.find((m) => m.id === asstId) as Extract<ChatMsg, { role: 'assistant' }> | undefined
 
   try {
+    const turnBody: Record<string, unknown> = { input: text }
+    if (atelierId.value) {
+      turnBody.atelier_id = atelierId.value
+      turnBody.atelier_session = atelierSession.value
+    } else {
+      turnBody.session_id = sessionId.value
+    }
     const r = await fetch('/api/turns/stream', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + token.value,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ input: text, session_id: sessionId.value }),
+      body: JSON.stringify(turnBody),
     })
     if (!r.ok) {
       let detail = ''
@@ -373,9 +461,14 @@ async function send() {
       if (!m.content) m.content = '(empty reply)'
     }
     busy.value = false
-    // Refresh topic title then reload session list so sidebar shows the new name.
-    await refreshSessionTitle(false)
-    await loadSessions()
+    if (atelierId.value) {
+      // Knowledge may have been updated; bump panels.
+      knowledgeRefresh.value += 1
+    } else {
+      // Refresh topic title then reload session list so sidebar shows the new name.
+      await refreshSessionTitle(false)
+      await loadSessions()
+    }
     // Agent may have written files under /workspace — refresh file browser.
     workspaceRefreshKey.value += 1
     inputEl.value?.focus()
@@ -570,18 +663,38 @@ onMounted(() => {
   <div
     v-else
     class="shell"
-    :class="{ 'sb-collapsed': sidebarCollapsed, 'ws-mode': leftTab === 'workspace' }"
+    :class="{
+      'sb-collapsed': sidebarCollapsed,
+      'ws-mode': leftTab === 'workspace',
+      'atelier-mode': inAtelier,
+    }"
   >
     <aside
       class="sidebar"
-      :class="{ collapsed: sidebarCollapsed, 'ws-open': leftTab === 'workspace' }"
+      :class="{
+        collapsed: sidebarCollapsed,
+        'ws-open': leftTab === 'workspace' || leftTab === 'atelier',
+      }"
     >
       <div class="sb-top">
         <div class="sb-brand"><span class="mark">A</span> Ariadne</div>
-        <button type="button" class="new-chat" @click="createSession">
+        <button
+          v-if="!inAtelier"
+          type="button"
+          class="new-chat"
+          @click="createSession"
+        >
           <span class="plus">+</span> 新对话
         </button>
-        <div class="sb-tabs" role="tablist" aria-label="侧栏">
+        <button
+          v-else
+          type="button"
+          class="new-chat atelier-banner"
+          @click="knowledgeOpen = !knowledgeOpen"
+        >
+          <span class="plus at">◈</span> {{ knowledgeOpen ? '关闭项目说明' : '项目说明' }}
+        </button>
+        <div class="sb-tabs three" role="tablist" aria-label="侧栏">
           <button
             type="button"
             role="tab"
@@ -602,36 +715,63 @@ onMounted(() => {
           >
             工作区
           </button>
+          <button
+            type="button"
+            role="tab"
+            class="sb-tab"
+            :class="{ active: leftTab === 'atelier' }"
+            :aria-selected="leftTab === 'atelier'"
+            @click="setLeftTab('atelier')"
+          >
+            工坊
+          </button>
         </div>
       </div>
       <div v-show="leftTab === 'sessions'" class="sess-list">
-        <div v-if="!sessions.length" class="sb-empty">暂无会话</div>
-        <button
-          v-for="s in sessions"
-          :key="s.session_id"
-          type="button"
-          class="sess-row"
-          :class="{ active: s.session_id === sessionId }"
-          @click="selectSession(s.session_id)"
-        >
-          <span class="body">
-            <span class="title-line">{{ s.title || s.preview || s.session_id }}</span>
-            <span class="meta">{{ s.turns || 0 }} 轮 · {{ fmtTime(s.mtime) }}</span>
-          </span>
-          <span
-            class="del"
-            title="删除"
-            @click.stop="deleteSession(s.session_id)"
-          >×</span>
-        </button>
+        <div v-if="inAtelier" class="sb-empty atelier-hint">
+          当前在工坊模式 · 会话列表见「工坊」页
+        </div>
+        <template v-else>
+          <div v-if="!sessions.length" class="sb-empty">暂无会话</div>
+          <button
+            v-for="s in sessions"
+            :key="s.session_id"
+            type="button"
+            class="sess-row"
+            :class="{ active: s.session_id === sessionId }"
+            @click="selectSession(s.session_id)"
+          >
+            <span class="body">
+              <span class="title-line">{{ s.title || s.preview || s.session_id }}</span>
+              <span class="meta">{{ s.turns || 0 }} 轮 · {{ fmtTime(s.mtime) }}</span>
+            </span>
+            <span
+              class="del"
+              title="删除"
+              @click.stop="deleteSession(s.session_id)"
+            >×</span>
+          </button>
+        </template>
       </div>
       <WorkspaceBrowser
         v-show="leftTab === 'workspace'"
         :token="token"
         :active="leftTab === 'workspace'"
         :refresh-key="workspaceRefreshKey"
-        :workspace-mode="me?.workspace_mode"
+        :workspace-mode="inAtelier ? 'atelier' : me?.workspace_mode"
         :host-path="me?.workspace"
+        :atelier-id="atelierId || undefined"
+      />
+      <AtelierPanel
+        v-show="leftTab === 'atelier'"
+        :token="token"
+        :active="leftTab === 'atelier'"
+        :selected-id="atelierId"
+        :selected-session="atelierSession"
+        @select="selectAtelier"
+        @select-session="selectAtelierSession"
+        @exit="exitAtelier"
+        @open-knowledge="knowledgeOpen = true"
       />
       <div class="sb-bottom">
         <button type="button" class="sb-item" @click="toggleTheme">
@@ -675,12 +815,27 @@ onMounted(() => {
           :class="{ on: leftTab === 'workspace' && !sidebarCollapsed }"
           @click="setLeftTab(leftTab === 'workspace' ? 'sessions' : 'workspace')"
         >📂</button>
+        <button
+          type="button"
+          class="icon-btn"
+          title="工坊 Atelier"
+          :class="{ on: leftTab === 'atelier' || inAtelier }"
+          @click="setLeftTab('atelier')"
+        >◈</button>
         <span
           class="title"
-          title="点击可重命名；留空确定则自动重总结主题"
-          @click="editTitle"
+          :title="inAtelier ? '工坊会话' : '点击可重命名；留空确定则自动重总结主题'"
+          @click="inAtelier ? (knowledgeOpen = !knowledgeOpen) : editTitle()"
         >{{ topTitle }}</span>
         <div class="spacer" />
+        <button
+          v-if="inAtelier"
+          type="button"
+          class="icon-btn"
+          title="项目说明 KNOWLEDGE.md"
+          :class="{ on: knowledgeOpen }"
+          @click="knowledgeOpen = !knowledgeOpen"
+        >📝</button>
         <button type="button" class="icon-btn" title="主题" @click="toggleTheme">
           {{ theme === 'light' ? '☾' : '☀' }}
         </button>
@@ -690,7 +845,8 @@ onMounted(() => {
             {{ tools.length }}
           </span>
         </button>
-        <span class="chip mono">{{ sessionLabel }}</span>
+        <span v-if="inAtelier" class="chip atelier-chip">工坊</span>
+        <span class="chip mono">{{ inAtelier ? atelierSession : sessionLabel }}</span>
         <span class="chip" :class="{ off: !providerOk }">
           <span class="dot" />
           {{ me?.model || '未配置' }}
@@ -700,9 +856,12 @@ onMounted(() => {
       <div ref="chatEl" class="chat">
         <div class="chat-inner" :class="{ empty: !messages.length }">
           <div v-if="!messages.length" class="empty-hint">
-            <div class="art">A</div>
-            <h2>今天想做什么？</h2>
-            <p>Vue 前端 · markdown-it 表格/代码 · 流式 thinking 折叠</p>
+            <div class="art">{{ inAtelier ? '◈' : 'A' }}</div>
+            <h2>{{ inAtelier ? '在工坊里开始' : '今天想做什么？' }}</h2>
+            <p v-if="inAtelier">
+              共享 workspace · 手写 KNOWLEDGE.md 跨会话注入（类似 AGENTS.md）
+            </p>
+            <p v-else>Vue 前端 · markdown-it 表格/代码 · 流式 thinking 折叠 · 工坊</p>
           </div>
           <template v-for="m in messages" :key="m.id">
             <div v-if="m.role === 'user'" class="msg user">{{ m.content }}</div>
@@ -745,7 +904,7 @@ onMounted(() => {
             ref="inputEl"
             v-model="input"
             rows="1"
-            placeholder="给 Ariadne 下达任务…"
+            :placeholder="inAtelier ? '在工坊中下达任务…' : '给 Ariadne 下达任务…'"
             :disabled="busy"
             @input="autoSize"
             @keydown.enter.exact.prevent="send"
@@ -754,9 +913,19 @@ onMounted(() => {
             ↑
           </button>
         </div>
-        <div class="foot">Ariadne · Vue + markdown-it · open-source agent kernel</div>
+        <div class="foot">
+          Ariadne · {{ inAtelier ? 'Atelier workshop' : 'Vue + markdown-it' }} · open-source agent kernel
+        </div>
       </div>
     </div>
+
+    <KnowledgePanel
+      :token="token"
+      :atelier-id="atelierId"
+      :open="knowledgeOpen && inAtelier"
+      @close="knowledgeOpen = false"
+      @updated="knowledgeRefresh += 1"
+    />
 
     <ToolsPanel
       :entries="tools"
@@ -828,6 +997,22 @@ onMounted(() => {
   border-radius: 12px;
   background: var(--bg-3);
   border: 1px solid var(--line);
+}
+.sb-tabs.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+.new-chat.atelier-banner {
+  border-color: color-mix(in srgb, var(--blue) 40%, var(--line-2));
+  background: color-mix(in srgb, var(--blue) 8%, transparent);
+}
+.plus.at {
+  background: linear-gradient(135deg, #1d9bf0 0%, #7856ff 100%);
+  color: #fff;
+}
+.atelier-hint { font-size: 12.5px; line-height: 1.45; }
+.chip.atelier-chip {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
 }
 .sb-tab {
   padding: 7px 8px;
