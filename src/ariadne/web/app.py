@@ -111,17 +111,24 @@ def create_app(settings: Settings) -> FastAPI:
             "model": provider.get("model", ""),
         }
 
-    def _resolve_workspace_file(raw_path: str) -> Path:
-        """Map /workspace/... (or relative) into settings.workspace; never escape."""
+    def _workspace_root() -> Path:
         root = settings.workspace.resolve()
-        raw = (raw_path or "").strip()
-        if not raw:
-            raise HTTPException(status_code=400, detail="path required")
-        # Accept sandbox virtual paths and bare relative names.
-        if raw.startswith("/workspace/"):
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _resolve_workspace_path(raw_path: str, *, must_exist: bool = True) -> Path:
+        """Map /workspace/... (or relative) into settings.workspace; never escape."""
+        root = _workspace_root()
+        raw = (raw_path or "").strip() or "/workspace"
+        if raw in {"/workspace", "workspace", ".", ""}:
+            target = root
+            rel = ""
+        elif raw.startswith("/workspace/"):
             rel = raw[len("/workspace/") :]
+            target = (root / rel).resolve()
         elif raw.startswith("workspace/"):
             rel = raw[len("workspace/") :]
+            target = (root / rel).resolve()
         elif raw.startswith("/"):
             raise HTTPException(
                 status_code=400,
@@ -129,14 +136,124 @@ def create_app(settings: Settings) -> FastAPI:
             )
         else:
             rel = raw
-        if ".." in Path(rel).parts:
+            target = (root / rel).resolve()
+        if ".." in Path(rel).parts if rel else ():
             raise HTTPException(status_code=400, detail="path escapes workspace")
-        target = (root / rel).resolve()
         if root not in target.parents and target != root:
             raise HTTPException(status_code=400, detail="path escapes workspace")
-        if not target.is_file():
-            raise HTTPException(status_code=404, detail=f"file not found: {raw}")
+        if must_exist and not target.exists():
+            raise HTTPException(status_code=404, detail=f"path not found: {raw}")
         return target
+
+    def _virtual_path(target: Path) -> str:
+        root = _workspace_root()
+        if target == root:
+            return "/workspace"
+        try:
+            rel = target.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="path escapes workspace") from exc
+        return f"/workspace/{rel}"
+
+    @app.get("/api/workspace/list")
+    def workspace_list(
+        path: str = Query(default="/workspace", description="Directory under /workspace"),
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        """List a directory in the sandbox workspace (Codex-style file browser)."""
+        _ = username
+        target = _resolve_workspace_path(path)
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="path is not a directory")
+        # Hide common noise / secrets at listing time
+        skip_names = {
+            ".git",
+            ".venv",
+            "node_modules",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            ".env",
+            ".DS_Store",
+        }
+        entries: list[dict[str, Any]] = []
+        try:
+            children = sorted(
+                target.iterdir(),
+                key=lambda p: (not p.is_dir(), p.name.lower()),
+            )
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"cannot list: {exc}") from exc
+        for child in children:
+            name = child.name
+            if name in skip_names or name.startswith(".env"):
+                continue
+            try:
+                st = child.stat()
+            except OSError:
+                continue
+            kind = "dir" if child.is_dir() else "file"
+            entries.append(
+                {
+                    "name": name,
+                    "path": _virtual_path(child),
+                    "kind": kind,
+                    "size": int(st.st_size) if kind == "file" else 0,
+                    "mtime": float(st.st_mtime),
+                }
+            )
+        parent = target.parent
+        root = _workspace_root()
+        parent_path = None
+        if target != root and (root in parent.parents or parent == root):
+            parent_path = _virtual_path(parent)
+        return {
+            "path": _virtual_path(target),
+            "parent": parent_path,
+            "entries": entries,
+            "workspace": str(root),
+        }
+
+    @app.get("/api/workspace/read")
+    def workspace_read(
+        path: str = Query(..., description="File path under /workspace"),
+        max_bytes: int = Query(default=512_000, ge=1024, le=2_000_000),
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Read a text file from workspace (preview). Binary files are flagged."""
+        _ = username
+        target = _resolve_workspace_path(path)
+        if not target.is_file():
+            raise HTTPException(status_code=400, detail="path is not a file")
+        size = target.stat().st_size
+        raw = target.read_bytes()[: max_bytes + 1]
+        truncated = len(raw) > max_bytes
+        raw = raw[:max_bytes]
+        # Heuristic: treat as binary if NUL or high ratio of non-text
+        binary = b"\x00" in raw[:4096]
+        text = ""
+        encoding = "utf-8"
+        if not binary:
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    text = raw.decode("gb18030")
+                    encoding = "gb18030"
+                except UnicodeDecodeError:
+                    binary = True
+                    text = ""
+        return {
+            "path": _virtual_path(target),
+            "name": target.name,
+            "size": size,
+            "truncated": truncated,
+            "binary": binary,
+            "encoding": encoding if not binary else None,
+            "text": text if not binary else None,
+            "download_path": f"/api/workspace/file?path={_virtual_path(target)}",
+        }
 
     @app.get("/api/workspace/file")
     def workspace_file(
@@ -149,7 +266,9 @@ def create_app(settings: Settings) -> FastAPI:
         Auth required; path confined to settings.workspace.
         """
         _ = username  # auth gate only; workspace is host-scoped for personal serve
-        target = _resolve_workspace_file(path)
+        target = _resolve_workspace_path(path)
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail=f"file not found: {path}")
         media = "application/octet-stream"
         suffix = target.suffix.lower()
         if suffix in {".png"}:
@@ -162,6 +281,8 @@ def create_app(settings: Settings) -> FastAPI:
             media = "image/webp"
         elif suffix in {".svg"}:
             media = "image/svg+xml"
+        elif suffix in {".txt", ".md", ".py", ".json", ".csv", ".log", ".yml", ".yaml"}:
+            media = "text/plain; charset=utf-8"
         return FileResponse(target, media_type=media, filename=target.name)
 
     @app.put("/api/me/provider")

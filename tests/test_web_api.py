@@ -202,6 +202,93 @@ def test_sessions_api(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_workspace_browse_api(tmp_path: Path) -> None:
+    """List / read / file serve under sandbox workspace (Codex-style browser)."""
+
+    async def run() -> None:
+        async with _client(tmp_path) as client:
+            r = await client.post(
+                "/api/auth/register", json={"username": "wsuser", "password": "password123"}
+            )
+            token = r.json()["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+            ws = tmp_path / "ws"
+            ws.mkdir(parents=True, exist_ok=True)
+            (ws / "notes.md").write_text("# hello\nline2\n", encoding="utf-8")
+            (ws / "plot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+            sub = ws / "subdir"
+            sub.mkdir()
+            (sub / "data.json").write_text('{"a": 1}\n', encoding="utf-8")
+            # auth required
+            r = await client.get("/api/workspace/list")
+            assert r.status_code == 401
+            # list root
+            r = await client.get("/api/workspace/list", headers=headers)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["path"] == "/workspace"
+            assert body["parent"] is None
+            names = {e["name"]: e for e in body["entries"]}
+            assert "notes.md" in names and names["notes.md"]["kind"] == "file"
+            assert "subdir" in names and names["subdir"]["kind"] == "dir"
+            assert "plot.png" in names
+            # list subdir via virtual path
+            r = await client.get(
+                "/api/workspace/list",
+                params={"path": "/workspace/subdir"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            body = r.json()
+            assert body["path"] == "/workspace/subdir"
+            assert body["parent"] == "/workspace"
+            assert any(e["name"] == "data.json" for e in body["entries"])
+            # path escape rejected
+            r = await client.get(
+                "/api/workspace/list",
+                params={"path": "/etc"},
+                headers=headers,
+            )
+            assert r.status_code == 400
+            r = await client.get(
+                "/api/workspace/read",
+                params={"path": "/workspace/../ws/notes.md"},
+                headers=headers,
+            )
+            # ".." in rel parts or resolve outside root
+            assert r.status_code in {400, 404}
+            # read text
+            r = await client.get(
+                "/api/workspace/read",
+                params={"path": "/workspace/notes.md"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            body = r.json()
+            assert body["binary"] is False
+            assert "hello" in body["text"]
+            assert body["name"] == "notes.md"
+            # binary flagged
+            r = await client.get(
+                "/api/workspace/read",
+                params={"path": "/workspace/plot.png"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert r.json()["binary"] is True
+            # file blob with auth
+            r = await client.get(
+                "/api/workspace/file",
+                params={"path": "/workspace/plot.png"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            assert r.content[:4] == b"\x89PNG"
+            assert "image/png" in r.headers.get("content-type", "")
+
+    asyncio.run(run())
+
+
 def test_per_user_plugins(tmp_path: Path) -> None:
     async def run() -> None:
         async with _client(tmp_path) as client:
