@@ -548,12 +548,23 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
 
 async def cmd_doctor(args: argparse.Namespace) -> int:
+    from ..sandbox.docker_check import check_docker, image_present
+    from ..sandbox.profiles import resolve_image
+
     settings = _settings_from_args(args)
     print(f"workspace:  {settings.workspace}")
     print(f"session:    {settings.session_id}")
     print(f"sandbox:    {settings.sandbox}")
     print(f"lifecycle:  {settings.sandbox_lifecycle}")
+    print(f"sb_profile: {settings.sandbox_profile}")
+    print(f"sb_network: {settings.sandbox_network}")
     print(f"toolbox:    {settings.toolbox_profile}")
+    img = resolve_image(profile=settings.sandbox_profile, docker_image=settings.docker_image)
+    print(f"image:      {img}")
+    if settings.sandbox == "docker":
+        chk = check_docker()
+        print(f"docker:     {'OK' if chk.ok else 'FAIL'} — {chk.detail}")
+        print(f"image_local:{'yes' if image_present(img) else 'no (will try pull/public fallback)'}")
     print(f"model:      {settings.model}")
     print(f"base_url:   {'set' if settings.base_url else 'MISSING'}")
     print(f"api_key:    {'set' if settings.api_key else 'MISSING'}")
@@ -561,6 +572,7 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"deferred:   {settings.prefer_deferred_tools}")
     print(f"tool_search:{settings.tool_search_mode}")
     print(f"summary:    {settings.summary_mode}")
+    print(f"egress:     allowed_hosts={settings.egress_allowed_hosts or '(none)'} default_allow={settings.egress_default_allow}")
     b = settings.skill_plan_budgets()
     print(
         f"skill_plan: auto={b.auto_load_limit} rec={b.recommended_limit} "

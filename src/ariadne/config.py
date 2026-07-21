@@ -30,8 +30,18 @@ class Settings:
     model: str
     workspace: Path
     session_id: str = "default"
-    sandbox: str = "local"
+    sandbox: str = "docker"  # docker default (personal Codex-style); local|null escape
     sandbox_lifecycle: str = "per_turn"
+    sandbox_profile: str = "minimal"
+    sandbox_network: str = "none"  # none | bridge
+    sandbox_memory: str = "512m"
+    sandbox_cpus: str = "0.5"
+    sandbox_pids_limit: int = 128
+    sandbox_read_only_rootfs: bool = True
+    docker_runtime: str | None = None  # e.g. runsc
+    egress_allowed_hosts: str = ""  # comma-separated host allowlist for web_fetch
+    egress_default_allow: bool = False
+    command_policy_enabled: bool = True
     tool_loop_limit: int = 32
     verbose: bool = False
     json_mode: bool = False
@@ -109,6 +119,15 @@ def load_settings(
     tool_search_mode: str | None = None,
     summary_mode: str | None = None,
     web_workspace_mode: str | None = None,
+    sandbox_profile: str | None = None,
+    sandbox_network: str | None = None,
+    sandbox_memory: str | None = None,
+    sandbox_cpus: str | None = None,
+    sandbox_pids_limit: int | None = None,
+    docker_runtime: str | None = None,
+    egress_allowed_hosts: str | None = None,
+    egress_default_allow: bool | None = None,
+    command_policy_enabled: bool | None = None,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
     if workspace in {Path("/"), Path.home()} and not force_workspace:
@@ -144,7 +163,7 @@ def load_settings(
     base_url = pick("BASE_URL", "OPENAI_BASE_URL").rstrip("/")
     api_key = pick("API_KEY", "OPENAI_API_KEY")
     model_name = model or pick("MODEL", "OPENAI_MODEL", default="grok-4.5")
-    sandbox_name = (sandbox or pick("ARIADNE_SANDBOX", default="local")).strip().lower()
+    sandbox_name = (sandbox or pick("ARIADNE_SANDBOX", default="docker")).strip().lower()
     lifecycle = (
         sandbox_lifecycle or pick("ARIADNE_SANDBOX_LIFECYCLE", default="per_turn")
     ).strip().lower()
@@ -265,4 +284,39 @@ def load_settings(
         tool_search_mode=search_mode,
         summary_mode=sum_mode,
         web_workspace_mode=ws_mode,
+        sandbox_profile=(
+            sandbox_profile or pick("ARIADNE_SANDBOX_PROFILE", default="minimal")
+        ).strip().lower(),
+        sandbox_network=(
+            sandbox_network or pick("ARIADNE_SANDBOX_NETWORK", default="none")
+        ).strip().lower(),
+        sandbox_memory=(sandbox_memory or pick("ARIADNE_SANDBOX_MEMORY", default="512m")).strip(),
+        sandbox_cpus=(sandbox_cpus or pick("ARIADNE_SANDBOX_CPU", default="0.5")).strip(),
+        sandbox_pids_limit=int(
+            sandbox_pids_limit
+            if sandbox_pids_limit is not None
+            else pick("ARIADNE_SANDBOX_PIDS", default="128") or 128
+        ),
+        docker_runtime=(
+            docker_runtime
+            if docker_runtime is not None
+            else (pick("ARIADNE_DOCKER_RUNTIME", default="") or None)
+        ),
+        egress_allowed_hosts=(
+            egress_allowed_hosts
+            if egress_allowed_hosts is not None
+            else pick("ARIADNE_EGRESS_ALLOWED", default="")
+        ),
+        egress_default_allow=(
+            egress_default_allow
+            if egress_default_allow is not None
+            else pick("ARIADNE_EGRESS_DEFAULT_ALLOW", default="").lower()
+            in {"1", "true", "yes", "on"}
+        ),
+        command_policy_enabled=(
+            command_policy_enabled
+            if command_policy_enabled is not None
+            else pick("ARIADNE_COMMAND_POLICY", default="1").lower()
+            not in {"0", "false", "no", "off"}
+        ),
     )

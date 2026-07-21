@@ -17,9 +17,15 @@ from ..memory.transcript import TranscriptStore
 from ..model.openai_chat import OpenAIChatModel
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.docker import DockerSandbox
+from ..sandbox.docker_check import check_docker, image_present
+from ..sandbox.docker_config import DockerSandboxConfig
 from ..sandbox.local import LocalWorkdirSandbox
 from ..sandbox.null import NullSandbox
-from ..sandbox.toolbox import get_profile
+from ..sandbox.policy import CommandPolicy, EgressPolicy
+from ..sandbox.profiles import get_profile as get_sandbox_profile
+from ..sandbox.profiles import resolve_image
+from ..sandbox.runtime_agent import RuntimeAgent
+from ..sandbox.toolbox import get_profile as get_toolbox_profile
 from ..skills.store import SkillStore
 from ..tools.registry import build_default_registry
 
@@ -36,8 +42,22 @@ def compose_agent(settings: Settings) -> Agent:
     data_dir = settings.resolved_data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    profile = get_profile(settings.toolbox_profile)
-    docker_image = settings.docker_image or profile.docker_image
+    sb_profile = get_sandbox_profile(getattr(settings, "sandbox_profile", None) or "minimal")
+    docker_image = resolve_image(
+        profile=sb_profile.name,
+        docker_image=settings.docker_image,
+    )
+    # If official tag missing, fall back to public slim so first-run still works.
+    if settings.sandbox == "docker" and not image_present(docker_image):
+        from ..sandbox.profiles import PUBLIC_FALLBACK
+
+        if docker_image != PUBLIC_FALLBACK and image_present(PUBLIC_FALLBACK):
+            docker_image = PUBLIC_FALLBACK
+        # else leave tag; docker pull may still work on start
+
+    network = (getattr(settings, "sandbox_network", None) or "none").strip().lower()
+    if network not in {"none", "bridge"}:
+        network = "none"
 
     if settings.sandbox in {"local", "workdir", "localworkdir"}:
         backend = LocalWorkdirSandbox(workspace=settings.workspace, data_dir=data_dir)
@@ -46,10 +66,28 @@ def compose_agent(settings: Settings) -> Agent:
         backend = NullSandbox()
         backend_name = "null"
     elif settings.sandbox == "docker":
+        chk = check_docker()
+        if not chk.ok:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", chk.detail))
+        resources = sb_profile.resources
+        mem = getattr(settings, "sandbox_memory", None) or resources.memory
+        cpus = getattr(settings, "sandbox_cpus", None) or resources.cpus
+        pids = int(getattr(settings, "sandbox_pids_limit", None) or resources.pids_limit)
+        runtime = getattr(settings, "docker_runtime", None) or None
+        cfg = DockerSandboxConfig(
+            image=docker_image,
+            network=network,
+            memory=str(mem),
+            cpus=str(cpus),
+            pids_limit=pids,
+            runtime=runtime,
+            read_only_rootfs=bool(getattr(settings, "sandbox_read_only_rootfs", True)),
+        )
         backend = DockerSandbox(
             workspace=settings.workspace,
             data_dir=data_dir,
-            image=docker_image,
+            config=cfg,
+            require_daemon=True,
         )
         backend_name = "docker"
     else:
@@ -119,7 +157,6 @@ def compose_agent(settings: Settings) -> Agent:
             skill_dirs.append(Path(candidate))
             skill_namespaces.append(ns)
 
-    # Strict skill load: invalid packs fail composition (DESIGN_PRINCIPLES fastfail).
     skills = SkillStore.from_dirs(
         skill_dirs,
         strict=True,
@@ -132,8 +169,6 @@ def compose_agent(settings: Settings) -> Agent:
     tools = build_default_registry(memory=memory, skills=skills)
     from ..plugins import PluginStore, build_plugin_tools
 
-    # plugin configs are user attributes: user-level store first,
-    # workspace-level store overrides per plugin name
     plugin_configs: dict[str, dict[str, str]] = {}
     store_paths = []
     if settings.merge_home_plugins:
@@ -144,6 +179,26 @@ def compose_agent(settings: Settings) -> Agent:
     for plugin_name, plugin_config in plugin_configs.items():
         for spec in build_plugin_tools(plugin_name, plugin_config):
             tools.register(spec)
+
+    # In-process RuntimeAgent (command policy + host egress policy)
+    allowed = tuple(
+        h.strip()
+        for h in (getattr(settings, "egress_allowed_hosts", None) or "").split(",")
+        if h.strip()
+    )
+    egress = EgressPolicy(
+        allowed_hosts=allowed,
+        default_allow=bool(getattr(settings, "egress_default_allow", False)),
+    )
+    cmd_policy = CommandPolicy(
+        audit_path=data_dir / "audit" / "sandbox_commands.jsonl",
+        enabled=bool(getattr(settings, "command_policy_enabled", True)),
+    )
+    runtime = RuntimeAgent(command_policy=cmd_policy, egress_policy=egress)
+
+    # Keep toolbox profile import used for doctor/hints (side-effect free)
+    _ = get_toolbox_profile(settings.toolbox_profile)
+
     turn_app = TurnApplication(
         model=model,
         tools=tools,
@@ -158,6 +213,7 @@ def compose_agent(settings: Settings) -> Agent:
         stream_model=settings.stream,
         sandbox_prestart=settings.sandbox_prestart,
         vision_mode=settings.vision,
+        runtime_agent=runtime,
     )
     return Agent(
         turn_app=turn_app,

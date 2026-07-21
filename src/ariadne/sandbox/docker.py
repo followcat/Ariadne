@@ -1,3 +1,5 @@
+"""Hardened Docker sandbox backend (CLI subprocess — personal kernel)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +12,8 @@ from pathlib import Path
 
 from ..errors import AriadneError, app_error
 from .compress import compress_observation
+from .docker_check import check_docker
+from .docker_config import DockerSandboxConfig, build_run_argv
 from .port import SandboxBackend, SandboxExecRequest, SandboxExecResult, SandboxSession
 
 
@@ -31,16 +35,19 @@ class DockerSandboxSession:
 
     async def exec(self, req: SandboxExecRequest) -> SandboxExecResult:
         cwd = req.cwd or "/workspace"
-        if cwd not in {"/workspace", "/session"} and not cwd.startswith(("/workspace/", "/session/")):
-            # map relative to workspace
+        if cwd not in {"/workspace", "/session"} and not cwd.startswith(
+            ("/workspace/", "/session/")
+        ):
             if not cwd.startswith("/"):
                 cwd = f"/workspace/{cwd}"
             else:
                 raise AriadneError(
-                    app_error("ARIADNE_SANDBOX_EXEC_FAILED", f"invalid cwd for docker sandbox: {req.cwd}")
+                    app_error(
+                        "ARIADNE_SANDBOX_EXEC_FAILED",
+                        f"invalid cwd for docker sandbox: {req.cwd}",
+                    )
                 )
         timeout = req.timeout_seconds if req.timeout_seconds is not None else 60.0
-        # docker exec -w cwd container sh -lc cmd
         cmd = [
             "docker",
             "exec",
@@ -71,7 +78,11 @@ class DockerSandboxSession:
             ) from exc
         except Exception as exc:  # noqa: BLE001
             raise AriadneError(
-                app_error("ARIADNE_SANDBOX_EXEC_FAILED", f"{type(exc).__name__}: {exc}", cmd=req.cmd)
+                app_error(
+                    "ARIADNE_SANDBOX_EXEC_FAILED",
+                    f"{type(exc).__name__}: {exc}",
+                    cmd=req.cmd,
+                )
             ) from exc
         duration_ms = int((time.perf_counter() - started) * 1000)
         stdout = stdout_b.decode("utf-8", errors="replace")
@@ -99,19 +110,24 @@ class DockerSandboxSession:
     def _container_path(path: str) -> str:
         raw = (path or "").strip()
         if not raw:
-            raise AriadneError(
-                app_error("ARIADNE_SANDBOX_EXEC_FAILED", "path is required")
-            )
+            raise AriadneError(app_error("ARIADNE_SANDBOX_EXEC_FAILED", "path is required"))
         if not raw.startswith("/"):
             raw = f"/workspace/{raw}"
         norm = posixpath.normpath(raw)
-        if norm not in {"/workspace", "/session"} and not norm.startswith(("/workspace/", "/session/")):
+        if norm not in {"/workspace", "/session"} and not norm.startswith(
+            ("/workspace/", "/session/")
+        ):
             raise AriadneError(
-                app_error("ARIADNE_SANDBOX_EXEC_FAILED", f"path escapes sandbox roots: {path!r}")
+                app_error(
+                    "ARIADNE_SANDBOX_EXEC_FAILED",
+                    f"path escapes sandbox roots: {path!r}",
+                )
             )
         return norm
 
-    async def _run_capture(self, argv: list[str], *, stdin: bytes | None = None) -> tuple[int, bytes, bytes]:
+    async def _run_capture(
+        self, argv: list[str], *, stdin: bytes | None = None
+    ) -> tuple[int, bytes, bytes]:
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
@@ -178,6 +194,7 @@ class DockerSandboxSession:
         )
 
     async def close(self, *, reason: str) -> None:
+        _ = reason
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "rm",
@@ -187,59 +204,91 @@ class DockerSandboxSession:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.communicate()
-        # /session is scratch: removed on close
         shutil.rmtree(self.session_dir, ignore_errors=True)
 
 
 class DockerSandbox(SandboxBackend):
-    """Optional Docker backend: one container per scope.
-
-    Requires docker CLI. Network disabled by default.
-    """
+    """Hardened Docker backend: one container per scope, docker CLI subprocess."""
 
     def __init__(
         self,
         *,
         workspace: Path,
         data_dir: Path,
-        image: str = "python:3.13-slim",
+        image: str | None = None,
         network: str = "none",
+        config: DockerSandboxConfig | None = None,
+        require_daemon: bool = True,
     ) -> None:
         if shutil.which("docker") is None:
-            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "docker not available on PATH"))
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "docker not available on PATH. Install Docker or use --sandbox local.",
+                )
+            )
+        if require_daemon:
+            chk = check_docker()
+            if not chk.ok:
+                raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", chk.detail))
         self.workspace = workspace.resolve()
         self.data_dir = data_dir.resolve()
-        self.image = image
-        self.network = network
+        if config is None:
+            config = DockerSandboxConfig(
+                image=image or "python:3.13-slim-bookworm",
+                network=network or "none",
+            )
+        elif image:
+            config = DockerSandboxConfig(
+                image=image,
+                network=config.network,
+                memory=config.memory,
+                cpus=config.cpus,
+                pids_limit=config.pids_limit,
+                user=config.user,
+                read_only_rootfs=config.read_only_rootfs,
+                cap_drop=config.cap_drop,
+                security_opt=config.security_opt,
+                runtime=config.runtime,
+                workdir=config.workdir,
+                labels=dict(config.labels),
+            )
+        self.config = config
+        self.image = config.image
+        self.network = config.network
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     async def start(self, *, scope_key: str) -> SandboxSession:
-        safe = "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in scope_key)[:60] or "scope"
+        safe = (
+            "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in scope_key)[:60] or "scope"
+        )
         session_dir = self.data_dir / "sandbox" / safe / "session"
         session_dir.mkdir(parents=True, exist_ok=True)
         name = f"ariadne-{safe}-{uuid.uuid4().hex[:8]}"
-        cmd = [
-            "docker",
-            "run",
-            "-d",
-            "--rm",
-            "--name",
-            name,
-            "--network",
-            self.network,
-            "--user",
-            "1000:1000",
-            "-v",
-            f"{self.workspace}:/workspace:rw",
-            "-v",
-            f"{session_dir}:/session:rw",
-            "-w",
-            "/workspace",
-            self.image,
-            "sleep",
-            "infinity",
-        ]
+        labels = dict(self.config.labels)
+        labels.setdefault("ariadne.scope", safe)
+        labels.setdefault("ariadne.managed", "1")
+        cfg = DockerSandboxConfig(
+            image=self.config.image,
+            network=self.config.network,
+            memory=self.config.memory,
+            cpus=self.config.cpus,
+            pids_limit=self.config.pids_limit,
+            user=self.config.user,
+            read_only_rootfs=self.config.read_only_rootfs,
+            cap_drop=self.config.cap_drop,
+            security_opt=self.config.security_opt,
+            runtime=self.config.runtime,
+            workdir=self.config.workdir,
+            labels=labels,
+        )
+        cmd = build_run_argv(
+            name=name,
+            workspace=self.workspace,
+            session_dir=session_dir,
+            config=cfg,
+        )
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -260,5 +309,5 @@ class DockerSandbox(SandboxBackend):
             container_id=container_id,
             workspace=self.workspace,
             session_dir=session_dir,
-            image=self.image,
+            image=self.config.image,
         )

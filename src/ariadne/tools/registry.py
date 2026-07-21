@@ -28,6 +28,7 @@ class ToolContext:
     skill_events: list[Any] | None = None
     evidence_text: str = ""
     approval_hook: ApprovalHook | None = None
+    runtime_agent: Any | None = None  # sandbox.runtime_agent.RuntimeAgent
 
 
 @dataclass(slots=True)
@@ -326,14 +327,19 @@ def build_default_registry(
     registry = ToolRegistry()
 
     async def sandbox_exec(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        if ctx.sandbox is None:
-            raise AriadneError(app_error("ARIADNE_SANDBOX_DISABLED", "No sandbox session"))
         cmd = str(args.get("cmd") or "").strip()
         if not cmd:
             raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "cmd is required"))
         cwd = str(args.get("cwd") or "/workspace")
         timeout = args.get("timeout_seconds")
         timeout_f = float(timeout) if timeout is not None else 60.0
+        # Prefer in-process RuntimeAgent (policy + audit); fall back to raw session.
+        if ctx.runtime_agent is not None:
+            return await ctx.runtime_agent.execute_shell(
+                cmd, cwd=cwd, timeout_seconds=timeout_f
+            )
+        if ctx.sandbox is None:
+            raise AriadneError(app_error("ARIADNE_SANDBOX_DISABLED", "No sandbox session"))
         result = await ctx.sandbox.exec(
             SandboxExecRequest(cmd=cmd, cwd=cwd, timeout_seconds=timeout_f)
         )
@@ -351,12 +357,12 @@ def build_default_registry(
     registry.register(
         ToolSpec(
             name="sandbox_exec",
-            catalog_description="run shell command in workspace",
+            catalog_description="shell fallback in sandbox (prefer file tools)",
             description=(
-                "Run a shell command in the local project sandbox. "
-                "Default cwd is the project root (/workspace). Prefer relative paths. "
-                "Use cwd='/session' for ephemeral scratch. "
-                "Shell state does not persist across calls."
+                "FALLBACK: run a shell command in the sandbox container. "
+                "Prefer sandbox_read_file / sandbox_write_file / sandbox_edit_file for file work, "
+                "and web_fetch for HTTP. Default cwd=/workspace; use /session for scratch. "
+                "Shell state does not persist across calls. Subject to command policy."
             ),
             parameters={
                 "type": "object",
@@ -370,6 +376,70 @@ def build_default_registry(
             },
             handler=sandbox_exec,
             title="Sandbox exec",
+            kind="tool",
+        )
+    )
+
+    async def web_fetch(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        """Host-side HTTP GET/POST — container stays network-none (Codex-style)."""
+        import httpx
+
+        from ..sandbox.policy import EgressPolicy
+
+        url = str(args.get("url") or "").strip()
+        method = str(args.get("method") or "GET").upper()
+        timeout = float(args.get("timeout_seconds") or 30)
+        if not url:
+            raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "url is required"))
+        policy: EgressPolicy | None = None
+        if ctx.runtime_agent is not None and getattr(ctx.runtime_agent, "egress_policy", None):
+            policy = ctx.runtime_agent.egress_policy
+        if policy is None:
+            policy = EgressPolicy(default_allow=False, allowed_hosts=())
+        ok, reason = policy.check_url(url)
+        if not ok:
+            raise AriadneError(
+                app_error("ARIADNE_TOOL_DENIED", f"egress denied: {reason}", url=url)
+            )
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+                resp = await client.request(method, url)
+        except Exception as exc:  # noqa: BLE001
+            raise AriadneError(
+                app_error("ARIADNE_TOOL_FAILED", f"web_fetch failed: {exc}", url=url)
+            ) from exc
+        body = resp.text
+        if len(body) > 200_000:
+            body = body[:200_000] + "\n[ariadne: truncated]"
+        return {
+            "url": str(resp.url),
+            "status_code": resp.status_code,
+            "headers": {k: v for k, v in list(resp.headers.items())[:40]},
+            "body": body,
+            "egress": reason,
+        }
+
+    registry.register(
+        ToolSpec(
+            name="web_fetch",
+            catalog_description="fetch URL from host (egress policy)",
+            description=(
+                "Fetch a URL on the **host** (not inside the container). "
+                "Sandbox stays --network none. Subject to egress allowlist "
+                "(ARIADNE_EGRESS_ALLOWED). Prefer this over curl in sandbox_exec."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "method": {"type": "string"},
+                    "timeout_seconds": {"type": "number"},
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+            handler=web_fetch,
+            title="Web fetch",
             kind="tool",
         )
     )

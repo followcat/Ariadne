@@ -165,6 +165,13 @@ hosts and kernel code.
   `ariadne memory-worker --consolidate [--apply]`
 - [x] Persistent approval grants (`data_dir/grants.json`) for on-request mode
 
+### Phase 12 — Docker-first hardened sandbox (Codex-aligned)
+- [x] Default `sandbox=docker`; `local`/`null` explicit escape; doctor checks
+- [x] Hardened `docker run` (cap-drop, network none, mem/cpu/pids, read-only rootfs)
+- [x] Official minimal image `docker/sandbox/Dockerfile` + build script
+- [x] In-process RuntimeAgent (command policy + audit); host `web_fetch` + egress allowlist
+- [x] Semantic file tools preferred over shell in prompts/descriptions
+
 ## Explicitly deferred forever (unless product changes)
 
 - Company Pack system (superseded by official optional plugins)

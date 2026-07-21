@@ -155,15 +155,21 @@ per-start parameter.
 
 Tradeoff: weak isolation (same user OS permissions). Acceptable for trusted local dev.
 
-### 4.3 `DockerSandbox` (optional)
-- One container per scope
-- Mount workspace/session
-- Drop caps, no privileged, no docker.sock
-- Network: default off or user-explicit allow
+### 4.3 `DockerSandbox` (product default for CLI + Web)
+- **Default backend** (`ARIADNE_SANDBOX=docker`); `local`/`null` are explicit escapes
+- One long-lived container per scope (`sleep infinity` + `docker exec`)
+- Mount host project → `/workspace`, session scratch → `/session`
+- Hardened defaults: `--cap-drop ALL`, `no-new-privileges`, `--network none`,
+  memory/cpu/pids limits, non-root user, optional read-only rootfs + tmpfs `/tmp`
+- No privileged mode, no docker.sock mount
+- Official image: `docker/sandbox/Dockerfile` → `ariadne-sandbox:minimal`
+- In-process **RuntimeAgent**: command policy + audit on shell; **web_fetch** on host
+  (egress allowlist) so the container stays offline by default
+- Optional `runtime=runsc` (gVisor) via `ARIADNE_DOCKER_RUNTIME`
 
 ### 4.4 Future
-- Firecracker / gVisor / bubblewrap
-- Remote sandbox services behind the same port
+- Firecracker / E2B remote backends behind the same port
+- Optional human-only debug CLI (not LLM path)
 
 ---
 

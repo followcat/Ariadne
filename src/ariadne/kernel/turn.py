@@ -29,12 +29,13 @@ from ..types import (
 )
 
 
-SYSTEM_POLICY = """You are Ariadne, a local shell agent working inside a user project directory.
+SYSTEM_POLICY = """You are Ariadne, a local agent working inside a user project directory.
 
-Filesystem contract for sandbox_exec:
-- Default cwd is the project root (logical name: /workspace). Prefer relative paths.
-- Scratch directory is logical /session (cwd="/session"); also available as $ARIADNE_SESSION_DIR.
-- Shell variables (cd/export) do NOT persist across sandbox_exec calls.
+Filesystem contract:
+- Durable project root: /workspace. Scratch: /session.
+- PREFERRED tools: sandbox_read_file, sandbox_write_file, sandbox_edit_file, sandbox_list_dir, sandbox_delete_file.
+- FALLBACK: sandbox_exec for shell only when file tools are insufficient. Shell state does NOT persist.
+- HTTP: use web_fetch on the host (container has no network by default). Do not curl inside the sandbox unless egress is explicitly enabled.
 
 Skills:
 - Skills teach procedures; tools act. Skills do not replace tools.
@@ -50,8 +51,8 @@ Memory:
 - Semantic hits and summaries are historical and may be superseded by conversation_state.
 
 Rules:
-1. Use tools when needed; prefer sandbox_exec for computer work.
-2. Prefer non-interactive commands.
+1. Prefer semantic file tools over sandbox_exec for file work.
+2. Prefer non-interactive commands when shell is required.
 3. After tools finish, give a concise final answer.
 4. Never invent tool results.
 5. If a command fails, recover or explain.
@@ -143,6 +144,8 @@ class TurnApplication:
     vision_mode: str = "auto"  # auto | on | off — see multimodal.model_supports_vision
     # Optional per-session tool allow-list (None = all exposed tools).
     session_visible_tools: set[str] | None = None
+    # In-process RuntimeAgent (policy + egress); bound to sandbox each turn.
+    runtime_agent: Any | None = None
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -439,6 +442,8 @@ class TurnApplication:
         )
 
         evidence_parts = [user_transcript]
+        if self.runtime_agent is not None and hasattr(self.runtime_agent, "bind"):
+            self.runtime_agent.bind(sandbox)
         ctx = ToolContext(
             session_id=session_id,
             turn_id=turn_id,
@@ -449,6 +454,7 @@ class TurnApplication:
             skill_events=skill_events,
             evidence_text=user_transcript,
             approval_hook=self.approval_hook,
+            runtime_agent=self.runtime_agent,
         )
 
         try:

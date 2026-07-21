@@ -17,23 +17,23 @@ PROFILES: dict[str, ToolboxProfile] = {
     "minimal": ToolboxProfile(
         name="minimal",
         description="Bare Python/shell for local or slim container",
-        docker_image="python:3.13-slim",
-        packages_hint=("bash", "coreutils", "python3"),
-        notes="Default personal profile.",
+        docker_image="ariadne-sandbox:minimal",
+        packages_hint=("bash", "coreutils", "python3", "git", "curl"),
+        notes="Official minimal image; build via scripts/build_sandbox_image.sh.",
     ),
     "docs": ToolboxProfile(
         name="docs",
         description="Document conversion helpers",
-        docker_image="python:3.13-slim",
+        docker_image="ariadne-sandbox:minimal",
         packages_hint=("pandoc", "poppler-utils", "libreoffice"),
-        notes="Install tools in image or host; Ariadne does not auto-apt.",
+        notes="Install tools in a custom image or workspace venv; Ariadne does not auto-apt.",
     ),
     "data": ToolboxProfile(
         name="data",
         description="Data wrangling CLIs",
-        docker_image="python:3.13-slim",
+        docker_image="ariadne-sandbox:minimal",
         packages_hint=("jq", "csvkit", "sqlite3", "duckdb"),
-        notes="Prefer CLI-native tools via sandbox_exec.",
+        notes="Prefer CLI-native tools; install into /workspace venv when needed.",
     ),
 }
 

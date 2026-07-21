@@ -4,20 +4,25 @@
 
 Sandbox is important, but **not** Ariadne’s identity. It is a **port** the kernel can call.
 
-Ariadne may redesign sandbox freely. Enterprise topologies (egress gateway, mail gateway, SMB mounts, browser microservices) are **not** required.
+**Product default (2026):** CLI and Web use **Docker** on the user machine (Codex-like
+container isolation, self-hosted). `local` / `null` remain explicit overrides for
+tests and unisolated host exec. Enterprise topologies (egress mesh, mail gateway,
+SMB, browser microservices) are **not** required.
 
 ## 2. Why a port
 
 Tools like `sandbox.exec` need somewhere to run commands and touch files. Hosts differ:
 
-| Host | Likely backend |
+| Host | Backend |
 | --- | --- |
-| Local dev | subprocess in a workdir |
-| Docker-friendly user | one container per session/turn |
-| Hardened personal lab | Firecracker / other isolation |
-| Tests | fake sandbox recording commands |
+| CLI / Web (default) | **Docker** hardened container |
+| Escape / CI | `local` workdir or `null` |
+| Hardened personal lab | Docker + optional gVisor (`runsc`) |
+| Future SaaS | Firecracker / E2B behind same port |
 
-The kernel should not hardcode one of these.
+Semantic tools (`sandbox_read_file` / write / edit / list / `web_fetch`) are preferred;
+shell is a policy-gated fallback. Outbound HTTP runs on the **host** via `web_fetch`
+(allowlist), while the container defaults to `--network none`.
 
 ## 3. SandboxPort (target)
 

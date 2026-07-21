@@ -89,15 +89,47 @@ async def sandbox_edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str,
     return {"path": path, "bytes": len(new.encode("utf-8")), "diff": _unified_diff(path, old, new)}
 
 
+async def sandbox_list_dir(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    sandbox = _require_sandbox(ctx)
+    path = str(args.get("path") or "/workspace").strip() or "/workspace"
+    entries = await sandbox.list_dir(path)
+    return {"path": path, "entries": entries, "count": len(entries)}
+
+
+async def sandbox_delete_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    """Delete via shell under policy when RuntimeAgent present; else exec rm."""
+    path = str(args.get("path") or "").strip()
+    if not path:
+        raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "path is required"))
+    # Prefer shell rm through policy so dangerous paths can be denied
+    cmd = f"rm -f -- {path!s}"
+    # quote-safe: use simple shell quoting
+    import shlex
+
+    cmd = "rm -f -- " + shlex.quote(path)
+    if ctx.runtime_agent is not None:
+        out = await ctx.runtime_agent.execute_shell(cmd, cwd="/workspace")
+        return {"path": path, "deleted": out.get("exit_code") == 0, **out}
+    sandbox = _require_sandbox(ctx)
+    from ..sandbox.port import SandboxExecRequest
+
+    result = await sandbox.exec(SandboxExecRequest(cmd=cmd, cwd="/workspace"))
+    return {
+        "path": path,
+        "deleted": result.exit_code == 0,
+        "exit_code": result.exit_code,
+        "stderr": result.stderr,
+    }
+
+
 def register_file_tools(registry: ToolRegistry) -> None:
     registry.register(
         ToolSpec(
             name="sandbox_read_file",
             catalog_description="read a workspace file",
             description=(
-                "Read a file from the sandbox. Paths use the sandbox contract: "
-                "/workspace (durable project root) or /session (scratch). "
-                "Prefer this over cat when you need exact file content."
+                "PREFERRED file read (semantic tool). Paths: /workspace (durable) or "
+                "/session (scratch). Prefer this over sandbox_exec/cat for exact content."
             ),
             parameters={
                 "type": "object",
@@ -113,9 +145,9 @@ def register_file_tools(registry: ToolRegistry) -> None:
             name="sandbox_write_file",
             catalog_description="write (overwrite) a workspace file",
             description=(
-                "Overwrite a file in the sandbox with full content. Returns a "
-                "unified diff against the previous content. For partial edits "
-                "prefer sandbox_edit_file. Path must be under /workspace or /session."
+                "PREFERRED full-file write (semantic tool). Returns unified diff. "
+                "For partial edits use sandbox_edit_file. Paths under /workspace or /session. "
+                "Prefer this over echo/printf via sandbox_exec."
             ),
             parameters={
                 "type": "object",
@@ -149,5 +181,39 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "additionalProperties": False,
             },
             handler=sandbox_edit_file,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="sandbox_list_dir",
+            catalog_description="list directory in sandbox",
+            description=(
+                "PREFERRED directory listing (semantic tool). Path under /workspace or /session. "
+                "Prefer this over ls via sandbox_exec."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": [],
+                "additionalProperties": False,
+            },
+            handler=sandbox_list_dir,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="sandbox_delete_file",
+            catalog_description="delete a sandbox file",
+            description=(
+                "Delete a file under /workspace or /session. Prefer this over rm via sandbox_exec. "
+                "Subject to command policy when RuntimeAgent is active."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            handler=sandbox_delete_file,
         )
     )
