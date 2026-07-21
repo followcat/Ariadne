@@ -23,18 +23,20 @@ from .models import Project
 # Keep template short — token cost is paid on every turn inject.
 KNOWLEDGE_TEMPLATE = """# {name}
 
-> 项目说明（用户维护，类似 Codex `AGENTS.md`）。
-> 写稳定决策与约定即可；细节对话靠 session history / Memory。
+> 这是小本本：想到啥写啥就行，不用很正式。
+> 下次接着聊时，我还能看到这里。
 
-## 决策与约定
-- （在此记录：认证方案、代码风格、重要坑点…）
+## 我想记住的
+- （比如：用什么颜色、做什么效果、踩过什么坑…）
 
-## 备注
+## 随手记
 - 
 """
 
 # Legacy section names still accepted by apply_updates helpers.
 SECTION_NAMES = (
+    "我想记住的",
+    "随手记",
     "决策与约定",
     "备注",
     "技术栈",
@@ -235,15 +237,14 @@ def heuristic_refresh(project: Project) -> str:
 
     body = f"""# {project.name}
 
-> 项目说明（用户维护，类似 Codex `AGENTS.md`）。
-> 以下由文件树启发式生成，请按需改写。
+> 小本本草稿（扫了一眼文件夹自动填的，随便改）。
 
-## 决策与约定
-- 技术栈: {', '.join(stack)}
-{f'- README: {note}' if note else '- （补充稳定决策与约定）'}
+## 我想记住的
+- 大概用了: {', '.join(stack)}
+{f'- README 里写着: {note}' if note else '- （还没想好也可以先空着）'}
 
-## 备注
-- 生成于 {time.strftime('%Y-%m-%d')} · 文件约 {len(files)} 个
+## 随手记
+- 扫到大约 {len(files)} 个文件 · {time.strftime('%Y-%m-%d')}
 """
     return body
 
@@ -275,7 +276,7 @@ def apply_updates(content: str, update: KnowledgeUpdate) -> str:
     text = content
     for item in update.updates:
         op = (item.type or "add").strip().lower()
-        section = (item.section or "决策与约定").strip()
+        section = (item.section or "我想记住的").strip()
 
         bounds = _section_bounds(text, section)
         if op == "add":
@@ -483,5 +484,5 @@ def generate_branch_summary(transcript: list[dict[str, Any]], *, branch_name: st
         lines.append(f"- 首条意图: {users[0][:160]}")
     if asst:
         lines.append(f"- 末条摘要: {asst[-1][:160]}")
-    lines.append("- （请手工整理进「决策与约定」后可删本段）")
+    lines.append("- （有用的话抄进小本本，这段可以删）")
     return "\n".join(lines) + "\n"

@@ -152,22 +152,21 @@ def _recover_empty_assistant_text(
         clipped = reason
         if len(clipped) > _EMPTY_RECOVERY_REASONING_LIMIT:
             clipped = clipped[: _EMPTY_RECOVERY_REASONING_LIMIT - 20].rstrip() + "…"
-        parts.append("（模型未返回可见正文，以下为思考摘要）\n\n" + clipped)
+        parts.append("（刚才光在脑子里想、没说出口，摘一点给你看）\n\n" + clipped)
 
     if tool_names:
         names = "、".join(tool_names[:12])
         parts.append(
-            "本轮已执行工具："
+            "这轮我翻过这些："
             + names
             + "。\n"
-            "但模型没有给出最终说明或写回结果。"
-            "请再发一条，明确要求：继续用 sandbox_write_file / sandbox_edit_file "
-            "把改动写入 /workspace，并说明如何验证。"
+            "但还没真正改好文件、也没跟你说清楚结果。\n"
+            "你可以直接再说一句，比如：「接着改，把小鸟画进去并保存文件」。"
         )
     elif not reason:
         parts.append(
-            "模型未返回可见正文。"
-            "请重试，并要求给出明确结果；若是实现任务，请写明需要写入的文件路径。"
+            "这轮好像卡住了，没给出正文。\n"
+            "再试一次就好；可以说得随便一点，比如「帮我改改」「接着画」。"
         )
 
     return "\n\n".join(parts).strip()

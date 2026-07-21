@@ -460,7 +460,7 @@ async function send() {
       m.thinkingLive = false
       if (!m.content) {
         m.content =
-          '模型未返回可见正文（可能只出现在思考区）。请重试，并明确要求写入 /workspace 文件或给出可验证结果。'
+          '这轮好像没说完。再说一句就好，比如：「接着改，把文件存好」。'
       }
     }
     busy.value = false
@@ -695,7 +695,7 @@ onMounted(() => {
           class="new-chat atelier-banner"
           @click="knowledgeOpen = !knowledgeOpen"
         >
-          <span class="plus at">◈</span> {{ knowledgeOpen ? '关闭项目说明' : '项目说明' }}
+          <span class="plus at">◈</span> {{ knowledgeOpen ? '合上小本本' : '小本本' }}
         </button>
         <div class="sb-tabs three" role="tablist" aria-label="侧栏">
           <button
@@ -726,13 +726,13 @@ onMounted(() => {
             :aria-selected="leftTab === 'atelier'"
             @click="setLeftTab('atelier')"
           >
-            工坊
+            作坊
           </button>
         </div>
       </div>
       <div v-show="leftTab === 'sessions'" class="sess-list">
         <div v-if="inAtelier" class="sb-empty atelier-hint">
-          当前在工坊模式 · 会话列表见「工坊」页
+          在作坊里玩 · 左边点「作坊」换聊天
         </div>
         <template v-else>
           <div v-if="!sessions.length" class="sb-empty">暂无会话</div>
@@ -821,13 +821,13 @@ onMounted(() => {
         <button
           type="button"
           class="icon-btn"
-          title="工坊 Atelier"
+          title="小作坊"
           :class="{ on: leftTab === 'atelier' || inAtelier }"
           @click="setLeftTab('atelier')"
         >◈</button>
         <span
           class="title"
-          :title="inAtelier ? '工坊会话' : '点击可重命名；留空确定则自动重总结主题'"
+          :title="inAtelier ? '点一下打开小本本' : '点击可重命名；留空确定则自动重总结主题'"
           @click="inAtelier ? (knowledgeOpen = !knowledgeOpen) : editTitle()"
         >{{ topTitle }}</span>
         <div class="spacer" />
@@ -835,7 +835,7 @@ onMounted(() => {
           v-if="inAtelier"
           type="button"
           class="icon-btn"
-          title="项目说明 KNOWLEDGE.md"
+          title="小本本"
           :class="{ on: knowledgeOpen }"
           @click="knowledgeOpen = !knowledgeOpen"
         >📝</button>
@@ -848,8 +848,8 @@ onMounted(() => {
             {{ tools.length }}
           </span>
         </button>
-        <span v-if="inAtelier" class="chip atelier-chip">工坊</span>
-        <span class="chip mono">{{ inAtelier ? atelierSession : sessionLabel }}</span>
+        <span v-if="inAtelier" class="chip atelier-chip">作坊</span>
+        <span class="chip mono">{{ inAtelier ? (atelierSession === 'main' ? '主线' : atelierSession) : sessionLabel }}</span>
         <span class="chip" :class="{ off: !providerOk }">
           <span class="dot" />
           {{ me?.model || '未配置' }}
@@ -860,11 +860,11 @@ onMounted(() => {
         <div class="chat-inner" :class="{ empty: !messages.length }">
           <div v-if="!messages.length" class="empty-hint">
             <div class="art">{{ inAtelier ? '◈' : 'A' }}</div>
-            <h2>{{ inAtelier ? '在工坊里开始' : '今天想做什么？' }}</h2>
+            <h2>{{ inAtelier ? '今天想鼓捣点啥？' : '今天想做什么？' }}</h2>
             <p v-if="inAtelier">
-              共享 workspace · 手写 KNOWLEDGE.md 跨会话注入（类似 AGENTS.md）
+              随便说就行 · 想改代码 / 画画 / 加按钮都可以
             </p>
-            <p v-else>Vue 前端 · markdown-it 表格/代码 · 流式 thinking 折叠 · 工坊</p>
+            <p v-else>聊两句，或点左边「作坊」开个小角落</p>
           </div>
           <template v-for="m in messages" :key="m.id">
             <div v-if="m.role === 'user'" class="msg user">{{ m.content }}</div>
@@ -881,9 +881,7 @@ onMounted(() => {
                 v-if="m.content || !m.thinking"
                 :source="
                   m.content ||
-                  (m.streaming
-                    ? ''
-                    : '模型未返回可见正文（可能只出现在思考区）。请重试并要求写文件/给出结果。')
+                  (m.streaming ? '' : '这轮好像没说完，再说一句就好～')
                 "
                 :streaming="m.streaming && !!m.content"
               />
@@ -912,7 +910,7 @@ onMounted(() => {
             ref="inputEl"
             v-model="input"
             rows="1"
-            :placeholder="inAtelier ? '在工坊中下达任务…' : '给 Ariadne 下达任务…'"
+            :placeholder="inAtelier ? '说说你想干嘛… 比如：帮我画只小鸟' : '给 Ariadne 说点什么…'"
             :disabled="busy"
             @input="autoSize"
             @keydown.enter.exact.prevent="send"
@@ -922,7 +920,7 @@ onMounted(() => {
           </button>
         </div>
         <div class="foot">
-          Ariadne · {{ inAtelier ? 'Atelier workshop' : 'Vue + markdown-it' }} · open-source agent kernel
+          Ariadne · {{ inAtelier ? '小作坊' : '随便聊聊' }}
         </div>
       </div>
     </div>

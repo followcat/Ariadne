@@ -1,7 +1,6 @@
 <script setup lang="ts">
 /**
- * KNOWLEDGE.md panel — Codex AGENTS.md style: user-owned project brief.
- * View + full edit only. No structured auto-ops; Memory handles recall.
+ * 小本本：随便记几笔，跨天接着玩。
  */
 import { computed, ref, watch } from 'vue'
 import { api } from '../api/client'
@@ -38,7 +37,7 @@ async function load() {
     )
     if (!r.ok) {
       const d = await r.json().catch(() => ({}))
-      err.value = d.detail || '加载失败'
+      err.value = d.detail || '打不开小本本'
       return
     }
     const data = await r.json()
@@ -62,7 +61,7 @@ async function saveFull() {
     )
     if (!r.ok) {
       const d = await r.json().catch(() => ({}))
-      err.value = d.detail || '保存失败'
+      err.value = d.detail || '没存上'
       return
     }
     content.value = draft.value
@@ -99,44 +98,43 @@ watch(
   <aside class="know" :class="{ open }">
     <header class="know-head">
       <div class="titles">
-        <span class="k-label">项目说明</span>
-        <span class="k-sub">KNOWLEDGE.md · 用户维护</span>
+        <span class="k-label">小本本</span>
+        <span class="k-sub">想到啥写啥</span>
       </div>
       <div class="actions">
         <button
           v-if="mode === 'view'"
           type="button"
           class="chip-btn"
-          title="编辑"
+          title="改一改"
           @click="startEdit"
         >✎</button>
-        <button type="button" class="chip-btn" title="关闭" @click="emit('close')">×</button>
+        <button type="button" class="chip-btn" title="合上" @click="emit('close')">×</button>
       </div>
     </header>
 
     <p class="hint">
-      类似 Codex <code>AGENTS.md</code>：写稳定决策与约定，跨会话始终注入。
-      自动记忆请用 Memory，勿指望自动提取。
+      可选的。写「用蜡笔、想画小鸟」这种就够用；不写也完全可以接着玩。
     </p>
 
     <p v-if="err" class="err">{{ err }}</p>
-    <p v-else-if="loading" class="muted">加载中…</p>
+    <p v-else-if="loading" class="muted">翻本本…</p>
 
     <template v-else>
       <div v-if="mode === 'view'" class="know-body">
-        <MarkdownView :source="content || '_(空 — 点 ✎ 写几条决策)_'" />
+        <MarkdownView :source="content || '_(还是空白，点 ✎ 随便写两笔)_'" />
       </div>
       <div v-else class="know-edit">
         <textarea
           v-model="draft"
           spellcheck="false"
           rows="18"
-          placeholder="# 项目名&#10;&#10;## 决策与约定&#10;- 认证: JWT&#10;- 风格: ruff"
+          placeholder="# 画画&#10;&#10;## 我想记住的&#10;- 蜡笔质感&#10;- 想加一只小鸟"
         />
         <div class="edit-bar">
-          <span v-if="dirty" class="dirty">未保存</span>
-          <button type="button" class="secondary" @click="cancelEdit">取消</button>
-          <button type="button" class="primary" :disabled="saving" @click="saveFull">保存</button>
+          <span v-if="dirty" class="dirty">还没存</span>
+          <button type="button" class="secondary" @click="cancelEdit">算了</button>
+          <button type="button" class="primary" :disabled="saving" @click="saveFull">存一下</button>
         </div>
       </div>
     </template>
@@ -169,7 +167,7 @@ watch(
 }
 .titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .k-label { font-weight: 700; font-size: 13px; }
-.k-sub { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.k-sub { font-size: 11px; color: var(--muted); }
 .actions { display: flex; gap: 4px; }
 .chip-btn {
   width: 30px; height: 30px; border-radius: 8px;
@@ -185,13 +183,6 @@ watch(
   color: var(--dim);
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--blue) 6%, transparent);
-}
-.hint code {
-  font-family: var(--mono);
-  font-size: 11px;
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: var(--code-bg);
 }
 .know-body, .know-edit {
   flex: 1;

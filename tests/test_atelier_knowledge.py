@@ -18,8 +18,8 @@ from ariadne.atelier.manager import AtelierManager
 
 def test_template_is_short_agents_style() -> None:
     t = knowledge_template("demo")
-    assert "AGENTS.md" in t or "用户维护" in t
-    assert "决策与约定" in t
+    assert "小本本" in t or "记住" in t or "用户" in t
+    assert "我想记住的" in t or "决策" in t
     assert len(t) < 800
 
 

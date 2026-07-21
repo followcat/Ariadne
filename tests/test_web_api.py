@@ -490,7 +490,8 @@ def test_atelier_api_crud_and_knowledge(tmp_path: Path) -> None:
             # knowledge get + apply add/modify/remove
             r = await client.get(f"/api/ateliers/{aid}/knowledge", headers=headers)
             assert r.status_code == 200
-            assert "决策与约定" in r.json()["content"] or "AGENTS.md" in r.json()["content"]
+            body_k = r.json()["content"]
+            assert "我想记住的" in body_k or "决策" in body_k or "小本本" in body_k
 
             # Power API still supports structured apply; primary UX is full PUT edit.
             r = await client.post(
@@ -498,7 +499,7 @@ def test_atelier_api_crud_and_knowledge(tmp_path: Path) -> None:
                 json={
                     "updates": [
                         {
-                            "section": "决策与约定",
+                            "section": "我想记住的",
                             "type": "add",
                             "new_text": "采用 SQLite 起步",
                         }
@@ -514,7 +515,7 @@ def test_atelier_api_crud_and_knowledge(tmp_path: Path) -> None:
                 json={
                     "updates": [
                         {
-                            "section": "决策与约定",
+                            "section": "我想记住的",
                             "type": "modify",
                             "old_text": "SQLite",
                             "new_text": "采用 Postgres 生产库",
@@ -532,7 +533,7 @@ def test_atelier_api_crud_and_knowledge(tmp_path: Path) -> None:
                 json={
                     "updates": [
                         {
-                            "section": "决策与约定",
+                            "section": "我想记住的",
                             "type": "remove",
                             "old_text": "Postgres",
                         }

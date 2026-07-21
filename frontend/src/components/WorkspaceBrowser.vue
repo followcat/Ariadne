@@ -39,7 +39,7 @@ const listedHost = ref('')
 
 const modeLabel = computed(() => {
   const m = (props.workspaceMode || 'project').toLowerCase()
-  if (m === 'atelier' || props.atelierId) return '工坊工作区 · 共享代码树'
+  if (m === 'atelier' || props.atelierId) return '作坊文件夹 · 大家共用'
   if (m === 'per_user') return '用户工作区 · 本账号独立'
   return '项目工作区 · 多会话共用'
 })

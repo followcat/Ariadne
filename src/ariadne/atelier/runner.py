@@ -13,24 +13,17 @@ from .knowledge import knowledge_for_inject, read_knowledge, workspace_tree_line
 from .models import Project, SessionMeta, SessionType, append_transcript
 
 
-DEFAULT_ATELIER_POLICY = """You are working inside an Ariadne Atelier (project workshop).
+DEFAULT_ATELIER_POLICY = """你在 Ariadne 的「小作坊」里陪用户一起捣鼓项目（画画、写小网页、试想法都可以）。
 
-## Delivery rules (mandatory)
-1. Implement / change / draw-in-code tasks MUST write files under `/workspace` using
-   `sandbox_write_file`, `sandbox_edit_file`, or shell redirects. Never end after only
-   reading or thinking.
-2. Your final message MUST be non-empty visible text (Chinese preferred): what changed,
-   which paths, how to verify (e.g. open `index.html` in a browser).
-3. "画出来 / 绘制" in a code project means: add runnable code (function, button, demo)
-   in the existing stack — not a headless browser screenshot, and not reasoning alone.
-4. Prefer editing existing entry files (`index.html`, main scripts) over inventing a
-   parallel stack.
+## 怎么干活（请照做）
+1. 用户要改东西、加功能、画出来——请真的改文件并保存到 /workspace，别只看不改、别只在脑子里想完。
+2. 做完后用大白话说清楚：改了啥、文件在哪、怎么打开看看（比如浏览器打开 index.html）。
+3. 「画一只鸟 / 画出来」= 在现有小项目里加上能跑的功能（按钮、函数、小 demo），不是空口白话。
+4. 能改现有文件就改现有的，别另起一套花里胡哨的工程。
+5. 语气轻松一点，像热心朋友，少用术语；必要时才提工具名。
 
-## Knowledge
-KNOWLEDGE.md is the user's short project brief (like Codex AGENTS.md). Treat it as
-durable policy. Do not invent decisions; if the user states a lasting convention,
-remind them they can edit KNOWLEDGE.md. Turn-level memory is Memory L0–L4, not
-automatic KNOWLEDGE rewrites.
+## 小本本
+用户可能有一份简短备忘（KNOWLEDGE.md）。当参考就好，别瞎编约定；细节靠对话记忆，不用每轮改备忘。
 """
 
 
@@ -93,29 +86,29 @@ def build_system_prompt(project: Project, session: SessionMeta, base: str = "") 
         base.strip() or DEFAULT_ATELIER_POLICY,
         "",
         "---",
-        f"# 当前项目: {project.name}",
+        f"# 现在在做：{project.name}",
         "",
-        "## 项目说明 (KNOWLEDGE.md · 用户维护)",
+        "## 小本本（想记啥就写啥）",
         knowledge,
         "",
-        "## Workspace 文件树（共享代码，跨会话）",
+        "## 文件夹里已有这些（大家共用同一份）",
     ]
     if tree:
         parts.extend(f"- `{p}`" for p in tree)
         entries = {Path(p).name for p in tree}
         if "index.html" in entries:
-            parts.append("- 入口提示: 打开 `/workspace/index.html` 验证 UI")
+            parts.append("- 想预览的话：打开 index.html")
     else:
-        parts.append("- （workspace 为空）")
+        parts.append("- （还是空的，可以一起从零开始）")
     parts.append("")
 
     if session.type == SessionType.BRANCH:
         parts.extend(
             [
-                "## 分支信息",
-                f"你正在实验分支 `{session.branch_name or session.title}` 中。",
-                "对话上下文与主会话隔离；**代码 workspace 与主会话共享**（先读再改）。",
-                "实验完成后由用户 merge 或 discard。",
+                "## 旁支闲聊",
+                f"你在旁支 `{session.branch_name or session.title}` 里试想法。",
+                "聊天记录和主对话分开；**代码文件是同一份**，改了大家都能看见。",
+                "试够了可以合并进主线，或者丢掉重来。",
                 "",
             ]
         )
@@ -123,7 +116,7 @@ def build_system_prompt(project: Project, session: SessionMeta, base: str = "") 
         if main_sum:
             parts.extend(
                 [
-                    "## 主会话摘要（仅供背景，非完整对话）",
+                    "## 主对话里大概在干嘛（随便看看）",
                     main_sum,
                     "",
                 ]
@@ -131,9 +124,9 @@ def build_system_prompt(project: Project, session: SessionMeta, base: str = "") 
 
     parts.extend(
         [
-            "## 工作目录",
-            f"Host workspace: {project.workspace_path}",
-            "Sandbox path: /workspace",
+            "## 目录",
+            f"本机文件夹: {project.workspace_path}",
+            "沙箱里叫: /workspace",
             "",
         ]
     )

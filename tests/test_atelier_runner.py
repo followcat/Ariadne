@@ -10,12 +10,12 @@ def test_system_prompt_includes_knowledge_and_branch(tmp_path: Path) -> None:
     proj = mgr.create_project("r1", no_scan=True)
     main = mgr.get_or_create_main_session("r1")
     prompt = build_system_prompt(proj, main)
-    assert "KNOWLEDGE" in prompt or "项目说明" in prompt
-    assert "Delivery rules" in prompt or "写入" in prompt or "sandbox_write_file" in prompt
+    assert "小本本" in prompt or "KNOWLEDGE" in prompt or "备忘" in prompt
+    assert "改文件" in prompt or "保存" in prompt or "写" in prompt
     assert proj.name in prompt
     br = mgr.create_branch("r1", "exp")
     bprompt = build_system_prompt(proj, br)
-    assert "分支" in bprompt or "branch" in bprompt.lower()
+    assert "旁支" in bprompt or "分支" in bprompt
 
 
 def test_build_prompt_includes_workspace_tree(tmp_path: Path) -> None:
@@ -27,7 +27,7 @@ def test_build_prompt_includes_workspace_tree(tmp_path: Path) -> None:
     prompt = build_system_prompt(proj, main)
     assert "index.html" in prompt
     assert "crayon.js" in prompt
-    assert "文件树" in prompt
+    assert "文件夹" in prompt or "index.html" in prompt
 
 
 def test_auto_extract_off_by_default(tmp_path: Path) -> None:

@@ -63,7 +63,7 @@ async function loadList() {
     const r = await api('/api/ateliers', props.token)
     if (!r.ok) {
       const d = await r.json().catch(() => ({}))
-      err.value = d.detail || '无法加载工坊'
+      err.value = d.detail || '加载失败，稍后再试'
       return
     }
     list.value = await r.json()
@@ -113,7 +113,7 @@ async function createAtelier() {
 }
 
 async function removeAtelier(id: string) {
-  if (!confirm(`删除工坊 ${id}？不可恢复。`)) return
+  if (!confirm(`删掉「${id}」？删了就没了哦。`)) return
   const r = await api(
     '/api/ateliers/' + encodeURIComponent(id) + '?yes=true',
     props.token,
@@ -153,7 +153,7 @@ async function createBranch() {
 
 async function mergeBranch(branch: string) {
   if (!props.selectedId) return
-  if (!confirm(`合并分支 ${branch}？知识会写入 KNOWLEDGE.md。`)) return
+  if (!confirm(`把旁支「${branch}」收进主线？会在小本本里记一笔。`)) return
   const r = await api(
     `/api/ateliers/${encodeURIComponent(props.selectedId)}/branches/${encodeURIComponent(branch)}/merge`,
     props.token,
@@ -171,7 +171,7 @@ async function mergeBranch(branch: string) {
 
 async function discardBranch(branch: string) {
   if (!props.selectedId) return
-  if (!confirm(`丢弃分支 ${branch}？对话作废，知识库不变。`)) return
+  if (!confirm(`丢掉旁支「${branch}」？聊天不要了，文件还在。`)) return
   const r = await api(
     `/api/ateliers/${encodeURIComponent(props.selectedId)}/branches/${encodeURIComponent(branch)}/discard`,
     props.token,
@@ -214,33 +214,33 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
     <template v-if="!selectedId">
       <div class="ap-head">
         <div>
-          <div class="ap-title">工坊 Atelier</div>
-          <div class="ap-sub">项目 · 说明文件 · 主/分支会话</div>
+          <div class="ap-title">小作坊</div>
+          <div class="ap-sub">一个小角落 · 随便折腾</div>
         </div>
         <button type="button" class="new-btn" @click="showCreate = !showCreate">
-          {{ showCreate ? '取消' : '+ 新建' }}
+          {{ showCreate ? '取消' : '+ 开一个' }}
         </button>
       </div>
 
       <div v-if="showCreate" class="create-box">
         <input
           v-model="newName"
-          placeholder="项目名称，如 画画 或 my-app"
+          placeholder="起个名字，比如 画画"
           maxlength="64"
           @keydown.enter.prevent="createAtelier"
         />
         <button type="button" class="primary" :disabled="creating || !newName.trim()" @click="createAtelier">
-          创建
+          开干
         </button>
       </div>
-      <p v-if="showCreate" class="create-hint">中文名称可用；内部 id 会自动生成（ASCII 名称则直接作 id）</p>
+      <p v-if="showCreate" class="create-hint">中文名也行，想叫啥叫啥</p>
 
       <p v-if="err" class="err">{{ err }}</p>
       <p v-else-if="loading" class="muted">加载中…</p>
       <div v-else-if="!list.length" class="empty">
         <div class="empty-ico">◈</div>
-        <p>还没有工坊</p>
-        <p class="hint">创建一个共享 workspace + KNOWLEDGE.md 的项目室</p>
+        <p>还空着</p>
+        <p class="hint">开一个小角落，代码和聊天都放这儿</p>
       </div>
       <div v-else class="alist">
         <button
@@ -268,12 +268,12 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
           <div class="ap-title">{{ selected?.name || selectedId }}</div>
           <div class="ap-sub mono">{{ selectedId }}</div>
         </div>
-        <button type="button" class="chip" title="项目说明 KNOWLEDGE.md" @click="emit('openKnowledge')">说明</button>
+        <button type="button" class="chip" title="小本本" @click="emit('openKnowledge')">本本</button>
       </div>
 
       <p v-if="err" class="err">{{ err }}</p>
 
-      <div class="sec-label">会话</div>
+      <div class="sec-label">聊到哪儿了</div>
       <div class="slist">
         <button
           v-for="s in activeSessions"
@@ -283,22 +283,22 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
           :class="{ on: s.id === selectedSession || (selectedSession === 'main' && s.id === 'main') }"
           @click="emit('selectSession', s.id)"
         >
-          <span class="badge" :class="s.type">{{ s.type === 'main' ? '主' : '支' }}</span>
+          <span class="badge" :class="s.type">{{ s.type === 'main' ? '主' : '玩' }}</span>
           <span class="body">
-            <span class="name">{{ s.title || s.id }}</span>
-            <span class="meta">{{ s.status }}</span>
+            <span class="name">{{ s.type === 'main' ? '主线' : (s.title || s.id) }}</span>
+            <span class="meta">{{ s.status === 'active' ? '进行中' : s.status }}</span>
           </span>
           <template v-if="s.type === 'branch' && s.status === 'active' && s.branch_name">
             <span
               class="mini ok"
-              title="合并到知识库"
+              title="收进主线"
               @click.stop="mergeBranch(s.branch_name!)"
-            >合</span>
+            >收</span>
             <span
               class="mini warn"
-              title="丢弃"
+              title="丢掉"
               @click.stop="discardBranch(s.branch_name!)"
-            >弃</span>
+            >丢</span>
           </template>
         </button>
       </div>
@@ -306,18 +306,18 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
       <div class="branch-create">
         <input
           v-model="branchName"
-          placeholder="新实验分支名…"
+          placeholder="想开个旁支试试？起个名…"
           @keydown.enter.prevent="createBranch"
         />
         <button type="button" class="primary sm" :disabled="creatingBranch || !branchName.trim()" @click="createBranch">
-          分支
+          开旁支
         </button>
       </div>
 
-      <div v-if="closedSessions.length" class="sec-label dim">已结束</div>
+      <div v-if="closedSessions.length" class="sec-label dim">以前的</div>
       <div v-if="closedSessions.length" class="slist closed">
         <div v-for="s in closedSessions" :key="s.id" class="srow closed">
-          <span class="badge">{{ s.status }}</span>
+          <span class="badge">{{ s.status === 'merged' ? '已收' : s.status === 'discarded' ? '已丢' : s.status }}</span>
           <span class="body">
             <span class="name">{{ s.title || s.id }}</span>
           </span>
@@ -325,9 +325,9 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
       </div>
 
       <div class="tips">
-        <p>· 项目说明 = 手写 KNOWLEDGE.md（类似 AGENTS.md），跨会话注入</p>
-        <p>· 分支：对话隔离、代码共享；合并只附一段摘要笔记</p>
-        <p>· 自动记忆靠 Memory，不靠每轮自动写知识文件</p>
+        <p>· 随便聊，想改文件就直接说</p>
+        <p>· 旁支 = 另开一桌试想法，文件还是同一份</p>
+        <p>· 小本本可选，想记才写，不记也没关系</p>
       </div>
     </template>
   </div>

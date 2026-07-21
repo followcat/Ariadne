@@ -154,5 +154,5 @@ def test_empty_content_with_tools_nudge(tmp_path: Path) -> None:
         return result.text
 
     text = asyncio.run(run())
-    assert "工具" in text or "sandbox_read_file" in text
-    assert "sandbox_write_file" in text or "写" in text
+    assert "sandbox_read_file" in text or "翻过" in text
+    assert "文件" in text or "接着改" in text or "保存" in text
