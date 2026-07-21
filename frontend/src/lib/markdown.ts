@@ -98,18 +98,18 @@ const PURIFY: DOMPurify.Config = {
     /^(?:(?:https?|mailto):|data:image\/|\/api\/workspace\/file\?|#)/i,
 }
 
-const IMG_EXT = String.raw`png|jpe?g|gif|webp|svg`
-const WORKSPACE_IMG =
-  new RegExp(String.raw`(?<!\]\()(\/?workspace\/[^\s)\]\`"'<>]+\.(?:${IMG_EXT}))`, 'gi')
-
 /** Turn bare /workspace/*.png paths into markdown images (走势图). */
 export function rewriteWorkspaceImages(src: string): string {
-  return String(src || '').replace(WORKSPACE_IMG, (_full, path: string) => {
-    const p = path.startsWith('/') ? path : '/' + path
-    const api = '/api/workspace/file?path=' + encodeURIComponent(p)
-    // data-workspace-src kept via title; MarkdownView upgrades to blob with auth
-    return `\n\n![走势图](${api})\n\n`
-  })
+  // Avoid matching already-markdown images: ![alt](/workspace/...)
+  return String(src || '').replace(
+    /(^|[^\](])(\/?workspace\/[^\s)\]"'<>]+\.(?:png|jpe?g|gif|webp|svg))/gi,
+    (_full, prefix: string, path: string) => {
+      if (String(prefix).endsWith('](')) return _full
+      const p = path.startsWith('/') ? path : '/' + path
+      const api = '/api/workspace/file?path=' + encodeURIComponent(p)
+      return `${prefix}\n\n![走势图](${api})\n\n`
+    },
+  )
 }
 
 /** Normalize model quirks so tables parse more reliably. */
