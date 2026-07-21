@@ -458,7 +458,10 @@ async function send() {
     if (m) {
       m.streaming = false
       m.thinkingLive = false
-      if (!m.content) m.content = '(empty reply)'
+      if (!m.content) {
+        m.content =
+          '模型未返回可见正文（可能只出现在思考区）。请重试，并明确要求写入 /workspace 文件或给出可验证结果。'
+      }
     }
     busy.value = false
     if (atelierId.value) {
@@ -876,7 +879,12 @@ onMounted(() => {
               <ThinkingBlock :text="m.thinking" :live="m.thinkingLive" />
               <MarkdownView
                 v-if="m.content || !m.thinking"
-                :source="m.content || (m.streaming ? '' : '(empty reply)')"
+                :source="
+                  m.content ||
+                  (m.streaming
+                    ? ''
+                    : '模型未返回可见正文（可能只出现在思考区）。请重试并要求写文件/给出结果。')
+                "
                 :streaming="m.streaming && !!m.content"
               />
               <div v-else-if="m.streaming && !m.content" class="md-placeholder">…</div>

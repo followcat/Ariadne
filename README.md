@@ -133,8 +133,10 @@ ariadne atelier branch merge my-app exp    # short merge note + notify main
 ariadne atelier knowledge show my-app      # edit with: knowledge edit
 ```
 
-**Project brief (`KNOWLEDGE.md`):** Codex-style — **you write** stable decisions/conventions; every turn injects a capped copy.  
-**No auto-extract by default** (heuristic/LLM helpers are opt-in only). Turn-level memory stays in **Memory L0–L4**. Keep the file short.
+**Project brief (`KNOWLEDGE.md`):** Codex-style — **you write** stable decisions/conventions; every turn injects a capped copy (+ workspace file tree).  
+**No auto-extract by default.** Branches share code, isolate chat; system inject may include a one-line main summary.  
+Empty model answers are recovered (thinking summary / tool nudge) instead of silent `(empty reply)`.  
+Turn-level memory stays in **Memory L0–L4**. Keep the brief short.
 
 **Web UI:** `ariadne serve` → **工坊** tab — workshops, main/branch sessions, markdown editor for the brief, turns with `atelier_id`. Store: `{data}/web/users/<user>/ateliers/`.
 

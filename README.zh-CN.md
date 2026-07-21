@@ -133,8 +133,10 @@ ariadne atelier branch merge my-app exp    # 附简短合并笔记 + 通知 main
 ariadne atelier knowledge show my-app      # 编辑: knowledge edit
 ```
 
-**项目说明（`KNOWLEDGE.md`）：** Codex 式——**你来写**稳定决策/约定；每轮注入有长度上限。  
-**默认不做自动提取**（启发式/LLM 仅 opt-in）。轮次记忆交给 **Memory L0–L4**。请保持文件精简。
+**项目说明（`KNOWLEDGE.md`）：** Codex 式——**你来写**稳定决策/约定；每轮注入有长度上限，并附带 workspace 文件树。  
+**默认不做自动提取。** 分支共享代码、隔离对话；可注入主会话一行摘要作背景。  
+模型空正文会兜底（思考摘要 / 工具提示），避免静默 `(empty reply)`。  
+轮次记忆交给 **Memory L0–L4**。请保持说明文件精简。
 
 **Web UI：** `ariadne serve` → **工坊** 页——创建/打开、主/分支会话、Markdown 编辑说明文件、`atelier_id` 对话。路径：`{data}/web/users/<user>/ateliers/`。
 

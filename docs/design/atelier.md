@@ -87,7 +87,18 @@ ariadne atelier knowledge show|edit|refresh|history PROJECT
 
 Template is minimal (`决策与约定` / `备注`). Programmatic `apply_updates` / `extract_*` remain as **opt-in libraries** (tests / power tools), not the host default path.
 
+**Root vs workspace:** canonical brief is `{atelier}/KNOWLEDGE.md`. If the root file is thin/polluted and `workspace/KNOWLEDGE.md` is richer, inject (and optional GET sync) prefers the workspace copy so agent-written notes are not lost.
+
 Automatic recall / sedimentation → **Memory L0–L4** (CuratedStore, summaries, etc.).
+
+## 7.1 Delivery + empty-reply (capability)
+
+| Rule | Detail |
+| --- | --- |
+| System inject | Delivery policy + **workspace file tree** + (branch) optional main L1 summary |
+| Agent session id | `aw-{project.id}-{session.id}` (no double `atelier-` prefix) |
+| Empty model content | Kernel recovers from `reasoning_content` (capped) and/or tool-nudge text — never silent empty turn |
+| Implement tasks | Prefer `sandbox_write_file` / edit; final reply must describe paths + how to verify |
 
 ## 8. Web UI
 
