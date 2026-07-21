@@ -91,6 +91,11 @@ ariadne version
 
 # Web UI — 注册用户，每人绑定自己的 Provider（BYOK）
 ariadne serve --host 127.0.0.1 --port 8420
+# 工作区模式：project（默认，Codex 式共用项目目录）
+#            或 per_user（每个账号独立 durable 目录）
+ariadne serve --workspace-mode project
+ariadne serve --workspace-mode per_user
+# 环境变量：ARIADNE_WEB_WORKSPACE_MODE=project|per_user
 
 # 官方插件（默认写入用户属性）
 ariadne plugins
@@ -213,6 +218,19 @@ sandbox_edit_file   {path, old_string, new_string}  → 精确一次匹配 + 统
 | --- | --- | --- |
 | CLI | `~/.ariadne/plugins.json`（权限 `0600`） | 跨工作区。`--workspace-scope` 写入项目 `data_dir/plugins.json`。Compose 合并顺序：**用户 → 工作区**（同名工作区优先）。 |
 | Web | `data_dir/web/users/<username>/plugins.json` | 按注册账号隔离。API：`GET/PUT/DELETE /api/me/plugins`。Web **不**合并 home。 |
+
+### Web 工作区 / 会话 / 账号
+
+个人 agent 模型（对齐 Codex / Grok）：**项目文件 ≠ 对话线程**。
+
+| | 范围 |
+| --- | --- |
+| `/workspace` | 默认 **项目**（`--workspace-mode project`）：serve 的 cwd，多会话共用。可选 `per_user`：`{user_data}/workspace/` |
+| 对话 session | 仅 transcript + 标题；`/new` 保留工作区 |
+| `/session` 临时目录 | 按用户 + sandbox scope（不作为浏览器根） |
+| 记忆 / BYOK / 插件 | 按 Web 注册账号 |
+
+规范设计：[design/web-workspace.md](../design/web-workspace.md)。
 
 ```bash
 ariadne plugins

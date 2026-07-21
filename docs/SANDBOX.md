@@ -66,7 +66,19 @@ Principles:
 3. Structured kernel capabilities (memory, skill load) stay function tools — not forced through shell string protocols.
 4. Observation compression may truncate huge outputs with clear markers; never silently drop errors.
 
-## 5. Lifecycle
+## 5. Filesystem contract (model-facing)
+
+```text
+/workspace   # durable project (or per-user) tree — shared across chat sessions
+/session     # scratch for the active sandbox scope — wiped on close
+```
+
+This matches personal agents (Codex / Grok): **open a project, many threads,
+one file tree**. Chat session id does not clone `/workspace`.
+
+Web host binding and multi-account modes: [design/web-workspace.md](design/web-workspace.md).
+
+## 6. Lifecycle
 
 Preferred personal v1:
 
@@ -81,7 +93,7 @@ Policies:
 
 Document which policy a backend uses. Fastfail if `sandbox.exec` is called with `NullSandbox`.
 
-## 6. Security baseline (personal)
+## 7. Security baseline (personal)
 
 Even personal software should:
 
@@ -98,7 +110,7 @@ Ariadne does **not** require:
 
 Hosts may add those outside the kernel.
 
-## 7. What we learn from enterprise sandbox designs (and leave behind)
+## 8. What we learn from enterprise sandbox designs (and leave behind)
 
 Keep:
 
@@ -113,7 +125,7 @@ Leave behind (core non-goals):
 - connector-driven confirmation UX as kernel dependency
 - business system HTTP adapters as sandbox concerns
 
-## 8. Redesign permission
+## 9. Redesign permission
 
 This document explicitly allows sandbox redesign:
 
@@ -123,7 +135,7 @@ This document explicitly allows sandbox redesign:
 
 without rewriting skills/memory/tool registry — as long as `SandboxPort` and `sandbox.exec` semantics remain honest.
 
-## 9. Implementation phases
+## 10. Implementation phases
 
 1. `NullSandbox` + clear errors
 2. `LocalWorkdirSandbox` (subprocess)

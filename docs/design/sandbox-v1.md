@@ -70,6 +70,8 @@ Rules:
 - Prefer writing intermediate artifacts to `/session`.
 - Prefer durable outputs the user cares about to `/workspace` (or host-mapped project dir).
 - Shell process state (`cd`, `export`) does **not** carry across `exec` calls unless the backend offers a persistent shell (v1 does not). Persist needed state in files.
+- **`/workspace` is not per chat turn.** Multiple conversation sessions share the same workspace binding (Codex / Grok project model). See [web-workspace.md](web-workspace.md) for the web host matrix (`project` vs `per_user` modes).
+- **`/session` is per sandbox scope** (typically user + conversation session under the host data dir), never the durable project tree.
 
 ### 2.2 Lifecycle modes
 

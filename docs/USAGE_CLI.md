@@ -91,6 +91,11 @@ ariadne version
 
 # web UI — register users, bind each user’s own provider (BYOK)
 ariadne serve --host 127.0.0.1 --port 8420
+# workspace mode: project (default, Codex-like shared project folder)
+#                or per_user (each account gets its own durable tree)
+ariadne serve --workspace-mode project
+ariadne serve --workspace-mode per_user
+# env: ARIADNE_WEB_WORKSPACE_MODE=project|per_user
 
 # official plugins (user attributes by default)
 ariadne plugins
@@ -217,6 +222,19 @@ Plugin credentials are **owned by the user**, not by a multi-company pack system
 | --- | --- | --- |
 | CLI | `~/.ariadne/plugins.json` (mode `0600`) | Cross-workspace. Use `--workspace-scope` for project `data_dir/plugins.json`. Compose merges **user → workspace** (workspace wins on name). |
 | Web | `data_dir/web/users/<username>/plugins.json` | Per registered account. API: `GET/PUT/DELETE /api/me/plugins`. Home merge is **off** for web. |
+
+### Web workspace vs session vs account
+
+Personal-agent model (Codex / Grok): **project files ≠ chat thread**.
+
+| | Scope |
+| --- | --- |
+| `/workspace` | **Project** by default (`--workspace-mode project`): serve cwd, shared by all sessions. Optional `per_user`: `{user_data}/workspace/`. |
+| Chat session | Transcript + title only; `/new` keeps workspace |
+| `/session` scratch | Per user + sandbox scope (not shown as the browser root) |
+| Memory / BYOK / plugins | Per registered web account |
+
+Normative design: [design/web-workspace.md](design/web-workspace.md).
 
 ```bash
 ariadne plugins
