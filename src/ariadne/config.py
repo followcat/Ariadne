@@ -71,6 +71,8 @@ class Settings:
     summary_mode: str = "grounded"
     # Web host /workspace binding (design/web-workspace.md): project | per_user
     web_workspace_mode: str = "project"
+    # Optional host-injected system block (e.g. Atelier KNOWLEDGE.md context)
+    extra_system_prompt: str = ""
 
     @property
     def resolved_data_dir(self) -> Path:

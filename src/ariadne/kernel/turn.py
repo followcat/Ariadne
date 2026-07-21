@@ -146,6 +146,8 @@ class TurnApplication:
     session_visible_tools: set[str] | None = None
     # In-process RuntimeAgent (policy + egress); bound to sandbox each turn.
     runtime_agent: Any | None = None
+    # Host-injected system block (Atelier KNOWLEDGE, etc.)
+    extra_system_prompt: str = ""
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -326,6 +328,9 @@ class TurnApplication:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_POLICY},
         ]
+        extra_sys = (self.extra_system_prompt or "").strip()
+        if extra_sys:
+            messages.append({"role": "system", "content": extra_sys})
         if memory_system:
             messages.append({"role": "system", "content": memory_system})
 

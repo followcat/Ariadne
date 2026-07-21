@@ -214,6 +214,7 @@ def compose_agent(settings: Settings) -> Agent:
         sandbox_prestart=settings.sandbox_prestart,
         vision_mode=settings.vision,
         runtime_agent=runtime,
+        extra_system_prompt=getattr(settings, "extra_system_prompt", "") or "",
     )
     return Agent(
         turn_app=turn_app,
