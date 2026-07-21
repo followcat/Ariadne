@@ -68,13 +68,16 @@ def make_approval_hook(
             ui.print_info(f"denied (readonly): {name} {_describe(name, args)}")
             return False
 
-        # Reuse durable approved grant for same fingerprint
+        # Reuse durable grant for same fingerprint (approved or executed, not expired)
         if grant_store is not None:
             grant_store.expire_due()
             existing = grant_store.find_usable(name, args or {})
             if existing is not None:
-                grant_store.mark_executed(str(existing["id"]))
-                ui.print_info(f"approved (grant {existing['id'][:8]}…): {name}")
+                # Keep status as approved/executed for TTL reuse across restarts;
+                # mark executed when first allowed so audit shows tool ran.
+                if existing.get("status") == "approved":
+                    grant_store.mark_executed(str(existing["id"]))
+                ui.print_info(f"approved (grant {str(existing['id'])[:8]}…): {name}")
                 return True
 
         ui.console.print(f"[yellow]approval requested[/] [bold]{name}[/] {_describe(name, args)}")
@@ -87,8 +90,9 @@ def make_approval_hook(
         if grant_store is not None and grant is not None:
             gid = str(grant["id"])
             if allowed:
+                # Leave status=approved until first invoke reuse path marks executed.
+                # find_usable accepts both approved and executed within TTL.
                 grant_store.approve(gid)
-                grant_store.mark_executed(gid)
             else:
                 grant_store.deny(gid)
         return allowed

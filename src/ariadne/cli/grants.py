@@ -138,7 +138,9 @@ class GrantStore:
         rows = self._read()
         n = 0
         for r in rows:
-            if r.get("status") in {"pending", "approved"} and float(r.get("expires_at") or 0) < ts:
+            if r.get("status") in {"pending", "approved", "executed"} and float(
+                r.get("expires_at") or 0
+            ) < ts:
                 r["status"] = "expired"
                 r["updated_at"] = ts
                 n += 1
@@ -153,14 +155,19 @@ class GrantStore:
         *,
         now: float | None = None,
     ) -> dict[str, Any] | None:
-        """Return an approved (or pending will be checked by caller) non-expired grant matching fingerprint."""
+        """Return a non-expired grant matching fingerprint that may run the tool.
+
+        Accepts ``approved`` (user said yes) and ``executed`` (already ran once):
+        both remain reusable until TTL or explicit deny — otherwise a restart
+        after the first successful on-request approval would re-prompt forever.
+        """
         self.expire_due(now=now)
         ts = time.time() if now is None else now
         fp = fingerprint(name, args or {})
         for r in self._read():
             if r.get("fingerprint") != fp:
                 continue
-            if r.get("status") != "approved":
+            if r.get("status") not in {"approved", "executed"}:
                 continue
             if float(r.get("expires_at") or 0) < ts:
                 continue

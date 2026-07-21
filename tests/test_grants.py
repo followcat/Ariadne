@@ -74,6 +74,48 @@ def test_on_request_hook_reuses_approved_grant(tmp_path: Path) -> None:
     assert store.get(g["id"])["status"] == "executed"
 
 
+def test_hook_approve_then_reload_reuses_without_reprompt(tmp_path: Path) -> None:
+    """Honest path: first allow via hook (confirm=True), new GrantStore, confirm=False.
+
+    Must still allow same fingerprint without re-prompt — proves approve is not
+    stuck in a non-reusable state after the first decision.
+    """
+    path = tmp_path / "grants.json"
+    args = {"cmd": "echo once"}
+    store1 = GrantStore(path=path)
+    asks1: list[str] = []
+
+    def confirm_yes(q: str) -> bool:
+        asks1.append(q)
+        return True
+
+    hook1 = make_approval_hook(
+        "on-request", confirm=confirm_yes, grant_store=store1, session_id="s"
+    )
+    assert hook1 is not None
+    assert hook1("sandbox_exec", args) is True
+    assert len(asks1) == 1
+    # After first allow, grant must be reusable (approved or executed, not only pending)
+    rows = store1.list()
+    assert len(rows) == 1
+    assert rows[0]["status"] in {"approved", "executed"}
+
+    # Simulate process restart: new store + confirm that would deny if asked
+    store2 = GrantStore(path=path)
+    asks2: list[str] = []
+
+    def confirm_no(q: str) -> bool:
+        asks2.append(q)
+        return False
+
+    hook2 = make_approval_hook(
+        "on-request", confirm=confirm_no, grant_store=store2, session_id="s"
+    )
+    assert hook2 is not None
+    assert hook2("sandbox_exec", args) is True, "must reuse durable grant after reload"
+    assert asks2 == [], "must not re-prompt after reload for same fingerprint"
+
+
 def test_on_request_hook_records_deny(tmp_path: Path) -> None:
     path = tmp_path / "grants.json"
     store = GrantStore(path=path)
@@ -91,14 +133,22 @@ def test_on_request_hook_records_deny(tmp_path: Path) -> None:
 
 
 def test_approved_grant_allows_tool_after_store_reload(tmp_path: Path) -> None:
-    """End-to-end: pre-approve on disk, new process-like store, tool runs without confirm."""
+    """End-to-end: first turn confirms via hook; second process-like store runs tool without prompt."""
     grants_path = tmp_path / "data" / "grants.json"
-    store = GrantStore(path=grants_path)
     args = {"cmd": "echo hi > f.txt"}
-    g = store.create_pending(name="sandbox_exec", args=args, session_id="s1")
-    store.approve(g["id"])
+    store1 = GrantStore(path=grants_path)
+    asks_first: list[str] = []
+    hook1 = make_approval_hook(
+        "on-request",
+        confirm=lambda q: asks_first.append(q) or True,
+        grant_store=store1,
+        session_id="s1",
+    )
+    assert hook1 is not None
+    assert hook1("sandbox_exec", args) is True
+    assert len(asks_first) == 1
 
-    # New store instance (simulates restart)
+    # New store instance (simulates restart) — would deny if re-prompted
     store2 = GrantStore(path=grants_path)
     asks: list[str] = []
     hook = make_approval_hook(
@@ -144,7 +194,9 @@ def test_approved_grant_allows_tool_after_store_reload(tmp_path: Path) -> None:
     assert result.tool_calls[0].status == "completed"
     assert (workspace / "f.txt").exists()
     assert asks == []
-    assert store2.get(g["id"])["status"] == "executed"
+    # Grant still reusable / recorded
+    rows = store2.list()
+    assert any(r.get("status") in {"approved", "executed"} for r in rows)
 
 
 def test_readonly_still_denies_without_grant() -> None:
