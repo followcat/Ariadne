@@ -47,6 +47,30 @@ def validate_slug(name: str) -> str:
     return slug
 
 
+def slug_from_name(name: str) -> str:
+    """Derive a filesystem-safe id from a human display name.
+
+    - ASCII slug names (``my-app``) are kept as-is (lowercased).
+    - Chinese / mixed titles (``画画``, ``我的项目``) get a stable
+      ``atelier-<hash8>`` id; the original string remains the display name.
+    """
+    import hashlib
+
+    raw = (name or "").strip()
+    if not raw:
+        raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "atelier name is required"))
+    lower = raw.lower()
+    if SLUG_RE.match(lower):
+        return lower
+    # Keep only slug-safe chars; collapse runs of junk.
+    cleaned = re.sub(r"[^a-z0-9._-]+", "-", lower)
+    cleaned = re.sub(r"[-._]{2,}", "-", cleaned).strip(".-_")
+    if cleaned and SLUG_RE.match(cleaned):
+        return cleaned[:64]
+    h = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return f"atelier-{h}"
+
+
 @dataclass
 class ProjectConfig:
     sandbox_profile: str = "minimal"

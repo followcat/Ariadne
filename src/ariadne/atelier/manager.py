@@ -13,10 +13,6 @@ from .knowledge import (
     knowledge_template,
     read_knowledge,
     write_knowledge,
-    apply_updates,
-    extract_knowledge_heuristic,
-    KnowledgeUpdate,
-    KnowledgeUpdateItem,
 )
 from .models import (
     Project,
@@ -66,11 +62,33 @@ class AtelierManager:
         self,
         name: str,
         *,
+        project_id: str | None = None,
         from_path: Path | None = None,
         no_scan: bool = False,
         config: ProjectConfig | None = None,
     ) -> Project:
-        slug = validate_slug(name)
+        from .models import slug_from_name
+
+        display = (name or "").strip()
+        if not display:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "atelier name is required"))
+        # Explicit id must be a valid slug; otherwise derive from display name
+        # (Chinese / free-form titles → atelier-<hash> while keeping display name).
+        if project_id:
+            slug = validate_slug(project_id)
+        else:
+            slug = slug_from_name(display)
+            # Collision: append short counter while staying within slug rules
+            base = slug
+            n = 2
+            while self._project_dir(slug).exists() and n < 100:
+                suffix = f"-{n}"
+                slug = (base[: max(1, 64 - len(suffix))] + suffix).lower()
+                n += 1
+            if self._project_dir(slug).exists():
+                raise AriadneError(
+                    app_error("ARIADNE_CONFIG_INVALID", f"atelier already exists: {base}")
+                )
         dest = self._project_dir(slug)
         if dest.exists():
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", f"atelier already exists: {slug}"))
@@ -89,7 +107,7 @@ class AtelierManager:
 
         project = Project(
             id=slug,
-            name=name.strip() or slug,
+            name=display,
             path=dest,
             workspace_path=workspace,
             config=config or ProjectConfig(),
@@ -193,6 +211,10 @@ class AtelierManager:
         return meta
 
     def merge_branch(self, project_id: str, branch_name: str) -> str:
+        """Mark branch merged; append a short merge note to KNOWLEDGE for the user to edit.
+
+        No automatic decision extract — user owns the brief (AGENTS.md model).
+        """
         project = self.get_project(project_id)
         slug = validate_slug(branch_name)
         sid = f"branch-{slug}"
@@ -205,32 +227,10 @@ class AtelierManager:
             )
         transcript = read_transcript(project, sid)
         summary = generate_branch_summary(transcript, branch_name=slug)
-        # knowledge: add summary lines as 关键决策 / 经验教训
-        update = KnowledgeUpdate(
-            has_update=True,
-            updates=[
-                KnowledgeUpdateItem(
-                    section="经验教训",
-                    type="add",
-                    new_text=f"分支 `{slug}` 合并: " + summary.splitlines()[1][:160]
-                    if len(summary.splitlines()) > 1
-                    else f"分支 `{slug}` 已合并",
-                    evidence=f"merge:{sid}",
-                )
-            ],
-        )
-        # also pull heuristic signals from branch dialogue
-        heur = extract_knowledge_heuristic(transcript)
-        if heur.has_update:
-            update.updates.extend(heur.updates)
-            update.has_update = True
         current = read_knowledge(project)
-        new_content = apply_updates(current, update)
-        # append summary section
-        new_content = new_content.rstrip() + "\n\n" + summary
+        new_content = current.rstrip() + "\n\n" + summary
         write_knowledge(project, new_content, session_id=sid)
 
-        # notify main
         append_transcript(
             project,
             "main",

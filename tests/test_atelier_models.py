@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from ariadne.atelier.models import (
+    slug_from_name,
     Project,
     ProjectConfig,
     SessionMeta,
@@ -21,6 +22,18 @@ def test_validate_slug() -> None:
     assert validate_slug("My-App") == "my-app"
     with pytest.raises(AriadneError):
         validate_slug("Bad Name!")
+
+
+def test_slug_from_name_chinese_and_ascii() -> None:
+    assert slug_from_name("my-app") == "my-app"
+    assert slug_from_name("My_App") == "my_app"
+    s = slug_from_name("画画")
+    assert s.startswith("atelier-")
+    assert len(s) == len("atelier-") + 8
+    # stable for same display name
+    assert slug_from_name("画画") == s
+    # mixed: ascii parts kept when enough remains
+    assert slug_from_name("draw-画画").startswith("draw")
 
 
 def test_project_roundtrip(tmp_path: Path) -> None:

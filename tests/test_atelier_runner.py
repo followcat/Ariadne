@@ -10,24 +10,32 @@ def test_system_prompt_includes_knowledge_and_branch(tmp_path: Path) -> None:
     proj = mgr.create_project("r1", no_scan=True)
     main = mgr.get_or_create_main_session("r1")
     prompt = build_system_prompt(proj, main)
-    assert "KNOWLEDGE" in prompt or "项目知识" in prompt
+    assert "KNOWLEDGE" in prompt or "项目说明" in prompt
     assert proj.name in prompt
     br = mgr.create_branch("r1", "exp")
     bprompt = build_system_prompt(proj, br)
     assert "分支" in bprompt or "branch" in bprompt.lower()
 
 
-def test_maybe_update_knowledge_main_only(tmp_path: Path) -> None:
+def test_auto_extract_off_by_default(tmp_path: Path) -> None:
     mgr = AtelierManager(root=tmp_path / "a")
     proj = mgr.create_project("r2", no_scan=True)
     main = mgr.get_or_create_main_session("r2")
     br = mgr.create_branch("r2", "b1")
+    # default: never rewrite KNOWLEDGE from dialogue
     assert not maybe_update_knowledge_after_turn(
         proj, br, user_text="我们决定使用 X", assistant_text="ok"
     )
-    # main may update when signals present
-    _ = maybe_update_knowledge_after_turn(
+    assert not maybe_update_knowledge_after_turn(
         proj, main, user_text="我们决定使用 X 方案", assistant_text="记录了"
+    )
+    # opt-in path still works for tests / power users
+    assert maybe_update_knowledge_after_turn(
+        proj,
+        main,
+        user_text="我们决定使用 X 方案",
+        assistant_text="记录了",
+        enabled=True,
     )
 
 

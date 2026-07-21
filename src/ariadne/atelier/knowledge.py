@@ -1,34 +1,51 @@
-"""KNOWLEDGE.md maintenance: template, heuristic refresh, history, optional LLM."""
+"""KNOWLEDGE.md — user-owned project brief (Codex AGENTS.md style).
+
+Design intent (see docs/design/atelier.md):
+- **Primary value:** cross-session project continuity via always-injected markdown.
+- **Authoring:** user-led. Automatic extract is optional/legacy, not the default path.
+- **Not a second Memory:** turn-level recall stays in Memory L0–L4; this file is a
+  short, durable project card.
+"""
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
 from .models import Project
 
-KNOWLEDGE_TEMPLATE = """# {name} 项目知识
+# Keep template short — token cost is paid on every turn inject.
+KNOWLEDGE_TEMPLATE = """# {name}
 
-## 技术栈
-- [待确认]
+> 项目说明（用户维护，类似 Codex `AGENTS.md`）。
+> 写稳定决策与约定即可；细节对话靠 session history / Memory。
 
-## 关键决策
-- （初始为空）
+## 决策与约定
+- （在此记录：认证方案、代码风格、重要坑点…）
 
-## 约定
-- （初始为空）
-
-## 经验教训
-- （初始为空）
-
-## 进行中的工作
-- （初始为空）
+## 备注
+- 
 """
+
+# Legacy section names still accepted by apply_updates helpers.
+SECTION_NAMES = (
+    "决策与约定",
+    "备注",
+    "技术栈",
+    "关键决策",
+    "约定",
+    "经验教训",
+    "进行中的工作",
+)
+
+# Soft cap for system inject (chars). Full file remains on disk for editing.
+INJECT_CHAR_LIMIT = 4000
 
 
 @dataclass
@@ -54,6 +71,14 @@ def read_knowledge(project: Project) -> str:
     if project.knowledge_path.is_file():
         return project.knowledge_path.read_text(encoding="utf-8")
     return knowledge_template(project.name)
+
+
+def knowledge_for_inject(project: Project, *, limit: int = INJECT_CHAR_LIMIT) -> str:
+    """Text injected into system prompt (truncated, not full archive)."""
+    text = read_knowledge(project).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 40].rstrip() + "\n\n…(截断；请精简 KNOWLEDGE.md)"
 
 
 def write_knowledge(project: Project, content: str, *, session_id: str = "system") -> None:
@@ -93,14 +118,13 @@ def _scan_tree(root: Path, *, max_entries: int = 80) -> list[str]:
 
 
 def heuristic_refresh(project: Project) -> str:
-    """Fill 技术栈 from file tree / README without LLM."""
+    """One-shot scaffold from file tree / README (create / explicit refresh only)."""
     files = _scan_tree(project.workspace_path)
     stack: list[str] = []
-    joined = " ".join(files).lower()
     if any(f.endswith(".py") for f in files):
         stack.append("Python")
     if "pyproject.toml" in files or "requirements.txt" in files:
-        stack.append("Python packaging (pyproject/requirements)")
+        stack.append("Python packaging")
     if any(f.endswith((".ts", ".tsx", ".js", ".jsx")) for f in files):
         stack.append("JavaScript/TypeScript")
     if "package.json" in files:
@@ -110,73 +134,122 @@ def heuristic_refresh(project: Project) -> str:
     if "Cargo.toml" in files:
         stack.append("Rust")
     if not stack:
-        stack.append("[待确认] 未能从文件树推断技术栈")
+        stack.append("（未能从文件树推断，请手写）")
 
-    decisions = ["- （初始为空）"]
-    readme = None
+    note = ""
     for cand in ("README.md", "README.zh-CN.md", "readme.md"):
         p = project.workspace_path / cand
         if p.is_file():
-            readme = p.read_text(encoding="utf-8", errors="replace")[:2000]
+            first = next(
+                (ln for ln in p.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()),
+                "",
+            )
+            note = first[:120]
             break
-    if readme:
-        decisions = [f"- 见 README 摘要: {readme.splitlines()[0][:120]}"]
 
-    body = f"""# {project.name} 项目知识
+    body = f"""# {project.name}
 
-## 技术栈
-{chr(10).join('- ' + s for s in stack)}
+> 项目说明（用户维护，类似 Codex `AGENTS.md`）。
+> 以下由文件树启发式生成，请按需改写。
 
-## 关键决策
-{chr(10).join(decisions)}
+## 决策与约定
+- 技术栈: {', '.join(stack)}
+{f'- README: {note}' if note else '- （补充稳定决策与约定）'}
 
-## 约定
-- （初始为空）
-
-## 经验教训
-- （初始为空）
-
-## 进行中的工作
-- （初始为空）
-
-<!-- generated_by: heuristic refresh {time.strftime('%Y-%m-%d')} -->
+## 备注
+- 生成于 {time.strftime('%Y-%m-%d')} · 文件约 {len(files)} 个
 """
-    if files:
-        body += "\n## 文件树摘录\n" + "\n".join(f"- `{f}`" for f in files[:40]) + "\n"
     return body
 
 
+def _section_bounds(text: str, section: str) -> tuple[int, int, int] | None:
+    pattern = re.compile(rf"(?m)^##\s+{re.escape(section)}\s*$")
+    m = pattern.search(text)
+    if not m:
+        return None
+    body_start = m.end()
+    nxt = re.search(r"(?m)^##\s+", text[body_start:])
+    body_end = body_start + nxt.start() if nxt else len(text)
+    return m.end(), body_start, body_end
+
+
+def _ensure_bullet(line: str) -> str:
+    s = line.strip()
+    if not s:
+        return s
+    if not s.startswith("-"):
+        return "- " + s
+    return s
+
+
 def apply_updates(content: str, update: KnowledgeUpdate) -> str:
-    """Apply section line adds (P0: add-only under matching ## heading)."""
+    """Programmatic section ops (API / tests). UI prefers full-file edit."""
     if not update.has_update or not update.updates:
         return content
     text = content
     for item in update.updates:
-        if item.type != "add" or not item.new_text.strip():
+        op = (item.type or "add").strip().lower()
+        section = (item.section or "决策与约定").strip()
+
+        bounds = _section_bounds(text, section)
+        if op == "add":
+            line = _ensure_bullet(item.new_text)
+            if not line:
+                continue
+            if bounds is None:
+                text = text.rstrip() + f"\n\n## {section}\n{line}\n"
+                continue
+            _, body_start, _ = bounds
+            text = text[:body_start] + "\n" + line + text[body_start:]
             continue
-        section = item.section.strip()
-        heading = f"## {section}"
-        # find heading
-        pattern = re.compile(rf"(?m)^##\s+{re.escape(section)}\s*$")
-        m = pattern.search(text)
-        line = item.new_text.strip()
-        if not line.startswith("-"):
-            line = "- " + line
-        if not m:
-            text = text.rstrip() + f"\n\n## {section}\n{line}\n"
+
+        if bounds is None:
             continue
-        # insert after heading line
-        insert_at = m.end()
-        text = text[:insert_at] + "\n" + line + text[insert_at:]
+        _, body_start, body_end = bounds
+        body = text[body_start:body_end]
+        lines = body.splitlines(keepends=True)
+
+        if op == "remove":
+            target = (item.old_text or item.new_text or "").strip().lstrip("-* ").strip()
+            if not target:
+                continue
+            new_lines = [ln for ln in lines if target.lower() not in ln.lower()]
+            text = text[:body_start] + "".join(new_lines) + text[body_end:]
+            continue
+
+        if op == "modify":
+            old = (item.old_text or "").strip().lstrip("-* ").strip()
+            new = _ensure_bullet(item.new_text)
+            if not old or not new:
+                continue
+            replaced = False
+            new_lines = []
+            for ln in lines:
+                if not replaced and old.lower() in ln.lower():
+                    nl = "\n" if ln.endswith("\n") else ""
+                    new_lines.append(new + nl)
+                    replaced = True
+                else:
+                    new_lines.append(ln)
+            if not replaced:
+                new_lines.insert(0, new + ("\n" if new_lines else "\n"))
+            text = text[:body_start] + "".join(new_lines) + text[body_end:]
+            continue
+
     return text
 
 
+# ── Optional / legacy extract (not used on the default turn path) ───────────
+
+
 def extract_knowledge_heuristic(conversation: list[dict[str, Any]]) -> KnowledgeUpdate:
-    """Keyword-based extraction without LLM (conservative)."""
+    """Keyword extract — kept for opt-in / tests; default host path does not call this."""
     updates: list[KnowledgeUpdateItem] = []
     signal = re.compile(
-        r"(?i)(我们决定|决定使用|采用|约定|prefer|we (decided|will use)|always use|记住)"
+        r"(?i)(我们决定|决定使用|采用|约定|prefer|we (decided|will use)|always use|记住|"
+        r"不要再|不再使用|改为|改用|改成)"
     )
+    remove_sig = re.compile(r"(?i)(废弃|删除约定|不再使用|取消|remove decision)")
     for row in conversation:
         if row.get("role") not in {"user", "assistant"}:
             continue
@@ -185,16 +258,68 @@ def extract_knowledge_heuristic(conversation: list[dict[str, Any]]) -> Knowledge
             clean = line.strip()
             if len(clean) < 10 or len(clean) > 200:
                 continue
-            if signal.search(clean):
+            if remove_sig.search(clean) and signal.search(clean):
                 updates.append(
                     KnowledgeUpdateItem(
-                        section="关键决策",
+                        section="决策与约定",
+                        type="remove",
+                        old_text=clean.lstrip("-* "),
+                        evidence=clean[:120],
+                    )
+                )
+            elif signal.search(clean):
+                updates.append(
+                    KnowledgeUpdateItem(
+                        section="决策与约定",
                         type="add",
                         new_text=clean.lstrip("-* "),
                         evidence=clean[:120],
                     )
                 )
-    return KnowledgeUpdate(has_update=bool(updates), updates=updates[:5])
+    return KnowledgeUpdate(has_update=bool(updates), updates=updates[:8])
+
+
+def _parse_llm_json(raw: str) -> KnowledgeUpdate:
+    text = (raw or "").strip()
+    if not text or text.upper() == "NONE":
+        return KnowledgeUpdate(has_update=False)
+    if "```" in text:
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        if m:
+            text = m.group(1).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        lines = [ln.strip().lstrip("- ") for ln in text.splitlines() if ln.strip()]
+        if not lines or lines[0].upper() == "NONE":
+            return KnowledgeUpdate(has_update=False)
+        return KnowledgeUpdate(
+            has_update=True,
+            updates=[
+                KnowledgeUpdateItem(section="决策与约定", type="add", new_text=ln)
+                for ln in lines[:5]
+            ],
+        )
+    if not isinstance(data, dict) or not data.get("has_update"):
+        return KnowledgeUpdate(has_update=False)
+    updates: list[KnowledgeUpdateItem] = []
+    for u in data.get("updates") or []:
+        if not isinstance(u, dict):
+            continue
+        op = str(u.get("type") or "add").lower()
+        if op not in {"add", "modify", "remove"}:
+            op = "add"
+        section = str(u.get("section") or "决策与约定").strip()
+        updates.append(
+            KnowledgeUpdateItem(
+                section=section,
+                type=op,
+                old_text=str(u.get("old_text") or ""),
+                new_text=str(u.get("new_text") or ""),
+                evidence=str(u.get("evidence") or "")[:200],
+            )
+        )
+    return KnowledgeUpdate(has_update=bool(updates), updates=updates[:8])
 
 
 async def extract_knowledge_llm(
@@ -203,43 +328,74 @@ async def extract_knowledge_llm(
     *,
     complete: Callable[[str], Awaitable[str]] | None = None,
 ) -> KnowledgeUpdate:
-    """Optional LLM path; falls back to heuristic if complete is None."""
+    """Opt-in LLM extract. Not wired into default turn / merge paths."""
     if complete is None:
         return extract_knowledge_heuristic(conversation)
-    # Minimal structured request — implementation may improve later
-    prompt = (
-        "Extract project knowledge updates as lines for section 关键决策 only. "
-        "If none, reply NONE.\n\nKnowledge:\n"
-        + current_knowledge[:3000]
-        + "\n\nDialogue:\n"
-        + "\n".join(f"{r.get('role')}: {r.get('content')}" for r in conversation[-6:])
+    dialogue = "\n".join(
+        f"{r.get('role')}: {r.get('content')}" for r in conversation[-8:]
     )
+    prompt = f"""分析对话，提取对项目说明（KNOWLEDGE.md）的更新。只输出 JSON。
+
+当前文件:
+{current_knowledge[:4000]}
+
+最近对话:
+{dialogue}
+
+JSON:
+{{"has_update": true/false, "updates": [
+  {{"section": "决策与约定|备注", "type": "add|modify|remove",
+    "old_text": "", "new_text": "", "evidence": ""}}
+]}}
+仅提取明确决策/约定；无则 has_update=false。
+"""
     try:
         raw = await complete(prompt)
     except Exception:
         return extract_knowledge_heuristic(conversation)
-    if not raw or raw.strip().upper() == "NONE":
-        return KnowledgeUpdate(has_update=False)
-    updates = [
-        KnowledgeUpdateItem(section="关键决策", type="add", new_text=line.strip().lstrip("- "))
-        for line in raw.splitlines()
-        if line.strip() and line.strip().upper() != "NONE"
-    ][:5]
-    return KnowledgeUpdate(has_update=bool(updates), updates=updates)
+    return _parse_llm_json(raw)
+
+
+def make_llm_complete(settings: Any) -> Callable[[str], Awaitable[str]] | None:
+    base = getattr(settings, "base_url", "") or ""
+    key = getattr(settings, "api_key", "") or ""
+    model = getattr(settings, "model", "") or ""
+    if not base or not key:
+        return None
+
+    async def complete(prompt: str) -> str:
+        from ..model.openai_chat import OpenAIChatModel
+
+        m = OpenAIChatModel(base_url=base, api_key=key, model=model)
+        exchange = await m.complete(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You extract structured project notes. Reply with JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            tools=None,
+            tool_choice=None,
+            temperature=0.1,
+            max_tokens=1024,
+        )
+        return str(exchange.message.content or "")
+
+    return complete
 
 
 def generate_branch_summary(transcript: list[dict[str, Any]], *, branch_name: str) -> str:
-    """Heuristic branch summary (no LLM required)."""
+    """Short human-readable merge note (appended only when user merges)."""
     users = [str(r.get("content") or "")[:200] for r in transcript if r.get("role") == "user"]
     asst = [str(r.get("content") or "")[:200] for r in transcript if r.get("role") == "assistant"]
     lines = [
-        f"## 工作摘要（分支 `{branch_name}`）",
-        f"- 用户轮次: {len(users)}",
-        f"- 助手轮次: {len(asst)}",
+        f"## 分支合并：`{branch_name}`",
+        f"- 用户轮次: {len(users)} · 助手轮次: {len(asst)}",
     ]
     if users:
-        lines.append(f"- 首条用户意图: {users[0][:160]}")
+        lines.append(f"- 首条意图: {users[0][:160]}")
     if asst:
-        lines.append(f"- 末条助手摘要: {asst[-1][:160]}")
-    lines.append("- 结论: [待主会话确认]")
+        lines.append(f"- 末条摘要: {asst[-1][:160]}")
+    lines.append("- （请手工整理进「决策与约定」后可删本段）")
     return "\n".join(lines) + "\n"

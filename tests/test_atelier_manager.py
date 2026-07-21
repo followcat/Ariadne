@@ -29,6 +29,16 @@ def test_create_list_and_shared_workspace(tmp_path: Path) -> None:
     assert mgr.list_projects()
 
 
+def test_create_chinese_display_name(tmp_path: Path) -> None:
+    mgr = AtelierManager(root=tmp_path / "ateliers")
+    proj = mgr.create_project("画画", no_scan=True)
+    assert proj.name == "画画"
+    assert proj.id.startswith("atelier-")
+    # re-list shows display name
+    listed = mgr.list_projects()
+    assert any(p.name == "画画" and p.id == proj.id for p in listed)
+
+
 def test_branch_merge_updates_knowledge_discard_does_not(tmp_path: Path) -> None:
     mgr = AtelierManager(root=tmp_path / "ateliers")
     proj = mgr.create_project("p1", no_scan=True)
@@ -45,9 +55,11 @@ def test_branch_merge_updates_knowledge_discard_does_not(tmp_path: Path) -> None
         {"role": "assistant", "content": "好的，采用 JWT"},
     )
     summary = mgr.merge_branch("p1", "jwt")
-    assert "摘要" in summary or "jwt" in summary.lower()
+    assert "jwt" in summary.lower() or "分支" in summary
     after = read_knowledge(proj)
-    assert after != before or "jwt" in after.lower() or "经验" in after
+    # merge appends a short note block only (user trims into 决策与约定)
+    assert after != before
+    assert "jwt" in after.lower() or "分支合并" in after
     meta = mgr.get_session("p1", "branch-jwt")
     assert meta.status == SessionStatus.MERGED
     # main notified
