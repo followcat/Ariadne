@@ -31,6 +31,8 @@ _KNOWN_COMMANDS = frozenset(
         "plugin",
         "serve",
         "toolbox",
+        "memory-worker",
+        "atelier",
         "version",
         "help",
     }
