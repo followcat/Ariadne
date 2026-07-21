@@ -7,6 +7,7 @@ import ThinkingBlock from './components/ThinkingBlock.vue'
 import ToolsPanel, { type ToolEntry } from './components/ToolsPanel.vue'
 import WorkspaceBrowser from './components/WorkspaceBrowser.vue'
 import { api, parseSseBuffer, type Me, type SessionRow, type StreamEvent } from './api/client'
+import { setHostWorkspaceRoot } from './lib/markdown'
 
 type LeftTab = 'sessions' | 'workspace'
 
@@ -101,6 +102,8 @@ async function bootstrap() {
     const r = await api('/api/me', token.value)
     me.value = await r.json()
     username.value = me.value?.username || ''
+    // So chat can rewrite host absolute paths like /home/…/plot.png → workspace images
+    setHostWorkspaceRoot(me.value?.workspace || '')
     if (!sessionId.value) {
       const sr = await api('/api/sessions', token.value, { method: 'POST' })
       if (sr.ok) {

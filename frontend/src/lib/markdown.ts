@@ -100,15 +100,44 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   return defaultLinkOpen(tokens, idx, options, env, self)
 }
 
-/** Map a sandbox path to the authenticated file API URL. */
+/**
+ * Optional host absolute workspace root from /api/me (e.g. /home/…/project).
+ * When set, host paths under this root are rewritten to /workspace/… virtual paths.
+ */
+let hostWorkspaceRoot = ''
+
+export function setHostWorkspaceRoot(root: string | null | undefined) {
+  const r = String(root || '').trim().replace(/\/+$/, '')
+  hostWorkspaceRoot = r
+}
+
+export function getHostWorkspaceRoot(): string {
+  return hostWorkspaceRoot
+}
+
+/** Map sandbox / host / relative image paths to the authenticated file API URL. */
 export function workspaceFileUrl(rawPath: string): string {
   let p = String(rawPath || '').trim()
   if (!p) return ''
+  if (p.startsWith('/api/workspace/file?')) return p
   // strip optional file:// prefix models sometimes emit
   p = p.replace(/^file:\/\//i, '')
+  // Host absolute under known workspace → virtual /workspace/…
+  if (hostWorkspaceRoot) {
+    const root = hostWorkspaceRoot
+    if (p === root) p = '/workspace'
+    else if (p.startsWith(root + '/')) {
+      p = '/workspace/' + p.slice(root.length + 1)
+    }
+  }
   if (p.startsWith('workspace/')) p = '/' + p
-  if (!p.startsWith('/')) p = '/' + p
-  if (!/^\/workspace\//i.test(p)) return ''
+  if (!p.startsWith('/')) p = '/workspace/' + p
+  // Accept /workspace/… or remaining host absolute (API confines to workspace)
+  if (!/^\/workspace\//i.test(p) && p !== '/workspace' && !p.startsWith('/')) {
+    return ''
+  }
+  // Host absolute paths (no virtual prefix) are allowed; server rejects escapes.
+  if (!/^\/workspace(\/|$)/i.test(p) && !p.startsWith('/')) return ''
   return '/api/workspace/file?path=' + encodeURIComponent(p)
 }
 
@@ -125,6 +154,18 @@ export function rewriteWorkspaceSrc(src: string): string {
   if (/^\/?workspace\//i.test(stripped)) {
     const p = stripped.startsWith('/') ? stripped : '/' + stripped
     return workspaceFileUrl(p) || s
+  }
+  // Host absolute under known workspace root
+  if (hostWorkspaceRoot && stripped.startsWith(hostWorkspaceRoot)) {
+    return workspaceFileUrl(stripped) || s
+  }
+  // Any absolute path ending in an image ext — let the API gate confinement
+  if (
+    stripped.startsWith('/') &&
+    !stripped.startsWith('/api/') &&
+    new RegExp(String.raw`\.(?:` + IMG_EXT + ')$', 'i').test(stripped)
+  ) {
+    return workspaceFileUrl(stripped) || s
   }
   // Relative workspace image: plot.png or ./charts/a.png
   if (/^(?:\.\/)?[\w.-]+(?:\/[\w.-]+)*\.(?:png|jpe?g|gif|webp|svg)$/i.test(stripped)) {
@@ -209,8 +250,7 @@ export function rewriteWorkspaceImages(src: string): string {
         } else if (p.startsWith('workspace/')) {
           p = '/' + p
         } else if (p.startsWith('/')) {
-          // absolute non-workspace path — do not force
-          return _m
+          // host absolute (e.g. /home/…/plot.png) — API confines to workspace
         } else {
           p = '/workspace/' + p
         }
@@ -220,13 +260,15 @@ export function rewriteWorkspaceImages(src: string): string {
       },
     )
 
-    // 2) Single-path backticks → image (before bare, so we don't leave stray `)
+    // 2) Single-path backticks → image (sandbox or host absolute)
     s = s.replace(
       new RegExp(
         '`' +
-          String.raw`(\/?workspace\/[^` +
+          String.raw`((?:\/?workspace\/|\/(?!api\/)[^\s` +
           '`' +
-          String.raw`\s]+\.(?:` +
+          String.raw`]*)[^\s` +
+          '`' +
+          String.raw`]+\.(?:` +
           IMG_EXT +
           '))' +
           '`',
@@ -272,6 +314,24 @@ export function rewriteWorkspaceImages(src: string): string {
         if (prefix === '/' || prefix.endsWith('](') || prefix.endsWith('(')) {
           return full
         }
+        const url = workspaceFileUrl(path)
+        if (!url) return full
+        return `${prefix}\n\n![走势图](${url})\n\n`
+      },
+    )
+
+    // 5) Host absolute image paths models print as real FS paths
+    //    e.g. /home/followcat/Projects/Ariadne/a_share_5days_trend.png
+    //    Skip /workspace/… (step 3) and /api/… (false positive).
+    s = s.replace(
+      new RegExp(
+        String.raw`(^|[^a-zA-Z0-9_])(\/(?!api\/|workspace\/)[^\s)\]"'<>。，、；：！？]+\.(?:` +
+          IMG_EXT +
+          '))',
+        'gi',
+      ),
+      (full, prefix: string, path: string) => {
+        if (prefix.endsWith('](') || prefix.endsWith('(')) return full
         const url = workspaceFileUrl(path)
         if (!url) return full
         return `${prefix}\n\n![走势图](${url})\n\n`

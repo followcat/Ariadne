@@ -11,6 +11,8 @@ export type Me = {
   provider_configured: boolean
   model?: string
   base_url?: string
+  /** Host absolute workspace root (models often print real FS paths). */
+  workspace?: string
 }
 
 function authHeaders(token: string): HeadersInit {

@@ -285,6 +285,26 @@ def test_workspace_browse_api(tmp_path: Path) -> None:
             assert r.status_code == 200
             assert r.content[:4] == b"\x89PNG"
             assert "image/png" in r.headers.get("content-type", "")
+            # host absolute path under workspace (models often print real FS paths)
+            host_png = str((ws / "plot.png").resolve())
+            r = await client.get(
+                "/api/workspace/file",
+                params={"path": host_png},
+                headers=headers,
+            )
+            assert r.status_code == 200, r.text
+            assert r.content[:4] == b"\x89PNG"
+            # host absolute outside workspace rejected
+            r = await client.get(
+                "/api/workspace/file",
+                params={"path": "/etc/passwd"},
+                headers=headers,
+            )
+            assert r.status_code in {400, 404}
+            # /api/me exposes workspace root for UI path rewrite
+            r = await client.get("/api/me", headers=headers)
+            assert r.status_code == 200
+            assert r.json().get("workspace") == str(ws.resolve())
 
     asyncio.run(run())
 

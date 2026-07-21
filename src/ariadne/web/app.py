@@ -109,6 +109,8 @@ def create_app(settings: Settings) -> FastAPI:
             "provider_configured": bool(provider),
             "base_url": provider.get("base_url", ""),
             "model": provider.get("model", ""),
+            # Host absolute workspace root — models often print real paths; UI maps them.
+            "workspace": str(_workspace_root()),
         }
 
     def _workspace_root() -> Path:
@@ -117,7 +119,7 @@ def create_app(settings: Settings) -> FastAPI:
         return root
 
     def _resolve_workspace_path(raw_path: str, *, must_exist: bool = True) -> Path:
-        """Map /workspace/... (or relative) into settings.workspace; never escape."""
+        """Map /workspace/... , relative, or host-absolute-under-root into settings.workspace."""
         root = _workspace_root()
         raw = (raw_path or "").strip() or "/workspace"
         if raw in {"/workspace", "workspace", ".", ""}:
@@ -130,14 +132,23 @@ def create_app(settings: Settings) -> FastAPI:
             rel = raw[len("workspace/") :]
             target = (root / rel).resolve()
         elif raw.startswith("/"):
-            raise HTTPException(
-                status_code=400,
-                detail="path must be under /workspace (sandbox root)",
-            )
+            # Host absolute path (e.g. /home/…/project/plot.png). Models often print
+            # real FS paths; allow only when resolved path stays under workspace root.
+            try:
+                candidate = Path(raw).expanduser().resolve()
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"invalid path: {exc}") from exc
+            if candidate != root and root not in candidate.parents:
+                raise HTTPException(
+                    status_code=400,
+                    detail="path must be under /workspace (sandbox root)",
+                )
+            target = candidate
+            rel = "" if candidate == root else candidate.relative_to(root).as_posix()
         else:
             rel = raw
             target = (root / rel).resolve()
-        if ".." in Path(rel).parts if rel else ():
+        if rel and ".." in Path(rel).parts:
             raise HTTPException(status_code=400, detail="path escapes workspace")
         if root not in target.parents and target != root:
             raise HTTPException(status_code=400, detail="path escapes workspace")
