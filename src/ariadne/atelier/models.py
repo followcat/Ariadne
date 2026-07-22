@@ -78,7 +78,8 @@ class ProjectConfig:
     network_mode: str = "none"
     skills_dirs: list[str] = field(default_factory=list)
     env_inject: dict[str, str] = field(default_factory=dict)
-    max_tool_loop: int = 32
+    # Keep short so hobbyist turns don't spin forever on fix/verify loops.
+    max_tool_loop: int = 14
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -508,10 +508,7 @@ function handleEvent(ev: StreamEvent, asstId: string) {
       error: data.error as ToolEntry['error'],
     })
   } else if (ev.kind === 'turn_completed' || ev.kind === 'turn_failed') {
-    if (ev.error?.message) {
-      m.content = '**' + (ev.error.code || 'ERROR') + '**\n\n' + ev.error.message
-      pushTurnInfo({ status: 'failed' })
-    } else if (ev.result && typeof ev.result === 'object') {
+    if (ev.result && typeof ev.result === 'object') {
       const res = ev.result as {
         text?: string
         status?: string
@@ -526,7 +523,13 @@ function handleEvent(ev: StreamEvent, asstId: string) {
         model?: string
         turn_id?: string
       }
-      if (!m.content && res.text) m.content = res.text
+      // Prefer model/host text (includes friendly loop-limit wrap-up).
+      if (res.text) {
+        if (!m.content) m.content = res.text
+        else if (ev.kind === 'turn_failed' && !m.content.includes(res.text.slice(0, 40))) {
+          m.content = (m.content ? m.content + '\n\n' : '') + res.text
+        }
+      }
       if (res.status && res.status !== 'completed') {
         upsertTool({
           call_id: 'turn-' + Date.now(),
@@ -536,6 +539,11 @@ function handleEvent(ev: StreamEvent, asstId: string) {
         })
       }
       pushTurnInfo(res)
+    } else if (ev.error?.message) {
+      m.content =
+        m.content ||
+        '**' + (ev.error.code || 'ERROR') + '**\n\n' + ev.error.message
+      pushTurnInfo({ status: 'failed' })
     } else {
       pushTurnInfo({ status: ev.kind === 'turn_failed' ? 'failed' : 'completed' })
     }

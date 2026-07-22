@@ -57,10 +57,37 @@ async def sandbox_write_file(args: dict[str, Any], ctx: ToolContext) -> dict[str
     if not path:
         raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "path is required"))
     content = str(args.get("content") or "")
+    # Soft guard: huge one-shot rewrites often get model-truncated mid-file and thrash.
+    max_chars = 24_000
+    warning = ""
+    if len(content) > max_chars:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_INVALID_TOOL_ARGS",
+                f"content too large ({len(content)} chars; max {max_chars}). "
+                "Write a smaller file, or use sandbox_edit_file for patches. "
+                "Do not paste a whole minified multi-KB script in one call.",
+                path=path,
+                size=len(content),
+            )
+        )
+    if len(content) > 12_000:
+        warning = (
+            f"large write ({len(content)} chars): prefer smaller chunks next time "
+            "to avoid truncation/thrash"
+        )
     old = await _read_text(sandbox, path)
     await sandbox.write_file(path, content.encode("utf-8"))
     diff = _unified_diff(path, old, content)
-    return {"path": path, "bytes": len(content.encode("utf-8")), "diff": diff, "created": not bool(old)}
+    out: dict[str, Any] = {
+        "path": path,
+        "bytes": len(content.encode("utf-8")),
+        "diff": diff,
+        "created": not bool(old),
+    }
+    if warning:
+        out["warning"] = warning
+    return out
 
 
 async def sandbox_edit_file(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:

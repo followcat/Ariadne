@@ -512,9 +512,57 @@ class TurnApplication:
             runtime_agent=self.runtime_agent,
         )
 
+        # Inspect-only thrash: many reads without writes → nudge then force wrap-up.
+        _inspect_tools = {
+            "sandbox_read_file",
+            "sandbox_list_dir",
+            "search_skills",
+            "tool_search",
+            "memory",
+        }
+        recent_tool_names: list[str] = []
+        thrash_nudge_sent = False
+        # Slightly higher completion budget so mid-size file writes less often clip.
+        model_max_tokens = 4096
+
         try:
             for loop_i in range(loop_limit):
                 tools_payload = exposure.request_tools or None
+                # Last loops: force a final answer, no more tools (stop endless fix loops).
+                force_final = loop_i >= max(1, loop_limit - 2)
+                if force_final:
+                    tools_payload = None
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "[WRAP_UP] 工具次数快用完了。请用简短中文直接告诉用户："
+                                "做到哪了、能不能用、还缺啥。不要再调用工具。"
+                            ),
+                        }
+                    )
+                elif thrash_nudge_sent is False and loop_i >= 6 and len(recent_tool_names) >= 6:
+                    last6 = recent_tool_names[-6:]
+                    # sandbox_exec is often used for grep/wc/python checks (thrash).
+                    inspect_only = all(
+                        n in _inspect_tools or n == "sandbox_exec" for n in last6
+                    ) and not any(
+                        n in {"sandbox_write_file", "sandbox_edit_file"} for n in last6
+                    )
+                    if inspect_only:
+                        thrash_nudge_sent = True
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": (
+                                    "[ANTI_THRASH] 你已经连续多轮只读/检查文件，没有稳定交付。"
+                                    "请立刻：要么用 sandbox_write_file 做小改动并完成，"
+                                    "要么停下来用中文告诉用户进度与问题（不要再空转检查）。"
+                                    "禁止一次写入超长整文件；优先小步修改。"
+                                ),
+                            }
+                        )
+
                 schema_metrics.append(
                     SchemaMetrics(
                         exchange_index=loop_i,
@@ -529,7 +577,10 @@ class TurnApplication:
                 if self.stream_model and hasattr(self.model, "stream"):
                     exchange = None
                     async for sev in self.model.stream(
-                        messages=messages, tools=tools_payload, model=model
+                        messages=messages,
+                        tools=tools_payload,
+                        model=model,
+                        max_tokens=model_max_tokens,
                     ):
                         if sev.kind == "thinking_delta" and sev.text:
                             yield TurnEvent(
@@ -541,11 +592,17 @@ class TurnApplication:
                             exchange = sev.exchange
                     if exchange is None:
                         exchange = await self.model.complete(
-                            messages=messages, tools=tools_payload, model=model
+                            messages=messages,
+                            tools=tools_payload,
+                            model=model,
+                            max_tokens=model_max_tokens,
                         )
                 else:
                     exchange = await self.model.complete(
-                        messages=messages, tools=tools_payload, model=model
+                        messages=messages,
+                        tools=tools_payload,
+                        model=model,
+                        max_tokens=model_max_tokens,
                     )
                     # Non-stream: surface reasoning once if the provider returned it.
                     reasoning = getattr(exchange.message, "reasoning_content", "") or ""
@@ -658,6 +715,10 @@ class TurnApplication:
                     call_id = str(call.get("id") or uuid.uuid4().hex)
                     fn = call.get("function") or {}
                     name = str(fn.get("name") or "")
+                    if name:
+                        recent_tool_names.append(name)
+                        if len(recent_tool_names) > 24:
+                            recent_tool_names = recent_tool_names[-24:]
                     raw_args = fn.get("arguments") or "{}"
                     started = datetime.now(timezone.utc)
                     yield TurnEvent("tool_started", {"call_id": call_id, "name": name})
@@ -797,10 +858,30 @@ class TurnApplication:
                 "ARIADNE_TOOL_LOOP_LIMIT",
                 f"Exceeded tool loop limit ({loop_limit})",
             )
+            tool_summary = "、".join(
+                dict.fromkeys(c.name for c in tool_calls if c.name)  # unique, order-preserving
+            ) or "（无）"
+            limit_text = (
+                f"这轮干得太久了（工具循环到上限 {loop_limit}），我先停一下，避免一直转圈。\n\n"
+                f"本轮用过：{tool_summary}\n\n"
+                "你可以：\n"
+                "1. 再说「继续」——我接着改\n"
+                "2. 把任务说得更小一点（例如只改一个文件）\n"
+                "3. 问我「做到哪了」——我先汇报现状\n\n"
+                "小提示：一次别让我写超大文件，容易写一半卡住。"
+            )
+            self.memory.transcript.append(
+                {
+                    "role": "assistant",
+                    "content": limit_text,
+                    "turn_id": turn_id,
+                    "session_id": session_id,
+                }
+            )
             result = TurnResult(
                 turn_id=turn_id,
                 status="failed",
-                text="",
+                text=limit_text,
                 messages=_public_messages(messages),
                 tool_calls=tool_calls,
                 skill_events=skill_events,
