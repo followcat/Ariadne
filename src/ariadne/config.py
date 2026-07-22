@@ -43,6 +43,8 @@ class Settings:
     egress_default_allow: bool = False
     command_policy_enabled: bool = True
     tool_loop_limit: int = 32
+    # Completion budget per model call (not context window). Default 8k; atelier raises to 16k.
+    max_tokens: int = 8192
     verbose: bool = False
     json_mode: bool = False
     stream: bool = False
@@ -255,6 +257,12 @@ def load_settings(
             )
         )
 
+    max_tok = pick_int(None, "ARIADNE_MAX_TOKENS", default=8192)
+    if max_tok < 256:
+        max_tok = 256
+    if max_tok > 128_000:
+        max_tok = 128_000
+
     return Settings(
         base_url=base_url,
         api_key=api_key,
@@ -264,6 +272,7 @@ def load_settings(
         sandbox=sandbox_name,
         sandbox_lifecycle=lifecycle,
         tool_loop_limit=limit,
+        max_tokens=max_tok,
         verbose=verbose,
         json_mode=json_mode,
         stream=stream_flag,

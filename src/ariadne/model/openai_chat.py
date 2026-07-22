@@ -218,7 +218,7 @@ class OpenAIChatModel:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.2,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         model: str | None = None,
     ) -> ModelExchange:
         payload: dict[str, Any] = {
@@ -240,7 +240,7 @@ class OpenAIChatModel:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.2,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         model: str | None = None,
     ) -> AsyncIterator[ModelStreamEvent]:
         payload: dict[str, Any] = {

@@ -215,6 +215,7 @@ def compose_agent(settings: Settings) -> Agent:
         vision_mode=settings.vision,
         runtime_agent=runtime,
         extra_system_prompt=getattr(settings, "extra_system_prompt", "") or "",
+        max_tokens=int(getattr(settings, "max_tokens", None) or 8192),
     )
     return Agent(
         turn_app=turn_app,

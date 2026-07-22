@@ -62,3 +62,4 @@ def test_settings_for_atelier_binds_workspace(tmp_path: Path) -> None:
     assert s.session_id == "aw-r3-main"
     assert "atelier-atelier-" not in s.session_id
     assert s.data_dir == proj.data_dir
+    assert s.max_tokens >= 16384

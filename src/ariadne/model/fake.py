@@ -23,7 +23,7 @@ class FakeModel:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.2,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         model: str | None = None,
     ) -> ModelExchange:
         self.calls.append({"messages": messages, "tools": tools})
@@ -47,7 +47,7 @@ class FakeModel:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         temperature: float = 0.2,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         model: str | None = None,
     ) -> AsyncIterator[ModelStreamEvent]:
         exchange = await self.complete(

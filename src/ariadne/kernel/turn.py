@@ -198,6 +198,8 @@ class TurnApplication:
     runtime_agent: Any | None = None
     # Host-injected system block (Atelier KNOWLEDGE, etc.)
     extra_system_prompt: str = ""
+    # Completion budget per model call (default 8k; atelier often 16k).
+    max_tokens: int = 8192
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -522,8 +524,7 @@ class TurnApplication:
         }
         recent_tool_names: list[str] = []
         thrash_nudge_sent = False
-        # Slightly higher completion budget so mid-size file writes less often clip.
-        model_max_tokens = 4096
+        model_max_tokens = max(256, int(self.max_tokens or 8192))
 
         try:
             for loop_i in range(loop_limit):

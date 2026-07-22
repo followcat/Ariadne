@@ -234,6 +234,8 @@ def settings_for_atelier(project: Project, session: SessionMeta, base_settings: 
     import dataclasses
 
     extra = build_system_prompt(project, session)
+    # Workshop implements more often write mid-size files → 16k completion budget.
+    atelier_max_tokens = max(int(getattr(base_settings, "max_tokens", 8192) or 8192), 16384)
     return dataclasses.replace(
         base_settings,
         workspace=project.workspace_path,
@@ -244,6 +246,7 @@ def settings_for_atelier(project: Project, session: SessionMeta, base_settings: 
         docker_image=project.config.docker_image,
         sandbox_network=project.config.network_mode,
         extra_system_prompt=extra,
+        max_tokens=atelier_max_tokens,
     )
 
 
