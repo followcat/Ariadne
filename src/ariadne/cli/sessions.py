@@ -158,21 +158,46 @@ def list_sessions(data_dir: Path) -> list[SessionInfo]:
         turns = 0
         preview = ""
         try:
+            # Fast path for large transcripts: sample head for preview, count via
+            # lightweight line scan without full JSON parse of every assistant line.
+            size = path.stat().st_size
             with path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    if not line.strip():
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if rec.get("role") == "user":
-                        turns += 1
-                        if not preview:
-                            preview = str(rec.get("content") or "").strip().replace("\n", " ")
-                            preview = _IMAGE_PLACEHOLDER.sub(" ", preview).strip()
-                            if len(preview) > 80:
-                                preview = preview[:77] + "…"
+                if size > 512_000:
+                    # Preview from first 64KB; turn count ≈ count of "role":"user" markers
+                    head = fh.read(65_536)
+                    for line in head.splitlines():
+                        if not line.strip():
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if rec.get("role") == "user":
+                            turns += 1
+                            if not preview:
+                                preview = str(rec.get("content") or "").strip().replace("\n", " ")
+                                preview = _IMAGE_PLACEHOLDER.sub(" ", preview).strip()
+                                if len(preview) > 80:
+                                    preview = preview[:77] + "…"
+                    # Approximate remaining user turns from marker count in the rest
+                    rest = fh.read()
+                    turns += rest.count('"role": "user"') + rest.count('"role":"user"')
+                    # head already counted exact user rows; rest may overcount slightly — ok for UI
+                else:
+                    for line in fh:
+                        if not line.strip():
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if rec.get("role") == "user":
+                            turns += 1
+                            if not preview:
+                                preview = str(rec.get("content") or "").strip().replace("\n", " ")
+                                preview = _IMAGE_PLACEHOLDER.sub(" ", preview).strip()
+                                if len(preview) > 80:
+                                    preview = preview[:77] + "…"
         except OSError:
             continue
         title, source = get_session_title(data_dir, path.stem)
@@ -199,9 +224,12 @@ def most_recent(data_dir: Path) -> str | None:
 
 
 def load_session_messages(
-    data_dir: Path, session_id: str, *, limit: int = 200
+    data_dir: Path, session_id: str, *, limit: int = 80
 ) -> list[dict[str, str]]:
-    """User/assistant messages for UI history (oldest first within the window)."""
+    """User/assistant messages for UI history (oldest first within the window).
+
+    Default limit is modest for snappy chat-switch UX; callers can raise it.
+    """
     path = session_path(data_dir, session_id)
     if not path.is_file():
         return []

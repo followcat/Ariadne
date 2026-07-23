@@ -8,8 +8,15 @@ const props = defineProps<{
 }>()
 
 const el = ref<HTMLElement | null>(null)
-const blobUrls = ref<string[]>([])
+const localBlobs = ref<string[]>([])
 const authToken = inject<Ref<string> | string | null>('authToken', null)
+
+/** Session-scoped blob cache: same /api/workspace/file URL reuses one blob. */
+const blobCache: Map<string, string> =
+  (globalThis as unknown as { __ariadneImgCache?: Map<string, string> }).__ariadneImgCache ||
+  new Map()
+;(globalThis as unknown as { __ariadneImgCache?: Map<string, string> }).__ariadneImgCache =
+  blobCache
 
 const html = computed(() => renderMarkdown(props.source || ''))
 
@@ -19,58 +26,62 @@ function tokenValue(): string {
   return authToken.value || ''
 }
 
-function revokeBlobs() {
-  for (const u of blobUrls.value) URL.revokeObjectURL(u)
-  blobUrls.value = []
-}
-
 /**
  * Workspace files require Authorization. <img src> cannot send Bearer headers,
- * so we fetch as blob and swap to an object URL.
+ * so we fetch as blob and swap to an object URL. Parallel + cached.
  */
 async function hydrateWorkspaceImages() {
   const root = el.value
   if (!root) return
   const token = tokenValue()
-  const imgs = root.querySelectorAll<HTMLImageElement>('img')
-  for (const img of imgs) {
-    if (img.dataset.hydrated === '1') continue
-    let src = img.getAttribute('src') || ''
-    // Safety net: markdown may still emit raw /workspace/… if purify config drifts
-    const rewritten = rewriteWorkspaceSrc(src)
-    if (rewritten !== src) {
-      src = rewritten
-      img.setAttribute('src', src)
-    }
-    if (!src.startsWith('/api/workspace/file')) continue
-    try {
-      const r = await fetch(src, {
-        headers: token ? { Authorization: 'Bearer ' + token } : {},
-      })
-      if (!r.ok) {
-        img.alt = (img.alt || '图片') + ` (加载失败 ${r.status})`
-        img.classList.add('workspace-img-failed')
-        continue
+  const imgs = [...root.querySelectorAll<HTMLImageElement>('img')]
+  await Promise.all(
+    imgs.map(async (img) => {
+      if (img.dataset.hydrated === '1') return
+      let src = img.getAttribute('src') || ''
+      const rewritten = rewriteWorkspaceSrc(src)
+      if (rewritten !== src) {
+        src = rewritten
+        img.setAttribute('src', src)
       }
-      const blob = await r.blob()
-      const url = URL.createObjectURL(blob)
-      blobUrls.value.push(url)
-      img.src = url
-      img.dataset.hydrated = '1'
-      img.classList.add('workspace-img')
-      if (!img.alt) img.alt = '图片'
-    } catch {
-      img.alt = (img.alt || '图片') + ' (加载失败)'
-      img.classList.add('workspace-img-failed')
-    }
-  }
+      if (!src.startsWith('/api/workspace/file')) return
+      try {
+        const cached = blobCache.get(src)
+        if (cached) {
+          img.src = cached
+          img.dataset.hydrated = '1'
+          img.classList.add('workspace-img')
+          if (!img.alt) img.alt = '图片'
+          return
+        }
+        const r = await fetch(src, {
+          headers: token ? { Authorization: 'Bearer ' + token } : {},
+        })
+        if (!r.ok) {
+          img.alt = (img.alt || '图片') + ` (加载失败 ${r.status})`
+          img.classList.add('workspace-img-failed')
+          return
+        }
+        const blob = await r.blob()
+        const url = URL.createObjectURL(blob)
+        blobCache.set(src, url)
+        localBlobs.value.push(url)
+        img.src = url
+        img.dataset.hydrated = '1'
+        img.classList.add('workspace-img')
+        if (!img.alt) img.alt = '图片'
+      } catch {
+        img.alt = (img.alt || '图片') + ' (加载失败)'
+        img.classList.add('workspace-img-failed')
+      }
+    }),
+  )
 }
 
 // Wrap tables + hydrate auth-gated workspace images
 watch(
   html,
   async () => {
-    revokeBlobs()
     await nextTick()
     const root = el.value
     if (!root) return
@@ -86,7 +97,10 @@ watch(
   { flush: 'post' },
 )
 
-onBeforeUnmount(() => revokeBlobs())
+onBeforeUnmount(() => {
+  // Keep global blobCache for reuse across message remounts when switching back.
+  localBlobs.value = []
+})
 </script>
 
 <template>

@@ -25,10 +25,33 @@ class TranscriptStore:
     def recent_messages(
         self, *, limit: int | None = None, session_id: str | None = None
     ) -> list[dict[str, str]]:
-        lines = [ln for ln in self.path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         window = limit if limit is not None else self.recent_limit
+        # Prefer a tail read for large transcripts (chat history UI switches often).
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return []
+        # ~1MB of trailing log is enough for hundreds of chat turns.
+        text: str
+        if size > 1_000_000:
+            with self.path.open("rb") as fh:
+                fh.seek(max(0, size - 1_000_000))
+                raw = fh.read()
+            # Drop partial first line after seek
+            if size > 1_000_000:
+                nl = raw.find(b"\n")
+                if nl >= 0:
+                    raw = raw[nl + 1 :]
+            text = raw.decode("utf-8", errors="replace")
+        else:
+            try:
+                text = self.path.read_text(encoding="utf-8")
+            except OSError:
+                return []
         messages: list[dict[str, str]] = []
-        for line in lines:
+        for line in text.splitlines():
+            if not line.strip():
+                continue
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:

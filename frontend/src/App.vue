@@ -49,6 +49,9 @@ const atelierId = ref(localStorage.getItem('ariadne_atelier') || '')
 const atelierSession = ref(localStorage.getItem('ariadne_atelier_session') || 'main')
 const knowledgeOpen = ref(false)
 const knowledgeRefresh = ref(0)
+const historyLoading = ref(false)
+/** Cancel in-flight history fetch when switching sessions quickly. */
+let historyAbort: AbortController | null = null
 
 const tools = ref<ToolEntry[]>([])
 const toolsOpenIds = ref(new Set<string>())
@@ -109,6 +112,9 @@ function selectAtelier(id: string) {
 }
 
 function selectAtelierSession(sid: string) {
+  if (sid === atelierSession.value && messages.value.length) {
+    // still allow re-click reload when empty
+  }
   atelierSession.value = sid
   localStorage.setItem('ariadne_atelier_session', sid)
   messages.value = []
@@ -131,32 +137,47 @@ function exitAtelier() {
 async function loadAtelierHistory() {
   if (!atelierId.value) {
     messages.value = []
+    historyLoading.value = false
     return
   }
-  const r = await api(
-    `/api/ateliers/${encodeURIComponent(atelierId.value)}/sessions/${encodeURIComponent(atelierSession.value)}/messages`,
-    token.value,
-  )
-  if (!r.ok) {
-    messages.value = []
-    return
-  }
-  const data = await r.json()
-  messages.value = (data.messages || [])
-    .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-    .map((m: { role: string; content: string }, i: number) =>
-      m.role === 'user'
-        ? { id: 'h-u-' + i, role: 'user' as const, content: m.content || '' }
-        : {
-            id: 'h-a-' + i,
-            role: 'assistant' as const,
-            content: m.content || '',
-            thinking: '',
-            streaming: false,
-            thinkingLive: false,
-          },
+  historyAbort?.abort()
+  const ac = new AbortController()
+  historyAbort = ac
+  historyLoading.value = true
+  try {
+    const r = await api(
+      `/api/ateliers/${encodeURIComponent(atelierId.value)}/sessions/${encodeURIComponent(atelierSession.value)}/messages`,
+      token.value,
+      { signal: ac.signal },
     )
-  await scrollChat()
+    if (ac.signal.aborted) return
+    if (!r.ok) {
+      messages.value = []
+      return
+    }
+    const data = await r.json()
+    if (ac.signal.aborted) return
+    messages.value = (data.messages || [])
+      .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
+      .map((m: { role: string; content: string }, i: number) =>
+        m.role === 'user'
+          ? { id: 'h-u-' + i, role: 'user' as const, content: m.content || '' }
+          : {
+              id: 'h-a-' + i,
+              role: 'assistant' as const,
+              content: m.content || '',
+              thinking: '',
+              streaming: false,
+              thinkingLive: false,
+            },
+      )
+    await scrollChat()
+  } catch (e) {
+    if ((e as { name?: string }).name === 'AbortError') return
+    messages.value = []
+  } finally {
+    if (historyAbort === ac) historyLoading.value = false
+  }
 }
 function toggleTools() {
   toolsCollapsed.value = !toolsCollapsed.value
@@ -244,29 +265,47 @@ async function refreshSessionTitle(force = false) {
 async function loadHistory() {
   if (!sessionId.value) {
     messages.value = []
+    historyLoading.value = false
     return
   }
-  const r = await api('/api/sessions/' + encodeURIComponent(sessionId.value), token.value)
-  if (!r.ok) {
-    messages.value = []
-    return
-  }
-  const data = await r.json()
-  messages.value = (data.messages || [])
-    .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-    .map((m: { role: string; content: string }, i: number) =>
-      m.role === 'user'
-        ? { id: 'h-u-' + i, role: 'user' as const, content: m.content || '' }
-        : {
-            id: 'h-a-' + i,
-            role: 'assistant' as const,
-            content: m.content || '',
-            thinking: '',
-            streaming: false,
-            thinkingLive: false,
-          },
+  historyAbort?.abort()
+  const ac = new AbortController()
+  historyAbort = ac
+  historyLoading.value = true
+  try {
+    const r = await api(
+      '/api/sessions/' + encodeURIComponent(sessionId.value),
+      token.value,
+      { signal: ac.signal },
     )
-  await scrollChat()
+    if (ac.signal.aborted) return
+    if (!r.ok) {
+      messages.value = []
+      return
+    }
+    const data = await r.json()
+    if (ac.signal.aborted) return
+    messages.value = (data.messages || [])
+      .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
+      .map((m: { role: string; content: string }, i: number) =>
+        m.role === 'user'
+          ? { id: 'h-u-' + i, role: 'user' as const, content: m.content || '' }
+          : {
+              id: 'h-a-' + i,
+              role: 'assistant' as const,
+              content: m.content || '',
+              thinking: '',
+              streaming: false,
+              thinkingLive: false,
+            },
+      )
+    await scrollChat()
+  } catch (e) {
+    if ((e as { name?: string }).name === 'AbortError') return
+    messages.value = []
+  } finally {
+    if (historyAbort === ac) historyLoading.value = false
+  }
 }
 
 async function createSession() {
@@ -280,8 +319,11 @@ async function createSession() {
 }
 
 async function selectSession(id: string) {
+  if (id === sessionId.value && messages.value.length) return
   setSession(id)
   tools.value = []
+  // Instant paint: clear old thread so switch feels immediate
+  messages.value = []
   await loadHistory()
 }
 
@@ -869,8 +911,12 @@ onMounted(() => {
       </div>
 
       <div ref="chatEl" class="chat">
-        <div class="chat-inner" :class="{ empty: !messages.length }">
-          <div v-if="!messages.length" class="empty-hint">
+        <div class="chat-inner" :class="{ empty: !messages.length && !historyLoading }">
+          <div v-if="historyLoading" class="empty-hint loading-hist">
+            <div class="spin" />
+            <p>加载对话…</p>
+          </div>
+          <div v-else-if="!messages.length" class="empty-hint">
             <div class="art">{{ inAtelier ? '◈' : 'A' }}</div>
             <h2>{{ inAtelier ? '今天想鼓捣点啥？' : '今天想做什么？' }}</h2>
             <p v-if="inAtelier">
@@ -1031,6 +1077,19 @@ onMounted(() => {
 .chip.atelier-chip {
   color: var(--blue);
   border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
+}
+.loading-hist { gap: 12px; }
+.spin {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--blue);
+  animation: hist-spin 0.7s linear infinite;
+  margin: 0 auto;
+}
+@keyframes hist-spin {
+  to { transform: rotate(360deg); }
 }
 .sb-tab {
   padding: 7px 8px;

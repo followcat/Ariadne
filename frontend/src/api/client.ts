@@ -32,7 +32,14 @@ export async function api(
     ...authHeaders(token),
     ...(opts.headers || {}),
   }
-  const r = await fetch(path, { ...opts, headers })
+  let r: Response
+  try {
+    r = await fetch(path, { ...opts, headers })
+  } catch (e) {
+    // Re-throw AbortError so callers can ignore cancelled session switches.
+    if ((e as { name?: string }).name === 'AbortError') throw e
+    throw e
+  }
   if (r.status === 401) {
     const err = new Error('unauthorized') as Error & { status: number }
     err.status = 401
