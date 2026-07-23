@@ -21,6 +21,8 @@ const props = defineProps<{
   hostPath?: string
   /** When set, browse this atelier's workspace */
   atelierId?: string
+  /** main | branch-… — isolated branch workspace when not main */
+  atelierSession?: string
 }>()
 
 const cwd = ref('/workspace')
@@ -45,9 +47,12 @@ const modeLabel = computed(() => {
 })
 
 function atelierQs(): string {
-  return props.atelierId
-    ? '&atelier_id=' + encodeURIComponent(props.atelierId)
-    : ''
+  if (!props.atelierId) return ''
+  let q = '&atelier_id=' + encodeURIComponent(props.atelierId)
+  if (props.atelierSession) {
+    q += '&atelier_session=' + encodeURIComponent(props.atelierSession)
+  }
+  return q
 }
 
 const hostDisplay = computed(
@@ -175,7 +180,7 @@ watch(
 )
 
 watch(
-  () => props.atelierId,
+  () => [props.atelierId, props.atelierSession] as const,
   () => {
     cwd.value = '/workspace'
     selected.value = null

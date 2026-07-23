@@ -111,6 +111,7 @@ let hostWorkspaceRoot = ''
  * 404 → broken chat images.
  */
 let activeAtelierId = ''
+let activeAtelierSession = ''
 
 export function setHostWorkspaceRoot(root: string | null | undefined) {
   const r = String(root || '').trim().replace(/\/+$/, '')
@@ -125,8 +126,25 @@ export function setActiveAtelierId(id: string | null | undefined) {
   activeAtelierId = String(id || '').trim()
 }
 
+export function setActiveAtelierSession(session: string | null | undefined) {
+  activeAtelierSession = String(session || '').trim() || 'main'
+}
+
 export function getActiveAtelierId(): string {
   return activeAtelierId
+}
+
+function withAtelierQuery(url: string): string {
+  if (!activeAtelierId) return url
+  let out = url
+  if (!/[?&]atelier_id=/.test(out)) {
+    out += (out.includes('?') ? '&' : '?') + 'atelier_id=' + encodeURIComponent(activeAtelierId)
+  }
+  const sess = activeAtelierSession || 'main'
+  if (sess && !/[?&]atelier_session=/.test(out)) {
+    out += '&atelier_session=' + encodeURIComponent(sess)
+  }
+  return out
 }
 
 /** Map sandbox / host / relative image paths to the authenticated file API URL. */
@@ -134,11 +152,7 @@ export function workspaceFileUrl(rawPath: string): string {
   let p = String(rawPath || '').trim()
   if (!p) return ''
   if (p.startsWith('/api/workspace/file?')) {
-    // Ensure atelier_id is present when we are in a workshop.
-    if (activeAtelierId && !/[?&]atelier_id=/.test(p)) {
-      return p + (p.includes('?') ? '&' : '?') + 'atelier_id=' + encodeURIComponent(activeAtelierId)
-    }
-    return p
+    return withAtelierQuery(p)
   }
   // strip optional file:// prefix models sometimes emit
   p = p.replace(/^file:\/\//i, '')
@@ -158,11 +172,7 @@ export function workspaceFileUrl(rawPath: string): string {
   }
   // Host absolute paths (no virtual prefix) are allowed; server rejects escapes.
   if (!/^\/workspace(\/|$)/i.test(p) && !p.startsWith('/')) return ''
-  let url = '/api/workspace/file?path=' + encodeURIComponent(p)
-  if (activeAtelierId) {
-    url += '&atelier_id=' + encodeURIComponent(activeAtelierId)
-  }
-  return url
+  return withAtelierQuery('/api/workspace/file?path=' + encodeURIComponent(p))
 }
 
 /**

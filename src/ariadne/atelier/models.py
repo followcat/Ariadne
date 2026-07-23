@@ -128,8 +128,32 @@ class Project:
 
     @property
     def data_dir(self) -> Path:
-        """Per-atelier data dir for sandbox/memory under project."""
+        """Per-atelier data dir for sandbox/memory under project (main default)."""
         return self.path / ".ariadne"
+
+    @property
+    def branch_workspaces_root(self) -> Path:
+        """Isolated workspaces for branch sessions (not the main workspace)."""
+        return self.path / ".ariadne" / "branch_workspaces"
+
+    def branch_workspace_path(self, branch_name: str) -> Path:
+        """Writable workspace root for a branch slug."""
+        slug = validate_slug(branch_name)
+        return self.branch_workspaces_root / slug
+
+    def session_workspace(self, session: "SessionMeta") -> Path:
+        """Workspace bound for this session: main vs isolated branch tree."""
+        if session.type == SessionType.BRANCH and session.branch_name:
+            return self.branch_workspace_path(session.branch_name)
+        return self.workspace_path
+
+    def session_data_dir(self, session: "SessionMeta") -> Path:
+        """Memory/sandbox data: main uses shared .ariadne; branch gets own scope."""
+        if session.type == SessionType.BRANCH:
+            d = self.data_dir / "scopes" / session.id
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        return self.data_dir
 
     def to_dict(self) -> dict[str, Any]:
         return {

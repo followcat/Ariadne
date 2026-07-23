@@ -56,13 +56,13 @@ my-app/
 
 | Resource | Main | Branch |
 | --- | --- | --- |
-| Code files | shared workspace | **same** workspace |
+| Files | `workspace/` (main only) | **copy** under `.ariadne/branch_workspaces/<slug>/` |
+| Memory / sandbox data | `.ariadne/` | `.ariadne/scopes/branch-<slug>/` |
 | Transcript | own jsonl | own jsonl |
-| Sandbox container | own scope | own scope |
-| KNOWLEDGE.md | user-owned brief (read always) | read; merge may append a short note |
+| KNOWLEDGE.md | main brief (user-owned) | read-only reference; merge does **not** write main |
 
-**Role (UX):** **Main** = strategy / work definition / decisions (prefer light on heavy coding).  
-**Branch** = hands-on implementation (code, images). Files stay shared; conversation is isolated.
+**Role (UX):** **Main** = strategy / work definition. **Branch** = isolated hands-on sandbox (files + memory).  
+Create branch = snapshot main workspace. Discard = delete branch tree. Merge = archive summary only (no auto file promote).
 
 ## 6. CLI
 

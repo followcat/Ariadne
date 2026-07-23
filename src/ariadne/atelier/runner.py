@@ -15,29 +15,20 @@ from .models import Project, SessionMeta, SessionType, append_transcript
 
 DEFAULT_ATELIER_POLICY = """你在 Ariadne 的「小作坊」里陪用户一起捣鼓项目（画画、写小网页、试想法都可以）。
 
-## 主线 vs 旁支（角色）
-- **主线 (main)**：定方向、定策略、写工作定义、对方案做取舍；**少写大段实现代码**。
-  若用户要动手做功能，温和建议：开一个旁支再改文件。
-- **旁支 (branch-*)**：真正改代码、出图、跑实验；文件与主线共用同一 /workspace。
-- 旁支做完：用户可「收」进主线（merge）或「丢」掉；你不要代替用户 merge。
+## 主线 vs 旁支（隔离！）
+- **主线 (main)**：策略、工作定义、取舍。绑定 **主线自己的文件夹**。
+- **旁支 (branch-*)**：**独立文件夹 + 独立记忆**。创建时从主线拷贝一份快照，之后改什么都**不会**动主线文件。
+- 旁支的聊天/记忆也和主线分开；「收」只归档旁支摘要，默认**不写回**主线文件或小本本。
+- 主线对话内容不受旁支污染。
 
 ## 怎么干活（请照做）
-1. 在旁支/用户明确要求动手时：真的改文件并保存到 /workspace，别只看不改、别只在脑子里想完。
-2. 做完后用大白话说清楚：改了啥、文件在哪、怎么打开看看。
-3. **出图**：把 PNG/JPG 写到 /workspace，并在回复里用 Markdown 图片语法输出，例如：
-   `![说明](/workspace/xxx.png)` 或把路径包在反引号里：`` `/workspace/xxx.png` ``
-   这样 Web 对话才能内联显示（不要只写「文件位置」而不给图片语法）。
-4. 「画一只鸟 / 画出来」= 写可运行功能或生成图片文件并在对话里展示，不是空口白话。
-5. 能改现有文件就改现有的；语气轻松，像热心朋友。
-
-## 别拖太久（很重要）
-6. **小步改**：一次只改一小段；单次写入尽量 < 150 行。大改拆成多轮。
-7. **禁止**把整份超长 JS/CSS 压成一行再重写。
-8. 用户问「做好了吗」时先答现状，不要空转检查。
-9. 工具次数有限；快到上限时必须停下来用中文汇报。
+1. 动手时写当前会话的 /workspace（旁支=旁支目录，主线=主线目录），别只看不改。
+2. 做完说清楚改了啥、怎么打开看。
+3. **出图**：PNG 写到当前 /workspace，并用 `![说明](/workspace/xxx.png)` 展示。
+4. 语气轻松；小步改；别一次重写超大文件。
 
 ## 小本本
-用户可能有一份简短备忘（KNOWLEDGE.md）。当参考就好；细节靠对话记忆。
+主线的 KNOWLEDGE.md 只作参考；旁支不要去改主线小本本。
 """
 
 
@@ -95,17 +86,18 @@ def _main_session_summary_line(project: Project) -> str | None:
 
 def build_system_prompt(project: Project, session: SessionMeta, base: str = "") -> str:
     knowledge = knowledge_for_inject(project)
-    tree = workspace_tree_lines(project.workspace_path, max_entries=40)
+    ws = project.session_workspace(session)
+    tree = workspace_tree_lines(ws, max_entries=40)
     parts = [
         base.strip() or DEFAULT_ATELIER_POLICY,
         "",
         "---",
         f"# 现在在做：{project.name}",
         "",
-        "## 小本本（想记啥就写啥）",
+        "## 小本本（主线参考）",
         knowledge,
         "",
-        "## 文件夹里已有这些（大家共用同一份）",
+        "## 当前会话文件夹里有什么",
     ]
     if tree:
         parts.extend(f"- `{p}`" for p in tree)
@@ -119,20 +111,19 @@ def build_system_prompt(project: Project, session: SessionMeta, base: str = "") 
     if session.type == SessionType.MAIN:
         parts.extend(
             [
-                "## 当前：主线",
-                "这里偏「想清楚再动手」：策略、工作定义、取舍。",
-                "大段写代码/出图优先建议用户开旁支；若用户坚持在主线做，也可以动手。",
+                "## 当前：主线（独立空间）",
+                "策略、工作定义、取舍。写文件只会改主线文件夹。",
+                "大段实现建议开旁支；旁支改不到主线。",
                 "",
             ]
         )
     elif session.type == SessionType.BRANCH:
         parts.extend(
             [
-                "## 当前：旁支（动手场）",
+                "## 当前：旁支（独立空间）",
                 f"旁支名：`{session.branch_name or session.title}`。",
-                "聊天和主线隔离；**文件与主线共用**，改了主线也看得见。",
-                "这里适合写代码、生成图片、试想法；做完让用户点「收」或「丢」。",
-                "出图务必：写入 /workspace 并用 `![说明](/workspace/文件.png)` 在回复里展示。",
+                "这是主线的**拷贝**，聊天/记忆/文件都独立；**禁止假设能改到主线**。",
+                "出图写入本旁支 /workspace，并用 `![说明](/workspace/文件.png)` 展示。",
                 "",
             ]
         )
@@ -140,7 +131,7 @@ def build_system_prompt(project: Project, session: SessionMeta, base: str = "") 
         if main_sum:
             parts.extend(
                 [
-                    "## 主线策略摘要（背景）",
+                    "## 主线策略摘要（只读背景）",
                     main_sum,
                     "",
                 ]
@@ -149,8 +140,9 @@ def build_system_prompt(project: Project, session: SessionMeta, base: str = "") 
     parts.extend(
         [
             "## 目录",
-            f"本机文件夹: {project.workspace_path}",
+            f"本机文件夹: {ws}",
             "沙箱里叫: /workspace",
+            f"会话类型: {session.type.value}",
             "",
         ]
     )
@@ -248,7 +240,11 @@ def maybe_update_knowledge_after_turn(
 
 
 def settings_for_atelier(project: Project, session: SessionMeta, base_settings: Any) -> Any:
-    """Bind workspace + session + KNOWLEDGE / tree inject."""
+    """Bind **session-scoped** workspace + data_dir + KNOWLEDGE/tree inject.
+
+    Main → project.workspace_path + project.data_dir  
+    Branch → isolated branch_workspaces/<slug> + scopes/<session.id>
+    """
     import dataclasses
 
     extra = build_system_prompt(project, session)
@@ -256,9 +252,9 @@ def settings_for_atelier(project: Project, session: SessionMeta, base_settings: 
     atelier_max_tokens = max(int(getattr(base_settings, "max_tokens", 8192) or 8192), 16384)
     return dataclasses.replace(
         base_settings,
-        workspace=project.workspace_path,
+        workspace=project.session_workspace(session),
         session_id=agent_session_id(project, session),
-        data_dir=project.data_dir,
+        data_dir=project.session_data_dir(session),
         tool_loop_limit=project.config.max_tool_loop,
         sandbox_profile=project.config.sandbox_profile,
         docker_image=project.config.docker_image,

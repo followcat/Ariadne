@@ -170,6 +170,30 @@ class AtelierManager:
                 continue
         return out
 
+    def _seed_branch_workspace(self, project: Project, branch_name: str) -> Path:
+        """Copy main workspace into an isolated branch tree (main stays untouched)."""
+        dest = project.branch_workspace_path(branch_name)
+        if dest.exists():
+            return dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        src = project.workspace_path
+        if src.is_dir():
+            shutil.copytree(
+                src,
+                dest,
+                ignore=shutil.ignore_patterns(
+                    ".git",
+                    ".venv",
+                    "node_modules",
+                    "__pycache__",
+                    ".ariadne",
+                    ".pytest_cache",
+                ),
+            )
+        else:
+            dest.mkdir(parents=True, exist_ok=True)
+        return dest
+
     def create_branch(
         self,
         project_id: str,
@@ -187,6 +211,9 @@ class AtelierManager:
                     app_error("ARIADNE_CONFIG_INVALID", f"branch already exists: {slug}")
                 )
         main = self.get_or_create_main_session(project_id)
+        # Isolated files + memory scope for this branch
+        self._seed_branch_workspace(project, slug)
+        (project.data_dir / "scopes" / sid).mkdir(parents=True, exist_ok=True)
         meta = SessionMeta(
             id=sid,
             project_id=project.id,
@@ -211,9 +238,9 @@ class AtelierManager:
         return meta
 
     def merge_branch(self, project_id: str, branch_name: str) -> str:
-        """Mark branch merged; append a short merge note to KNOWLEDGE for the user to edit.
+        """Mark branch merged. Does **not** write main workspace, KNOWLEDGE, or main transcript.
 
-        No automatic decision extract — user owns the brief (AGENTS.md model).
+        Branch files stay under branch_workspaces/ until user copies them manually.
         """
         project = self.get_project(project_id)
         slug = validate_slug(branch_name)
@@ -227,20 +254,10 @@ class AtelierManager:
             )
         transcript = read_transcript(project, sid)
         summary = generate_branch_summary(transcript, branch_name=slug)
-        current = read_knowledge(project)
-        new_content = current.rstrip() + "\n\n" + summary
-        write_knowledge(project, new_content, session_id=sid)
-
-        append_transcript(
-            project,
-            "main",
-            {
-                "role": "system",
-                "content": f"[atelier] branch `{slug}` merged.\n{summary}",
-                "session_id": "main",
-                "turn_id": f"merge-{slug}",
-            },
-        )
+        # Persist merge report only on the branch side (main content untouched)
+        report_dir = project.data_dir / "scopes" / sid
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "merge_summary.md").write_text(summary, encoding="utf-8")
         branch.status = SessionStatus.MERGED
         branch.container_id = None
         save_session_meta(project, branch)
@@ -253,11 +270,18 @@ class AtelierManager:
         branch = load_session_meta(project, sid)
         if branch.type != SessionType.BRANCH:
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "not a branch session"))
-        before = read_knowledge(project)
+        before_k = read_knowledge(project)
+        before_main_ws = list(project.workspace_path.rglob("*")) if project.workspace_path.is_dir() else []
         branch.status = SessionStatus.DISCARDED
         branch.container_id = None
         save_session_meta(project, branch)
-        # knowledge unchanged
-        assert read_knowledge(project) == before or True
-        _ = before
+        # Drop isolated branch workspace + memory scope (main untouched)
+        bw = project.branch_workspace_path(slug)
+        if bw.is_dir():
+            shutil.rmtree(bw, ignore_errors=True)
+        scope = project.data_dir / "scopes" / sid
+        if scope.is_dir():
+            shutil.rmtree(scope, ignore_errors=True)
+        assert read_knowledge(project) == before_k
+        _ = before_main_ws
         _ = time.time()

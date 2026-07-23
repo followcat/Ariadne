@@ -9,7 +9,11 @@ import ThinkingBlock from './components/ThinkingBlock.vue'
 import ToolsPanel, { type ToolEntry } from './components/ToolsPanel.vue'
 import WorkspaceBrowser from './components/WorkspaceBrowser.vue'
 import { api, parseSseBuffer, type Me, type SessionRow, type StreamEvent } from './api/client'
-import { setActiveAtelierId, setHostWorkspaceRoot } from './lib/markdown'
+import {
+  setActiveAtelierId,
+  setActiveAtelierSession,
+  setHostWorkspaceRoot,
+} from './lib/markdown'
 
 type LeftTab = 'sessions' | 'workspace' | 'atelier'
 
@@ -103,6 +107,7 @@ function selectAtelier(id: string) {
   localStorage.setItem('ariadne_atelier', id)
   setActiveAtelierId(id)
   atelierSession.value = 'main'
+  setActiveAtelierSession('main')
   localStorage.setItem('ariadne_atelier_session', 'main')
   messages.value = []
   tools.value = []
@@ -116,10 +121,12 @@ function selectAtelierSession(sid: string) {
     // still allow re-click reload when empty
   }
   atelierSession.value = sid
+  setActiveAtelierSession(sid)
   localStorage.setItem('ariadne_atelier_session', sid)
   messages.value = []
   tools.value = []
   void loadAtelierHistory()
+  workspaceRefreshKey.value += 1
 }
 
 function exitAtelier() {
@@ -128,6 +135,7 @@ function exitAtelier() {
   localStorage.removeItem('ariadne_atelier')
   localStorage.removeItem('ariadne_atelier_session')
   setActiveAtelierId('')
+  setActiveAtelierSession('')
   knowledgeOpen.value = false
   messages.value = []
   void loadHistory()
@@ -205,6 +213,7 @@ async function bootstrap() {
     setHostWorkspaceRoot(me.value?.workspace || '')
     // Scope chat image URLs to atelier workspace when a workshop is open.
     setActiveAtelierId(atelierId.value || '')
+    setActiveAtelierSession(atelierSession.value || 'main')
     if (!sessionId.value && !atelierId.value) {
       const sr = await api('/api/sessions', token.value, { method: 'POST' })
       if (sr.ok) {
@@ -818,6 +827,7 @@ onMounted(() => {
         :workspace-mode="inAtelier ? 'atelier' : me?.workspace_mode"
         :host-path="me?.workspace"
         :atelier-id="atelierId || undefined"
+        :atelier-session="atelierSession || undefined"
       />
       <AtelierPanel
         v-show="leftTab === 'atelier'"

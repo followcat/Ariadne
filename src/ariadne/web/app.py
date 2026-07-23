@@ -114,20 +114,27 @@ def create_app(settings: Settings) -> FastAPI:
     def _user_data_dir(username: str) -> Path:
         return settings.resolved_data_dir / "web" / "users" / username
 
-    def _workspace_root_for(username: str, *, atelier_id: str | None = None) -> Path:
+    def _workspace_root_for(
+        username: str,
+        *,
+        atelier_id: str | None = None,
+        atelier_session: str | None = None,
+    ) -> Path:
         """Active /workspace binding for this account (design/web-workspace.md).
 
         project  — shared serve workspace (Codex-like open folder)
         per_user — durable tree under the account data dir
-        atelier  — when atelier_id set, use that workshop's workspace_path
+        atelier  — workshop main workspace, or isolated branch workspace when
+                   atelier_session is a branch
         """
         if atelier_id:
             mgr = _atelier_mgr(username)
             try:
                 project = mgr.get_project(atelier_id)
+                session = _resolve_atelier_session(mgr, atelier_id, atelier_session)
             except AriadneError as exc:
                 raise HTTPException(status_code=404, detail=exc.error.message) from exc
-            root = project.workspace_path.resolve()
+            root = project.session_workspace(session).resolve()
             root.mkdir(parents=True, exist_ok=True)
             return root
         mode = (settings.web_workspace_mode or "project").strip().lower()
@@ -230,9 +237,12 @@ def create_app(settings: Settings) -> FastAPI:
         username: str,
         must_exist: bool = True,
         atelier_id: str | None = None,
+        atelier_session: str | None = None,
     ) -> Path:
         """Map /workspace/... , relative, or host-absolute-under-root into active workspace."""
-        root = _workspace_root_for(username, atelier_id=atelier_id)
+        root = _workspace_root_for(
+            username, atelier_id=atelier_id, atelier_session=atelier_session
+        )
         raw = (raw_path or "").strip() or "/workspace"
         if raw in {"/workspace", "workspace", ".", ""}:
             target = root
@@ -269,9 +279,15 @@ def create_app(settings: Settings) -> FastAPI:
         return target
 
     def _virtual_path(
-        target: Path, *, username: str, atelier_id: str | None = None
+        target: Path,
+        *,
+        username: str,
+        atelier_id: str | None = None,
+        atelier_session: str | None = None,
     ) -> str:
-        root = _workspace_root_for(username, atelier_id=atelier_id)
+        root = _workspace_root_for(
+            username, atelier_id=atelier_id, atelier_session=atelier_session
+        )
         if target == root:
             return "/workspace"
         try:
@@ -284,10 +300,16 @@ def create_app(settings: Settings) -> FastAPI:
     def workspace_list(
         path: str = Query(default="/workspace", description="Directory under /workspace"),
         atelier_id: str | None = Query(default=None),
+        atelier_session: str | None = Query(default=None),
         username: str = Depends(current_user),
     ) -> dict[str, Any]:
         """List a directory in the sandbox workspace (Codex-style file browser)."""
-        target = _resolve_workspace_path(path, username=username, atelier_id=atelier_id)
+        target = _resolve_workspace_path(
+            path,
+            username=username,
+            atelier_id=atelier_id,
+            atelier_session=atelier_session,
+        )
         if not target.is_dir():
             raise HTTPException(status_code=400, detail="path is not a directory")
         # Hide common noise / secrets at listing time
@@ -322,25 +344,43 @@ def create_app(settings: Settings) -> FastAPI:
             entries.append(
                 {
                     "name": name,
-                    "path": _virtual_path(child, username=username, atelier_id=atelier_id),
+                    "path": _virtual_path(
+                        child,
+                        username=username,
+                        atelier_id=atelier_id,
+                        atelier_session=atelier_session,
+                    ),
                     "kind": kind,
                     "size": int(st.st_size) if kind == "file" else 0,
                     "mtime": float(st.st_mtime),
                 }
             )
         parent = target.parent
-        root = _workspace_root_for(username, atelier_id=atelier_id)
+        root = _workspace_root_for(
+            username, atelier_id=atelier_id, atelier_session=atelier_session
+        )
         parent_path = None
         if target != root and (root in parent.parents or parent == root):
-            parent_path = _virtual_path(parent, username=username, atelier_id=atelier_id)
+            parent_path = _virtual_path(
+                parent,
+                username=username,
+                atelier_id=atelier_id,
+                atelier_session=atelier_session,
+            )
         return {
-            "path": _virtual_path(target, username=username, atelier_id=atelier_id),
+            "path": _virtual_path(
+                target,
+                username=username,
+                atelier_id=atelier_id,
+                atelier_session=atelier_session,
+            ),
             "parent": parent_path,
             "entries": entries,
             "workspace": str(root),
             "workspace_mode": "atelier" if atelier_id else settings.web_workspace_mode,
             "project_root": str(_project_root()),
             "atelier_id": atelier_id,
+            "atelier_session": atelier_session or "main",
         }
 
     @app.get("/api/workspace/read")
@@ -348,10 +388,16 @@ def create_app(settings: Settings) -> FastAPI:
         path: str = Query(..., description="File path under /workspace"),
         max_bytes: int = Query(default=512_000, ge=1024, le=2_000_000),
         atelier_id: str | None = Query(default=None),
+        atelier_session: str | None = Query(default=None),
         username: str = Depends(current_user),
     ) -> dict[str, Any]:
         """Read a text file from workspace (preview). Binary files are flagged."""
-        target = _resolve_workspace_path(path, username=username, atelier_id=atelier_id)
+        target = _resolve_workspace_path(
+            path,
+            username=username,
+            atelier_id=atelier_id,
+            atelier_session=atelier_session,
+        )
         if not target.is_file():
             raise HTTPException(status_code=400, detail="path is not a file")
         size = target.stat().st_size
@@ -372,10 +418,17 @@ def create_app(settings: Settings) -> FastAPI:
                 except UnicodeDecodeError:
                     binary = True
                     text = ""
-        vpath = _virtual_path(target, username=username, atelier_id=atelier_id)
+        vpath = _virtual_path(
+            target,
+            username=username,
+            atelier_id=atelier_id,
+            atelier_session=atelier_session,
+        )
         dl = f"/api/workspace/file?path={vpath}"
         if atelier_id:
             dl += f"&atelier_id={atelier_id}"
+            if atelier_session:
+                dl += f"&atelier_session={atelier_session}"
         return {
             "path": vpath,
             "name": target.name,
@@ -391,6 +444,7 @@ def create_app(settings: Settings) -> FastAPI:
     def workspace_file(
         path: str = Query(..., description="Sandbox path e.g. /workspace/plot.png"),
         atelier_id: str | None = Query(default=None),
+        atelier_session: str | None = Query(default=None),
         username: str = Depends(current_user),
     ) -> FileResponse:
         """Serve a file from the account's active /workspace root.
@@ -398,7 +452,12 @@ def create_app(settings: Settings) -> FastAPI:
         Used by the web UI to inline 走势图 / plots written by sandbox tools.
         Auth required; path confined to project or per_user root (web-workspace.md).
         """
-        target = _resolve_workspace_path(path, username=username, atelier_id=atelier_id)
+        target = _resolve_workspace_path(
+            path,
+            username=username,
+            atelier_id=atelier_id,
+            atelier_session=atelier_session,
+        )
         if not target.is_file():
             raise HTTPException(status_code=404, detail=f"file not found: {path}")
         media = "application/octet-stream"
