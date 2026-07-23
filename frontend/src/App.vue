@@ -2,10 +2,9 @@
 import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
 import AtelierPanel from './components/AtelierPanel.vue'
 import AuthView from './components/AuthView.vue'
+import ChatMessage from './components/ChatMessage.vue'
 import KnowledgePanel from './components/KnowledgePanel.vue'
-import MarkdownView from './components/MarkdownView.vue'
 import PluginsModal from './components/PluginsModal.vue'
-import ThinkingBlock from './components/ThinkingBlock.vue'
 import ToolsPanel, { type ToolEntry } from './components/ToolsPanel.vue'
 import WorkspaceBrowser from './components/WorkspaceBrowser.vue'
 import { api, parseSseBuffer, type Me, type SessionRow, type StreamEvent } from './api/client'
@@ -80,7 +79,16 @@ function putHistoryCache(msgs: ChatMsg[]) {
 const tools = ref<ToolEntry[]>([])
 const toolsOpenIds = ref(new Set<string>())
 const chatEl = ref<HTMLElement | null>(null)
+provide('chatScrollRoot', chatEl)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
+
+/** Last N messages always fully rendered; older ones lazy. */
+const EAGER_TAIL = 8
+function isMessageEager(id: string, index: number): boolean {
+  const m = messages.value[index]
+  if (m && m.role === 'assistant' && 'streaming' in m && m.streaming) return true
+  return index >= Math.max(0, messages.value.length - EAGER_TAIL)
+}
 /** Wall-clock start of the in-flight turn (ms). */
 let turnStartedAt = 0
 
@@ -985,30 +993,12 @@ onMounted(() => {
             </p>
             <p v-else>聊两句，或点左边「作坊」开个小角落</p>
           </div>
-          <template v-for="m in messages" :key="m.id">
-            <div v-if="m.role === 'user'" class="msg user">{{ m.content }}</div>
-            <div v-else class="msg assistant" :class="{ streaming: m.streaming }">
-              <div class="meta">
-                <span class="avatar">A</span>
-                <span>Ariadne</span>
-                <span v-if="m.streaming" class="status">
-                  · {{ m.thinkingLive ? '思考中' : m.content ? '生成中' : '思考中' }}
-                </span>
-              </div>
-              <ThinkingBlock :text="m.thinking" :live="m.thinkingLive" />
-              <MarkdownView
-                v-if="m.content || !m.thinking"
-                :key="(inAtelier ? atelierId + ':' + atelierSession + ':' : '') + m.id"
-                :source="
-                  m.content ||
-                  (m.streaming ? '' : '这轮好像没说完，再说一句就好～')
-                "
-                :streaming="m.streaming && !!m.content"
-                :lite="!m.streaming"
-              />
-              <div v-else-if="m.streaming && !m.content" class="md-placeholder">…</div>
-            </div>
-          </template>
+          <ChatMessage
+            v-for="(m, i) in messages"
+            :key="(inAtelier ? atelierId + ':' + atelierSession + ':' : '') + m.id"
+            :msg="m"
+            :eager="isMessageEager(m.id, i)"
+          />
           <button
             v-if="tools.length"
             type="button"
