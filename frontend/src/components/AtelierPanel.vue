@@ -30,7 +30,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  select: [id: string]
+  select: [id: string, name?: string]
   selectSession: [sessionId: string]
   exit: []
   openKnowledge: []
@@ -153,7 +153,12 @@ async function createBranch() {
 
 async function mergeBranch(branch: string) {
   if (!props.selectedId) return
-  if (!confirm(`把旁支「${branch}」收进主线？会在小本本里记一笔。`)) return
+  if (
+    !confirm(
+      `收起旁支「${branch}」？只归档旁支摘要，不会改主线文件，也不会改本坊便签。`,
+    )
+  )
+    return
   const r = await api(
     `/api/ateliers/${encodeURIComponent(props.selectedId)}/branches/${encodeURIComponent(branch)}/merge`,
     props.token,
@@ -187,7 +192,8 @@ async function discardBranch(branch: string) {
 }
 
 function pick(id: string) {
-  emit('select', id)
+  const row = list.value.find((a) => a.id === id)
+  emit('select', id, row?.name)
   emit('selectSession', 'main')
 }
 
@@ -268,10 +274,20 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
           <div class="ap-title">{{ selected?.name || selectedId }}</div>
           <div class="ap-sub mono">{{ selectedId }}</div>
         </div>
-        <button type="button" class="chip" title="小本本" @click="emit('openKnowledge')">本本</button>
+        <button
+          type="button"
+          class="chip"
+          title="本坊便签（只属于这一间作坊）"
+          @click="emit('openKnowledge')"
+        >本坊便签</button>
       </div>
 
       <p v-if="err" class="err">{{ err }}</p>
+
+      <p class="scope-note">
+        便签、主线文件都<strong>只属于「{{ selected?.name || selectedId }}」</strong>，
+        换作坊不会带走。
+      </p>
 
       <div class="sec-label">聊到哪儿了</div>
       <div class="slist">
@@ -325,9 +341,9 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
       </div>
 
       <div class="tips">
-        <p>· <b>主线</b>：定方向；自己的文件夹，旁支改不到</p>
-        <p>· <b>旁支</b>：独立拷贝 + 独立记忆，放心折腾</p>
-        <p>· 「收」只记摘要，不自动覆盖主线文件</p>
+        <p>· <b>本坊便签</b>：只给这间作坊用，不是全局记忆</p>
+        <p>· <b>主线</b>：定方向；改文件/改便签都在主线</p>
+        <p>· <b>旁支</b>：独立拷贝；「收」不写回主线文件与便签</p>
       </div>
     </template>
   </div>
@@ -353,6 +369,17 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
 .ap-title { font-weight: 700; font-size: 13.5px; }
 .ap-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 .ap-sub.mono, .mono { font-family: var(--mono); }
+.scope-note {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--dim);
+  background: color-mix(in srgb, var(--blue) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--blue) 25%, var(--line));
+  border-radius: 10px;
+}
+.scope-note strong { color: var(--fg-2); font-weight: 650; }
 .flex-1 { flex: 1; min-width: 0; }
 .back {
   width: 30px; height: 30px; border-radius: 8px;

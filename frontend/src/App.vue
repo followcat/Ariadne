@@ -99,9 +99,15 @@ const sessionLabel = computed(() => {
   return id.length > 20 ? id.slice(0, 10) + '…' + id.slice(-4) : id
 })
 const providerOk = computed(() => !!me.value?.provider_configured)
+const atelierDisplayName = ref('')
 const topTitle = computed(() => {
   if (atelierId.value) {
-    return `◈ ${atelierId.value} · ${atelierSession.value}`
+    const name = atelierDisplayName.value || atelierId.value
+    const sess =
+      atelierSession.value === 'main'
+        ? '主线'
+        : atelierSession.value.replace(/^branch-/, '旁支·')
+    return `◈ ${name} · ${sess}`
   }
   const s = sessions.value.find((x) => x.session_id === sessionId.value)
   return s?.title || 'Ariadne'
@@ -130,8 +136,9 @@ function setLeftTab(tab: LeftTab) {
   }
 }
 
-function selectAtelier(id: string) {
+function selectAtelier(id: string, name?: string) {
   atelierId.value = id
+  if (name) atelierDisplayName.value = name
   localStorage.setItem('ariadne_atelier', id)
   setActiveAtelierId(id)
   atelierSession.value = 'main'
@@ -141,7 +148,27 @@ function selectAtelier(id: string) {
   tools.value = []
   knowledgeOpen.value = false
   void loadAtelierHistory()
+  void refreshAtelierName()
   workspaceRefreshKey.value += 1
+}
+
+function onSelectAtelier(id: string, name?: string) {
+  selectAtelier(id, name)
+}
+
+async function refreshAtelierName() {
+  if (!atelierId.value || !token.value) return
+  try {
+    const r = await api(
+      '/api/ateliers/' + encodeURIComponent(atelierId.value),
+      token.value,
+    )
+    if (!r.ok) return
+    const d = await r.json()
+    if (d.name) atelierDisplayName.value = d.name
+  } catch {
+    /* non-fatal */
+  }
 }
 
 function selectAtelierSession(sid: string) {
@@ -164,6 +191,7 @@ function selectAtelierSession(sid: string) {
 
 function exitAtelier() {
   atelierId.value = ''
+  atelierDisplayName.value = ''
   atelierSession.value = 'main'
   localStorage.removeItem('ariadne_atelier')
   localStorage.removeItem('ariadne_atelier_session')
@@ -257,6 +285,7 @@ async function bootstrap() {
     // Scope chat image URLs to atelier workspace when a workshop is open.
     setActiveAtelierId(atelierId.value || '')
     setActiveAtelierSession(atelierSession.value || 'main')
+    if (atelierId.value) void refreshAtelierName()
     if (!sessionId.value && !atelierId.value) {
       const sr = await api('/api/sessions', token.value, { method: 'POST' })
       if (sr.ok) {
@@ -817,7 +846,8 @@ onMounted(() => {
           class="new-chat atelier-banner"
           @click="knowledgeOpen = !knowledgeOpen"
         >
-          <span class="plus at">◈</span> {{ knowledgeOpen ? '合上小本本' : '小本本' }}
+          <span class="plus at">◈</span>
+          {{ knowledgeOpen ? '合上本坊便签' : '本坊便签' }}
         </button>
         <div class="sb-tabs three" role="tablist" aria-label="侧栏">
           <button
@@ -894,7 +924,7 @@ onMounted(() => {
         :active="leftTab === 'atelier'"
         :selected-id="atelierId"
         :selected-session="atelierSession"
-        @select="selectAtelier"
+        @select="onSelectAtelier"
         @select-session="selectAtelierSession"
         @exit="exitAtelier"
         @open-knowledge="knowledgeOpen = true"
@@ -950,7 +980,11 @@ onMounted(() => {
         >◈</button>
         <span
           class="title"
-          :title="inAtelier ? '点一下打开小本本' : '点击可重命名；留空确定则自动重总结主题'"
+          :title="
+            inAtelier
+              ? '本坊便签（只属于这一间作坊）'
+              : '点击可重命名；留空确定则自动重总结主题'
+          "
           @click="inAtelier ? (knowledgeOpen = !knowledgeOpen) : editTitle()"
         >{{ topTitle }}</span>
         <div class="spacer" />
@@ -958,7 +992,7 @@ onMounted(() => {
           v-if="inAtelier"
           type="button"
           class="icon-btn"
-          title="小本本"
+          :title="'本坊便签 · ' + (atelierDisplayName || atelierId)"
           :class="{ on: knowledgeOpen }"
           @click="knowledgeOpen = !knowledgeOpen"
         >📝</button>
@@ -1039,6 +1073,8 @@ onMounted(() => {
     <KnowledgePanel
       :token="token"
       :atelier-id="atelierId"
+      :atelier-name="atelierDisplayName || atelierId"
+      :atelier-session="atelierSession"
       :open="knowledgeOpen && inAtelier"
       @close="knowledgeOpen = false"
       @updated="knowledgeRefresh += 1"

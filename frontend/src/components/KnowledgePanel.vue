@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 小本本：随便记几笔，跨天接着玩。
+ * 小本本：只属于「当前这一间作坊」的便签，不是全局记忆。
  */
 import { computed, ref, watch } from 'vue'
 import { api } from '../api/client'
@@ -9,6 +9,10 @@ import MarkdownView from './MarkdownView.vue'
 const props = defineProps<{
   token: string
   atelierId: string
+  /** 展示名，如「画画」 */
+  atelierName?: string
+  /** main | branch-… — 旁支时本本只读（权威在主线） */
+  atelierSession?: string
   open: boolean
 }>()
 
@@ -25,6 +29,18 @@ const mode = ref<'view' | 'edit'>('view')
 const draft = ref('')
 
 const dirty = computed(() => mode.value === 'edit' && draft.value !== content.value)
+const isBranch = computed(() => {
+  const s = (props.atelierSession || 'main').trim()
+  return s !== 'main' && s.startsWith('branch-')
+})
+const workshopLabel = computed(
+  () => (props.atelierName || props.atelierId || '当前作坊').trim(),
+)
+const canEdit = computed(() => !isBranch.value)
+const editPlaceholder = computed(
+  () =>
+    `# ${workshopLabel.value}\n\n## 我想记住的\n- 只写这间作坊的约定\n- 例如：蜡笔质感、纯本地`,
+)
 
 async function load() {
   if (!props.token || !props.atelierId) return
@@ -51,6 +67,7 @@ async function load() {
 }
 
 async function saveFull() {
+  if (!canEdit.value) return
   saving.value = true
   err.value = ''
   try {
@@ -73,6 +90,7 @@ async function saveFull() {
 }
 
 function startEdit() {
+  if (!canEdit.value) return
   draft.value = content.value
   mode.value = 'edit'
 }
@@ -92,29 +110,46 @@ watch(
   },
   { immediate: true },
 )
+
+watch(
+  () => props.atelierSession,
+  () => {
+    // 切主线/旁支：旁支不可编辑，退出编辑态
+    if (isBranch.value) mode.value = 'view'
+  },
+)
 </script>
 
 <template>
   <aside class="know" :class="{ open }">
     <header class="know-head">
       <div class="titles">
-        <span class="k-label">小本本</span>
-        <span class="k-sub">想到啥写啥</span>
+        <span class="k-label">本坊小本本</span>
+        <span class="k-sub">仅「{{ workshopLabel }}」· 不是全局</span>
       </div>
       <div class="actions">
         <button
-          v-if="mode === 'view'"
+          v-if="mode === 'view' && canEdit"
           type="button"
           class="chip-btn"
-          title="改一改"
+          title="改这一坊的便签"
           @click="startEdit"
         >✎</button>
         <button type="button" class="chip-btn" title="合上" @click="emit('close')">×</button>
       </div>
     </header>
 
+    <div class="scope-bar">
+      <span class="scope-pill">◈ {{ workshopLabel }}</span>
+      <span class="scope-pill soft">{{ isBranch ? '旁支只读' : '主线可改' }}</span>
+    </div>
+
     <p class="hint">
-      可选的。写「用蜡笔、想画小鸟」这种就够用；不写也完全可以接着玩。
+      <strong>只属于这一间作坊</strong>——换作坊是另一本；普通聊天也看不到它。
+      写短约定就行（风格、目标、别踩的坑）。对话细节靠记忆，不用全抄进来。
+      <template v-if="isBranch">
+        <br />你在旁支里：可看本坊便签，改请回<strong>主线</strong>。
+      </template>
     </p>
 
     <p v-if="err" class="err">{{ err }}</p>
@@ -122,19 +157,29 @@ watch(
 
     <template v-else>
       <div v-if="mode === 'view'" class="know-body">
-        <MarkdownView :source="content || '_(还是空白，点 ✎ 随便写两笔)_'" />
+        <MarkdownView
+          :source="
+            content ||
+            '_(本坊便签还是空的。' +
+            (canEdit ? '点 ✎ 写两笔，只对本坊生效。' : '回主线才能改。') +
+            ')_'
+          "
+        />
       </div>
       <div v-else class="know-edit">
+        <p class="edit-scope">正在编辑 · {{ workshopLabel }} 的便签</p>
         <textarea
           v-model="draft"
           spellcheck="false"
           rows="18"
-          placeholder="# 画画&#10;&#10;## 我想记住的&#10;- 蜡笔质感&#10;- 想加一只小鸟"
+          :placeholder="editPlaceholder"
         />
         <div class="edit-bar">
           <span v-if="dirty" class="dirty">还没存</span>
           <button type="button" class="secondary" @click="cancelEdit">算了</button>
-          <button type="button" class="primary" :disabled="saving" @click="saveFull">存一下</button>
+          <button type="button" class="primary" :disabled="saving" @click="saveFull">
+            存到本坊
+          </button>
         </div>
       </div>
     </template>
@@ -167,22 +212,60 @@ watch(
 }
 .titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .k-label { font-weight: 700; font-size: 13px; }
-.k-sub { font-size: 11px; color: var(--muted); }
-.actions { display: flex; gap: 4px; }
+.k-sub {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions { display: flex; gap: 4px; flex-shrink: 0; }
 .chip-btn {
   width: 30px; height: 30px; border-radius: 8px;
   background: var(--bg-3); border: 1px solid var(--line);
   color: var(--fg-2); font-size: 14px;
 }
 .chip-btn:hover { background: var(--bg-hover); }
+.scope-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+.scope-pill {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--blue) 14%, var(--bg-3));
+  border: 1px solid color-mix(in srgb, var(--blue) 35%, var(--line));
+  color: var(--fg-2);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scope-pill.soft {
+  font-weight: 500;
+  color: var(--dim);
+  background: var(--bg-3);
+  border-color: var(--line);
+}
 .hint {
   margin: 0;
   padding: 10px 14px;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--dim);
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--blue) 6%, transparent);
+}
+.hint strong { color: var(--fg-2); font-weight: 650; }
+.edit-scope {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--blue);
 }
 .know-body, .know-edit {
   flex: 1;
