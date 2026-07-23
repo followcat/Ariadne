@@ -96,7 +96,7 @@
 - **Skills** — pack、混合检索、分节加载、可选 discriminator、选择计划
 - **护栏** — secret 脱敏；注入警告；on-request 审批可持久化 grant
 - **官方插件** — GitLab / Redmine / Odoo 为**用户属性**（密钥显示为 `***`）
-- **Web UI（Vue 3）** — 三栏：历史 · 对话 · 工具；**工作区浏览器**（project / per_user）；markdown-it 表格；thinking 折叠；回合统计；workspace 走势图内联
+- **Web UI（Vue 3）** — 三栏：历史 · 对话 · 工具；**工作区浏览器**（打开的项目或作坊/旁支）；markdown-it 表格；thinking 折叠；回合统计；workspace 走势图内联
 - **OpenAI 兼容模型** — chat completions + tools + 可选 reasoning 流
 
 ## 宿主与界面
@@ -177,7 +177,7 @@ ariadne serve --host 127.0.0.1 --port 8420
 | 区域 | 行为 |
 | --- | --- |
 | **左侧栏** | **历史 \| 工作区** · 会话标题 · 外观 / Provider / 插件 |
-| **工作区浏览器** | 浏览 `/workspace`（`project` 或 `per_user` 模式） |
+| **工作区浏览器** | 浏览 `/workspace`（打开的项目；选中作坊/旁支时覆盖） |
 | **主栏** | 顶栏 · 对话 · thinking 折叠 · 回合统计 |
 | **右侧工具面板** | 可折叠 · 调用详情 · 耗时 / tokens / tool 数 |
 | **Markdown** | markdown-it 表格 · workspace 图片内联（走势图） |
@@ -308,7 +308,7 @@ print(result.text)
 | [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | 中文宿主用法 |
 | [docs/design/atelier.md](docs/design/atelier.md) | **Atelier 工坊**（main/branch + KNOWLEDGE） |
 | [docs/design/sandbox-v1.md](docs/design/sandbox-v1.md) · [docs/SANDBOX.md](docs/SANDBOX.md) | **Docker 优先**沙箱 |
-| [docs/design/web-workspace.md](docs/design/web-workspace.md) | Web 工作区模式（project / per_user） |
+| [docs/design/web-workspace.md](docs/design/web-workspace.md) | Web `/workspace` 绑定（打开的项目 vs 作坊/旁支） |
 | [docs/design/web-vue-frontend.md](docs/design/web-vue-frontend.md) | Vue Web UI 与 markdown-it 栈 |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | 验收矩阵 → 测试 |
 | [docs/](docs/) | 英文设计规范索引 |

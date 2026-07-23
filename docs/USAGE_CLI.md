@@ -100,11 +100,9 @@ ariadne atelier branch merge my-app experiment   # summary only (no file promote
 ariadne atelier branch discard my-app experiment
 ariadne atelier knowledge show my-app
 # design: docs/design/atelier.md
-# workspace mode: project (default, Codex-like shared project folder)
-#                or per_user (each account gets its own durable tree)
-ariadne serve --workspace-mode project
-ariadne serve --workspace-mode per_user
-# env: ARIADNE_WEB_WORKSPACE_MODE=project|per_user
+# Web: open folder = /workspace for ordinary chats; 作坊/旁支 override when selected
+ariadne serve --host 127.0.0.1 --port 8420
+# design: docs/design/web-workspace.md
 
 # official plugins (user attributes by default)
 ariadne plugins
@@ -235,13 +233,15 @@ Plugin credentials are **owned by the user**, not by a multi-company pack system
 ### Web workspace vs session vs account
 
 Personal-agent model (Codex / Grok): **project files ≠ chat thread**.
+No serve-time `project|per_user` mode switch.
 
 | | Scope |
 | --- | --- |
-| `/workspace` | **Project** by default (`--workspace-mode project`): serve cwd, shared by all sessions. Optional `per_user`: `{user_data}/workspace/`. |
-| Chat session | Transcript + title only; `/new` keeps workspace |
+| `/workspace` | Serve open folder (`cwd` / `--workspace`) for ordinary chats — **shared by all sessions** on that binding. When a 作坊 session is selected: that atelier main or branch tree. |
+| Chat session | Transcript + title only; `/new` keeps the same `/workspace` binding |
+| Atelier branch | Full-tree isolation for hands-on work (not each chat) |
 | `/session` scratch | Per user + sandbox scope (not shown as the browser root) |
-| Memory / BYOK / plugins | Per registered web account |
+| Memory / BYOK / plugins / ateliers | Per registered web account |
 
 Normative design: [design/web-workspace.md](design/web-workspace.md).
 

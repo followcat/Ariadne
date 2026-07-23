@@ -42,7 +42,8 @@ Run: `pytest -q` from repo root. Optional web browser: `python scripts/verify_we
 | W3 | Sessions CRUD + title | `tests/test_web_api.py::test_sessions_api` |
 | W4 | Plugins per user | `tests/test_web_api.py::test_per_user_plugins` |
 | W5 | Workspace list/read/file + host path | `tests/test_web_api.py::test_workspace_browse_api` |
-| W6 | Workspace mode `per_user` isolation | `tests/test_web_api.py::test_web_workspace_mode_per_user` |
+| W6 | Open-folder shared binding (no mode switch) | `tests/test_web_api.py::test_web_open_folder_shared_across_accounts_and_sessions` |
+| W6b | Atelier branch workspace ≠ main / open folder | `tests/test_web_api.py::test_web_atelier_branch_workspace_isolated_from_main` |
 | W7 | SPA index served | `tests/test_web_api.py::test_index_served` |
 | W8 | Optional live browser smoke | `scripts/verify_web.py` (env-dependent) |
 

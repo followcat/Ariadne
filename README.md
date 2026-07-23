@@ -96,7 +96,7 @@ Most “agent frameworks” give you either a thin chat wrapper, or a company pl
 - **Skills** — packs, hybrid search, section load, optional discriminators, scored selection plan
 - **Guardrails** — secret redaction in/out; injection warnings; durable approval grants (on-request)
 - **Official plugins** — GitLab / Redmine / Odoo as **user attributes** (secrets shown as `***`)
-- **Web UI (Vue 3)** — three-column shell: history · chat · tools; **workspace browser** (project / per_user); markdown-it GFM tables; thinking collapse; turn stats; inline workspace 走势图
+- **Web UI (Vue 3)** — three-column shell: history · chat · tools; **workspace browser** (open folder or 作坊/旁支); markdown-it GFM tables; thinking collapse; turn stats; inline workspace 走势图
 - **OpenAI-compatible models** — chat completions + tools + optional reasoning stream
 
 ## Hosts & UI
@@ -179,7 +179,7 @@ ariadne serve --host 127.0.0.1 --port 8420
 | Area | Behavior |
 | --- | --- |
 | **Left sidebar** | **历史 \| 工作区** tabs · session titles · appearance / Provider / plugins |
-| **Workspace browser** | Codex-style tree under `/workspace` (`project` or `per_user` mode) |
+| **Workspace browser** | Codex-style tree under `/workspace` (open folder; 作坊/旁支 when selected) |
 | **Main column** | Top bar · chat · composer · thinking collapse · turn stats |
 | **Right tools panel** | Collapsible · per-call detail · duration / tokens / tool count |
 | **Markdown** | markdown-it GFM tables · workspace image inline (走势图) |
@@ -311,7 +311,7 @@ See [docs/PUBLIC_API.md](docs/PUBLIC_API.md).
 | [docs/USAGE_CLI.md](docs/USAGE_CLI.md) · [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | Host usage |
 | [docs/design/atelier.md](docs/design/atelier.md) | **Atelier** workshop (main/branch + KNOWLEDGE) |
 | [docs/design/sandbox-v1.md](docs/design/sandbox-v1.md) · [docs/SANDBOX.md](docs/SANDBOX.md) | **Docker-first** sandbox |
-| [docs/design/web-workspace.md](docs/design/web-workspace.md) | Web workspace modes (project / per_user) |
+| [docs/design/web-workspace.md](docs/design/web-workspace.md) | Web `/workspace` binding (open folder vs 作坊/旁支) |
 | [docs/design/web-vue-frontend.md](docs/design/web-vue-frontend.md) | Vue web UI + markdown-it stack |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | Acceptance matrix → tests |
 | [docs/VISION.md](docs/VISION.md) · [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [PUBLIC_API.md](docs/PUBLIC_API.md) | Design core |

@@ -90,12 +90,9 @@ ariadne toolbox
 ariadne version
 
 # Web UI — 注册用户，每人绑定自己的 Provider（BYOK）
+# 打开的项目目录 = 普通对话的 /workspace；选中作坊/旁支时覆盖绑定
 ariadne serve --host 127.0.0.1 --port 8420
-# 工作区模式：project（默认，Codex 式共用项目目录）
-#            或 per_user（每个账号独立 durable 目录）
-ariadne serve --workspace-mode project
-ariadne serve --workspace-mode per_user
-# 环境变量：ARIADNE_WEB_WORKSPACE_MODE=project|per_user
+# 设计：docs/design/web-workspace.md
 
 # 官方插件（默认写入用户属性）
 ariadne plugins
@@ -221,14 +218,16 @@ sandbox_edit_file   {path, old_string, new_string}  → 精确一次匹配 + 统
 
 ### Web 工作区 / 会话 / 账号
 
-个人 agent 模型（对齐 Codex / Grok）：**项目文件 ≠ 对话线程**。
+个人 agent 模型（对齐 Codex / Grok）：**项目文件 ≠ 对话线程**。  
+无 serve 期 `project|per_user` 模式开关。
 
 | | 范围 |
 | --- | --- |
-| `/workspace` | 默认 **项目**（`--workspace-mode project`）：serve 的 cwd，多会话共用。可选 `per_user`：`{user_data}/workspace/` |
-| 对话 session | 仅 transcript + 标题；`/new` 保留工作区 |
+| `/workspace` | 普通对话：serve 打开的项目目录（`cwd` / `--workspace`），**多会话共用**。选中作坊会话时：该作坊主线或旁支树。 |
+| 对话 session | 仅 transcript + 标题；`/new` 不换 `/workspace` 绑定 |
+| 作坊旁支 | 整树隔离动手（不是每个聊天一份盘） |
 | `/session` 临时目录 | 按用户 + sandbox scope（不作为浏览器根） |
-| 记忆 / BYOK / 插件 | 按 Web 注册账号 |
+| 记忆 / BYOK / 插件 / 作坊 | 按 Web 注册账号 |
 
 规范设计：[design/web-workspace.md](../design/web-workspace.md)。
 
