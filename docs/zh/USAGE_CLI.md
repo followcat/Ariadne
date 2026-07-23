@@ -2,9 +2,11 @@
 
 > 语言：[English](../USAGE_CLI.md) · **简体中文**
 
-Ariadne 的主宿主是面向项目工作区的 **CLI 终端 Agent**。  
+Ariadne 的主宿主是面向「你打开的文件夹」的 **CLI 终端 Agent**。  
+**CLI 身份 = Linux 用户**（home、权限、cwd）。  
 **直接运行 `ariadne` 即进入交互模式**（对齐 codex 入口）。可选宿主：**Web UI**
-（`ariadne serve`）与 **Python** `Agent` API。
+（`ariadne serve`，**注册账号**，作坊承载账号级文件）与 **Python** `Agent` API。  
+CLI 与 Web **不共享**同一个产品层「项目」对象。
 
 ## 环境要求
 
@@ -89,10 +91,9 @@ ariadne sessions
 ariadne toolbox
 ariadne version
 
-# Web UI — 注册用户，每人绑定自己的 Provider（BYOK）
-# 打开的项目目录 = 普通对话的 /workspace；选中作坊/旁支时覆盖绑定
+# Web UI — 注册账号 + BYOK；作坊 = 账号级 durable 文件；普通工作区 = serve 主机目录
 ariadne serve --host 127.0.0.1 --port 8420
-# 设计：docs/design/web-workspace.md
+# 双宿主身份：docs/design/web-workspace.md
 
 # 官方插件（默认写入用户属性）
 ariadne plugins
@@ -216,17 +217,22 @@ sandbox_edit_file   {path, old_string, new_string}  → 精确一次匹配 + 统
 | CLI | `~/.ariadne/plugins.json`（权限 `0600`） | 跨工作区。`--workspace-scope` 写入项目 `data_dir/plugins.json`。Compose 合并顺序：**用户 → 工作区**（同名工作区优先）。 |
 | Web | `data_dir/web/users/<username>/plugins.json` | 按注册账号隔离。API：`GET/PUT/DELETE /api/me/plugins`。Web **不**合并 home。 |
 
-### Web 工作区 / 会话 / 账号
+### 双宿主：CLI vs Web（身份与工作区）
 
-个人 agent 模型（对齐 Codex / Grok）：**项目文件 ≠ 对话线程**。  
-无 serve 期 `project|per_user` 模式开关。
+| | CLI | Web |
+| --- | --- | --- |
+| **身份** | Linux 用户 | 注册账号 |
+| **工作区** | 你打开的目录（`cwd` / `--workspace`） | 账号级 durable 看 **作坊** 主线/旁支；普通 **工作区** Tab = serve 主机目录（多会话共用，**不是**产品「项目」） |
+| **Session** | 仅聊天线程，**不是**文件系统 | 同：对话 ≠ 文件树 |
 
-| | 范围 |
+无 serve 期 `project|per_user` 模式开关。Web 产品面：**历史 · 工作区 · 作坊**（无项目选择器）。
+
+| Web 资源 | 范围 |
 | --- | --- |
-| `/workspace` | 普通对话：serve 打开的项目目录（`cwd` / `--workspace`），**多会话共用**。选中作坊会话时：该作坊主线或旁支树。 |
-| 对话 session | 仅 transcript + 标题；`/new` 不换 `/workspace` 绑定 |
+| `/workspace`（未进作坊） | serve 主机目录 — 同一 `serve` 上多会话/多账号共用 |
+| `/workspace`（作坊内） | 该账号的作坊主线或旁支树 |
+| 对话 session | transcript + 标题；`/new` 不拷贝整树 |
 | 作坊旁支 | 整树隔离动手（不是每个聊天一份盘） |
-| `/session` 临时目录 | 按用户 + sandbox scope（不作为浏览器根） |
 | 记忆 / BYOK / 插件 / 作坊 | 按 Web 注册账号 |
 
 规范设计：[design/web-workspace.md](../design/web-workspace.md)。

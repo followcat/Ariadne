@@ -35,8 +35,9 @@
 
 **Ariadne** is a callable runtime that turns one user turn into model reasoning, skill guidance, tool calls, layered memory, and **Docker-isolated** execution (Codex-style containers on *your* machine).
 
-Default human interface: a **CLI shell agent** over your project workspace (bare `ariadne` → REPL).  
-Optional: **Atelier** project workshops (`ariadne atelier` / Web **工坊** tab) and a **Grok-style Vue web UI** (`ariadne serve`) — history · chat · tools · workspace · project brief.
+Default human interface: a **CLI shell agent** over the folder you open (bare `ariadne` → REPL).  
+**CLI identity = Linux user**; **Web identity = registered accounts** (作坊 for per-account files).  
+Optional: **Atelier** workshops (`ariadne atelier` / Web **工坊**) and a **Grok-style Vue web UI** (`ariadne serve`) — 历史 · 对话 · 工作区 · 作坊 (Web has no product “project” object).
 
 It is **not** an enterprise multi-tenant platform, connector hub, or company packaging stack.
 
@@ -96,7 +97,7 @@ Most “agent frameworks” give you either a thin chat wrapper, or a company pl
 - **Skills** — packs, hybrid search, section load, optional discriminators, scored selection plan
 - **Guardrails** — secret redaction in/out; injection warnings; durable approval grants (on-request)
 - **Official plugins** — GitLab / Redmine / Odoo as **user attributes** (secrets shown as `***`)
-- **Web UI (Vue 3)** — three-column shell: history · chat · tools; **workspace browser** (open folder or 作坊/旁支); markdown-it GFM tables; thinking collapse; turn stats; inline workspace 走势图
+- **Web UI (Vue 3)** — three-column shell: history · chat · tools; **工作区** (host dir or 作坊/旁支) · **作坊**; markdown-it GFM tables; thinking collapse; turn stats; inline workspace 走势图
 - **OpenAI-compatible models** — chat completions + tools + optional reasoning stream
 
 ## Hosts & UI
@@ -178,8 +179,8 @@ ariadne serve --host 127.0.0.1 --port 8420
 
 | Area | Behavior |
 | --- | --- |
-| **Left sidebar** | **历史 \| 工作区** tabs · session titles · appearance / Provider / plugins |
-| **Workspace browser** | Codex-style tree under `/workspace` (open folder; 作坊/旁支 when selected) |
+| **Left sidebar** | **历史 \| 工作区 \| 作坊** · session titles · appearance / Provider / plugins |
+| **Workspace browser** | `/workspace` tree: **当前目录** (serve host dir) or **作坊主线/旁支** when selected — not a product “项目” |
 | **Main column** | Top bar · chat · composer · thinking collapse · turn stats |
 | **Right tools panel** | Collapsible · per-call detail · duration / tokens / tool count |
 | **Markdown** | markdown-it GFM tables · workspace image inline (走势图) |
@@ -311,7 +312,7 @@ See [docs/PUBLIC_API.md](docs/PUBLIC_API.md).
 | [docs/USAGE_CLI.md](docs/USAGE_CLI.md) · [docs/zh/USAGE_CLI.md](docs/zh/USAGE_CLI.md) | Host usage |
 | [docs/design/atelier.md](docs/design/atelier.md) | **Atelier** workshop (main/branch + KNOWLEDGE) |
 | [docs/design/sandbox-v1.md](docs/design/sandbox-v1.md) · [docs/SANDBOX.md](docs/SANDBOX.md) | **Docker-first** sandbox |
-| [docs/design/web-workspace.md](docs/design/web-workspace.md) | Web `/workspace` binding (open folder vs 作坊/旁支) |
+| [docs/design/web-workspace.md](docs/design/web-workspace.md) | Dual-host identity; `/workspace` (host dir vs 作坊/旁支); session ≠ files |
 | [docs/design/web-vue-frontend.md](docs/design/web-vue-frontend.md) | Vue web UI + markdown-it stack |
 | [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) | Acceptance matrix → tests |
 | [docs/VISION.md](docs/VISION.md) · [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [PUBLIC_API.md](docs/PUBLIC_API.md) | Design core |

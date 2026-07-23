@@ -139,8 +139,8 @@ hosts and kernel code.
 - [x] Official plugins: odoo / gitlab / redmine with per-host credentials
 - [x] `ariadne serve`: web UI, user registration, BYOK provider binding
 - [x] SSE streaming turns in browser; per-user data isolation
-- [x] Web workspace single binding (open folder vs 作坊/旁支); no mode switch;
-  design [design/web-workspace.md](design/web-workspace.md); browse API + UI
+- [x] Dual-host identity (CLI Linux vs Web accounts); Web 作坊 for per-account files;
+  no product 「项目」 / mode switch; [design/web-workspace.md](design/web-workspace.md)
 - [x] playwright end-to-end verification (`scripts/verify_web.py`)
 - [x] in/out bound: secret redaction + injection warnings (`guardrails.py`)
 - [x] Official plugin mechanism (odoo/gitlab/redmine, token-configured)

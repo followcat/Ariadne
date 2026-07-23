@@ -2,9 +2,11 @@
 
 > Language: **English** · [简体中文](zh/USAGE_CLI.md)
 
-Ariadne’s primary host is a **CLI shell agent** over a project workspace.  
+Ariadne’s primary host is a **CLI shell agent** over a folder you open.  
+**Identity on CLI = Linux user** (home, permissions, your cwd).  
 **Bare `ariadne` enters interactive mode** (codex-style). Optional hosts: **web UI**
-(`ariadne serve`) and the **Python** `Agent` API.
+(`ariadne serve`, **registered accounts**, 作坊 for per-account files) and the
+**Python** `Agent` API. CLI and Web do **not** share one product “project” object.
 
 ## Requirements
 
@@ -100,9 +102,9 @@ ariadne atelier branch merge my-app experiment   # summary only (no file promote
 ariadne atelier branch discard my-app experiment
 ariadne atelier knowledge show my-app
 # design: docs/design/atelier.md
-# Web: open folder = /workspace for ordinary chats; 作坊/旁支 override when selected
+# Web: registered accounts; 作坊 = per-account durable files; ordinary file tab = serve host dir
 ariadne serve --host 127.0.0.1 --port 8420
-# design: docs/design/web-workspace.md
+# dual-host identity: docs/design/web-workspace.md
 
 # official plugins (user attributes by default)
 ariadne plugins
@@ -230,17 +232,22 @@ Plugin credentials are **owned by the user**, not by a multi-company pack system
 | CLI | `~/.ariadne/plugins.json` (mode `0600`) | Cross-workspace. Use `--workspace-scope` for project `data_dir/plugins.json`. Compose merges **user → workspace** (workspace wins on name). |
 | Web | `data_dir/web/users/<username>/plugins.json` | Per registered account. API: `GET/PUT/DELETE /api/me/plugins`. Home merge is **off** for web. |
 
-### Web workspace vs session vs account
+### Dual host: CLI vs Web (identity & workspace)
 
-Personal-agent model (Codex / Grok): **project files ≠ chat thread**.
-No serve-time `project|per_user` mode switch.
+| | CLI | Web |
+| --- | --- | --- |
+| **Identity** | Linux user | Registered account |
+| **Workspace** | Folder you open (`cwd` / `--workspace`) | **作坊** main/branch for per-account files; ordinary **工作区** tab = serve host dir (shared by chats on that serve, not a product “项目”) |
+| **Session** | Chat thread only — **not** a filesystem | Same: 对话 ≠ 文件树 |
 
-| | Scope |
+No serve-time `project|per_user` mode switch. Web UI surfaces: **历史 · 工作区 · 作坊** (no project picker).
+
+| Web resource | Scope |
 | --- | --- |
-| `/workspace` | Serve open folder (`cwd` / `--workspace`) for ordinary chats — **shared by all sessions** on that binding. When a 作坊 session is selected: that atelier main or branch tree. |
-| Chat session | Transcript + title only; `/new` keeps the same `/workspace` binding |
+| `/workspace` (no 作坊) | Serve host directory — multi-session, multi-account share on one `serve` |
+| `/workspace` (in 作坊) | That account’s atelier main or branch tree |
+| Chat session | Transcript + title; `/new` does not clone files |
 | Atelier branch | Full-tree isolation for hands-on work (not each chat) |
-| `/session` scratch | Per user + sandbox scope (not shown as the browser root) |
 | Memory / BYOK / plugins / ateliers | Per registered web account |
 
 Normative design: [design/web-workspace.md](design/web-workspace.md).
