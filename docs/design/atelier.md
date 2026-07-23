@@ -139,7 +139,7 @@ Vue：**作坊** 页 · 小本本面板 · 工作区浏览器带 session 作用�
 
 ## 9. Related
 
-- [web-workspace.md](web-workspace.md) — project vs per_user vs atelier  
+- [web-workspace.md](web-workspace.md) — open folder vs 作坊/旁支 binding
 - [MEMORY.md](../MEMORY.md) / [memory-v1.md](memory-v1.md) — 分层记忆  
 - [sandbox-v1.md](sandbox-v1.md) — /workspace vs /session  
 - [cli-shell-agent.md](cli-shell-agent.md) — REPL host  
