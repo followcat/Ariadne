@@ -156,17 +156,26 @@ export function getActiveAtelierId(): string {
   return activeAtelierId
 }
 
+/**
+ * Attach or refresh atelier_id / atelier_session on workspace file URLs.
+ * Must replace existing params so session switches don't keep a stale branch id.
+ */
 function withAtelierQuery(url: string): string {
-  if (!activeAtelierId) return url
-  let out = url
-  if (!/[?&]atelier_id=/.test(out)) {
-    out += (out.includes('?') ? '&' : '?') + 'atelier_id=' + encodeURIComponent(activeAtelierId)
+  const raw = String(url || '').trim()
+  if (!raw.startsWith('/api/workspace/file')) return raw
+  try {
+    const u = new URL(raw, 'http://ariadne.local')
+    if (activeAtelierId) {
+      u.searchParams.set('atelier_id', activeAtelierId)
+      u.searchParams.set('atelier_session', activeAtelierSession || 'main')
+    } else {
+      u.searchParams.delete('atelier_id')
+      u.searchParams.delete('atelier_session')
+    }
+    return u.pathname + u.search
+  } catch {
+    return raw
   }
-  const sess = activeAtelierSession || 'main'
-  if (sess && !/[?&]atelier_session=/.test(out)) {
-    out += '&atelier_session=' + encodeURIComponent(sess)
-  }
-  return out
 }
 
 /** Map sandbox / host / relative image paths to the authenticated file API URL. */
@@ -204,7 +213,8 @@ export function workspaceFileUrl(rawPath: string): string {
 export function rewriteWorkspaceSrc(src: string): string {
   const s = String(src || '').trim()
   if (!s) return s
-  if (s.startsWith('/api/workspace/file?')) return s
+  // Always refresh atelier query — history/cache may carry a stale session.
+  if (s.startsWith('/api/workspace/file?')) return withAtelierQuery(s)
   if (/^(?:https?:|data:|blob:)/i.test(s)) return s
   const stripped = s.replace(/^file:\/\//i, '')
   if (/^\/?workspace\//i.test(stripped)) {
@@ -441,7 +451,12 @@ export function renderMarkdown(src: string, opts: RenderMarkdownOpts = {}): stri
     text = text.slice(0, cap)
     truncated = true
   }
-  const cacheKey = (highlight ? 'h:' : 'l:') + (truncated ? 't:' : '') + text
+  // Scope cache by atelier session — same markdown, different file roots.
+  const scope = activeAtelierId
+    ? `a:${activeAtelierId}:${activeAtelierSession || 'main'}:`
+    : 's:'
+  const cacheKey =
+    scope + (highlight ? 'h:' : 'l:') + (truncated ? 't:' : '') + text
   const hit = htmlCache.get(cacheKey)
   if (hit) return hit
 

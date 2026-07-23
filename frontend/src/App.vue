@@ -998,6 +998,7 @@ onMounted(() => {
               <ThinkingBlock :text="m.thinking" :live="m.thinkingLive" />
               <MarkdownView
                 v-if="m.content || !m.thinking"
+                :key="(inAtelier ? atelierId + ':' + atelierSession + ':' : '') + m.id"
                 :source="
                   m.content ||
                   (m.streaming ? '' : '这轮好像没说完，再说一句就好～')
