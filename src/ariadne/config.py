@@ -71,8 +71,6 @@ class Settings:
     tool_search_mode: str = "function"
     # L1 summary compressor: grounded | llm
     summary_mode: str = "grounded"
-    # Web host /workspace binding (design/web-workspace.md): project | per_user
-    web_workspace_mode: str = "project"
     # Optional host-injected system block (e.g. Atelier KNOWLEDGE.md context)
     extra_system_prompt: str = ""
 
@@ -122,7 +120,6 @@ def load_settings(
     skill_plan_chars: int | None = None,
     tool_search_mode: str | None = None,
     summary_mode: str | None = None,
-    web_workspace_mode: str | None = None,
     sandbox_profile: str | None = None,
     sandbox_network: str | None = None,
     sandbox_memory: str | None = None,
@@ -246,16 +243,6 @@ def load_settings(
                 f"unknown summary mode: {sum_mode!r} (grounded|llm)",
             )
         )
-    ws_mode = (
-        web_workspace_mode or pick("ARIADNE_WEB_WORKSPACE_MODE", default="project")
-    ).strip().lower()
-    if ws_mode not in {"project", "per_user"}:
-        raise AriadneError(
-            app_error(
-                "ARIADNE_CONFIG_INVALID",
-                f"unknown web workspace mode: {ws_mode!r} (project|per_user)",
-            )
-        )
 
     max_tok = pick_int(None, "ARIADNE_MAX_TOKENS", default=8192)
     if max_tok < 256:
@@ -294,7 +281,6 @@ def load_settings(
         skill_plan_chars=skill_plan,
         tool_search_mode=search_mode,
         summary_mode=sum_mode,
-        web_workspace_mode=ws_mode,
         sandbox_profile=(
             sandbox_profile or pick("ARIADNE_SANDBOX_PROFILE", default="minimal")
         ).strip().lower(),

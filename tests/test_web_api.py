@@ -13,13 +13,10 @@ from ariadne.config import load_settings
 from ariadne.web.app import create_app
 
 
-def _client(
-    tmp_path: Path, *, web_workspace_mode: str = "project"
-) -> httpx.AsyncClient:
+def _client(tmp_path: Path) -> httpx.AsyncClient:
     settings = dataclasses.replace(
         load_settings(workspace=tmp_path / "ws"),
         data_dir=tmp_path / "data",
-        web_workspace_mode=web_workspace_mode,
     )
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
@@ -310,17 +307,18 @@ def test_workspace_browse_api(tmp_path: Path) -> None:
             assert r.status_code == 200
             body = r.json()
             assert body.get("workspace") == str(ws.resolve())
-            assert body.get("workspace_mode") == "project"
+            assert body.get("workspace_binding") == "project"
             assert body.get("project_root") == str(ws.resolve())
+            assert "workspace_mode" not in body
 
     asyncio.run(run())
 
 
-def test_web_workspace_mode_per_user(tmp_path: Path) -> None:
-    """per_user mode: each account gets its own durable /workspace tree."""
+def test_web_open_folder_shared_across_accounts_and_sessions(tmp_path: Path) -> None:
+    """Ordinary chats bind the serve open folder (shared; not per-account trees)."""
 
     async def run() -> None:
-        async with _client(tmp_path, web_workspace_mode="per_user") as client:
+        async with _client(tmp_path) as client:
             r = await client.post(
                 "/api/auth/register", json={"username": "alice", "password": "password123"}
             )
@@ -335,36 +333,116 @@ def test_web_workspace_mode_per_user(tmp_path: Path) -> None:
             r = await client.get("/api/me", headers=ha)
             assert r.status_code == 200
             ma = r.json()
-            assert ma["workspace_mode"] == "per_user"
-            assert ma["workspace"].endswith("users/alice/workspace")
-            assert Path(ma["project_root"]).resolve() == (tmp_path / "ws").resolve()
-
-            # Alice writes a file via API path (host absolute under her root)
-            alice_ws = Path(ma["workspace"])
-            alice_ws.mkdir(parents=True, exist_ok=True)
-            (alice_ws / "secret_a.txt").write_text("alice-only", encoding="utf-8")
+            assert ma["workspace_binding"] == "project"
+            open_ws = Path(ma["workspace"]).resolve()
+            assert open_ws == (tmp_path / "ws").resolve()
+            assert Path(ma["project_root"]).resolve() == open_ws
 
             r = await client.get("/api/me", headers=hb)
-            bob_ws = Path(r.json()["workspace"])
-            bob_ws.mkdir(parents=True, exist_ok=True)
-            (bob_ws / "secret_b.txt").write_text("bob-only", encoding="utf-8")
+            assert Path(r.json()["workspace"]).resolve() == open_ws
+
+            open_ws.mkdir(parents=True, exist_ok=True)
+            (open_ws / "shared.txt").write_text("same-tree", encoding="utf-8")
 
             r = await client.get("/api/workspace/list", headers=ha)
             assert r.status_code == 200
+            assert r.json()["workspace_binding"] == "project"
             names_a = {e["name"] for e in r.json()["entries"]}
-            assert "secret_a.txt" in names_a
-            assert "secret_b.txt" not in names_a
+            assert "shared.txt" in names_a
 
             r = await client.get("/api/workspace/list", headers=hb)
             names_b = {e["name"] for e in r.json()["entries"]}
-            assert "secret_b.txt" in names_b
-            assert "secret_a.txt" not in names_b
+            assert "shared.txt" in names_b
 
-            # Alice cannot read Bob's host path
             r = await client.get(
                 "/api/workspace/file",
-                params={"path": str(bob_ws / "secret_b.txt")},
-                headers=ha,
+                params={"path": "/workspace/shared.txt"},
+                headers=hb,
+            )
+            assert r.status_code == 200
+            assert r.content == b"same-tree"
+
+    asyncio.run(run())
+
+
+def test_web_atelier_branch_workspace_isolated_from_main(tmp_path: Path) -> None:
+    """Atelier branch list/file root differs from main and from the open folder."""
+
+    async def run() -> None:
+        async with _client(tmp_path) as client:
+            r = await client.post(
+                "/api/auth/register",
+                json={"username": "wsalice", "password": "password123"},
+            )
+            headers = {"Authorization": f"Bearer {r.json()['token']}"}
+            r = await client.post(
+                "/api/ateliers",
+                json={"name": "bind-lab"},
+                headers=headers,
+            )
+            assert r.status_code == 200, r.text
+            aid = r.json()["id"]
+
+            r = await client.get(
+                "/api/workspace/list",
+                params={"atelier_id": aid, "atelier_session": "main"},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            main_body = r.json()
+            assert main_body["workspace_binding"] == "atelier"
+            main_root = Path(main_body["workspace"]).resolve()
+            open_folder = (tmp_path / "ws").resolve()
+            assert main_root != open_folder
+            (main_root / "main-only.txt").write_text("main", encoding="utf-8")
+
+            r = await client.post(
+                f"/api/ateliers/{aid}/branches",
+                json={"name": "exp-iso"},
+                headers=headers,
+            )
+            assert r.status_code == 200, r.text
+            branch_id = r.json()["id"]
+
+            r = await client.get(
+                "/api/workspace/list",
+                params={"atelier_id": aid, "atelier_session": branch_id},
+                headers=headers,
+            )
+            assert r.status_code == 200
+            br_body = r.json()
+            assert br_body["workspace_binding"] == "atelier"
+            branch_root = Path(br_body["workspace"]).resolve()
+            assert branch_root != main_root
+            assert branch_root != open_folder
+            (branch_root / "branch-only.txt").write_text("branch", encoding="utf-8")
+
+            r = await client.get(
+                "/api/workspace/list",
+                params={"atelier_id": aid, "atelier_session": "main"},
+                headers=headers,
+            )
+            main_names = {e["name"] for e in r.json()["entries"]}
+            assert "main-only.txt" in main_names
+            assert "branch-only.txt" not in main_names
+
+            r = await client.get(
+                "/api/workspace/list",
+                params={"atelier_id": aid, "atelier_session": branch_id},
+                headers=headers,
+            )
+            br_names = {e["name"] for e in r.json()["entries"]}
+            assert "branch-only.txt" in br_names
+
+            # Branch cannot serve main-only host path when scoped to branch
+            r = await client.get(
+                "/api/workspace/file",
+                params={
+                    "path": str(main_root / "main-only.txt"),
+                    "atelier_id": aid,
+                    "atelier_session": branch_id,
+                },
+                headers=headers,
             )
             assert r.status_code in {400, 404}
 
@@ -597,7 +675,7 @@ def test_atelier_api_crud_and_knowledge(tmp_path: Path) -> None:
                 headers=headers,
             )
             assert r.status_code == 200
-            assert r.json()["workspace_mode"] == "atelier"
+            assert r.json()["workspace_binding"] == "atelier"
             assert r.json()["atelier_id"] == aid
 
             # isolation: other user cannot see

@@ -120,12 +120,12 @@ def create_app(settings: Settings) -> FastAPI:
         atelier_id: str | None = None,
         atelier_session: str | None = None,
     ) -> Path:
-        """Active /workspace binding for this account (design/web-workspace.md).
+        """Active /workspace binding (design/web-workspace.md).
 
-        project  — shared serve workspace (Codex-like open folder)
-        per_user — durable tree under the account data dir
-        atelier  — workshop main workspace, or isolated branch workspace when
-                   atelier_session is a branch
+        Single rule — no serve-time mode switch:
+        - ordinary chat → serve open folder (settings.workspace)
+        - atelier main/branch → that session's tree under the account ateliers root
+        Chat sessions share the same binding; only atelier branches isolate a full tree.
         """
         if atelier_id:
             mgr = _atelier_mgr(username)
@@ -137,16 +137,6 @@ def create_app(settings: Settings) -> FastAPI:
             root = project.session_workspace(session).resolve()
             root.mkdir(parents=True, exist_ok=True)
             return root
-        mode = (settings.web_workspace_mode or "project").strip().lower()
-        if mode == "per_user":
-            root = _user_data_dir(username) / "workspace"
-            root.mkdir(parents=True, exist_ok=True)
-            return root.resolve()
-        if mode != "project":
-            raise HTTPException(
-                status_code=500,
-                detail=f"invalid web_workspace_mode: {mode!r}",
-            )
         return _project_root()
 
     def _settings_for(username: str) -> Settings:
@@ -227,7 +217,8 @@ def create_app(settings: Settings) -> FastAPI:
             "model": provider.get("model", ""),
             # Active /workspace host path — models often print real FS paths; UI maps them.
             "workspace": str(ws),
-            "workspace_mode": settings.web_workspace_mode,
+            # Derived binding kind (not a user-configurable mode): open folder | atelier.
+            "workspace_binding": "project",
             "project_root": str(_project_root()),
         }
 
@@ -377,7 +368,7 @@ def create_app(settings: Settings) -> FastAPI:
             "parent": parent_path,
             "entries": entries,
             "workspace": str(root),
-            "workspace_mode": "atelier" if atelier_id else settings.web_workspace_mode,
+            "workspace_binding": "atelier" if atelier_id else "project",
             "project_root": str(_project_root()),
             "atelier_id": atelier_id,
             "atelier_session": atelier_session or "main",
@@ -450,7 +441,7 @@ def create_app(settings: Settings) -> FastAPI:
         """Serve a file from the account's active /workspace root.
 
         Used by the web UI to inline 走势图 / plots written by sandbox tools.
-        Auth required; path confined to project or per_user root (web-workspace.md).
+        Auth required; path confined to active open-folder or atelier root (web-workspace.md).
         """
         target = _resolve_workspace_path(
             path,
