@@ -15,8 +15,8 @@ const props = defineProps<{
   active: boolean
   /** Bump after agent turns so listing picks up new files. */
   refreshKey?: number
-  /** project | per_user | atelier — from /api/me or atelier mode */
-  workspaceMode?: string
+  /** project | atelier — derived binding (not a serve mode) */
+  workspaceBinding?: string
   /** Host absolute active root */
   hostPath?: string
   /** When set, browse this atelier's workspace */
@@ -40,10 +40,16 @@ const blobUrls = ref<string[]>([])
 const listedHost = ref('')
 
 const modeLabel = computed(() => {
-  const m = (props.workspaceMode || 'project').toLowerCase()
-  if (m === 'atelier' || props.atelierId) return '作坊文件夹 · 大家共用'
-  if (m === 'per_user') return '用户工作区 · 本账号独立'
-  return '项目工作区 · 多会话共用'
+  if (props.atelierId) {
+    const sid = (props.atelierSession || 'main').trim()
+    if (sid && sid !== 'main' && !/^main$/i.test(sid)) {
+      return '作坊旁支 · 独立文件夹'
+    }
+    return '作坊主线 · 本工坊文件'
+  }
+  const m = (props.workspaceBinding || 'project').toLowerCase()
+  if (m === 'atelier') return '作坊主线 · 本工坊文件'
+  return '打开的项目 · 多会话共用'
 })
 
 function atelierQs(): string {

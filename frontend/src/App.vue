@@ -913,7 +913,7 @@ onMounted(() => {
         :token="token"
         :active="leftTab === 'workspace'"
         :refresh-key="workspaceRefreshKey"
-        :workspace-mode="inAtelier ? 'atelier' : me?.workspace_mode"
+        :workspace-binding="inAtelier ? 'atelier' : me?.workspace_binding"
         :host-path="me?.workspace"
         :atelier-id="atelierId || undefined"
         :atelier-session="atelierSession || undefined"
