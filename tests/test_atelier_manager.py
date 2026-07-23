@@ -62,6 +62,24 @@ def test_create_chinese_display_name(tmp_path: Path) -> None:
     assert any(p.name == "画画" and p.id == proj.id for p in listed)
 
 
+def test_chinese_branch_name(tmp_path: Path) -> None:
+    mgr = AtelierManager(root=tmp_path / "ateliers")
+    proj = mgr.create_project("画室", no_scan=True)
+    br = mgr.create_branch(proj.id, "V字仇杀队")
+    assert br.title == "V字仇杀队"
+    assert br.branch_name
+    assert br.branch_name.startswith("br-")
+    assert br.id == f"branch-{br.branch_name}"
+    # merge / discard resolve by Chinese title
+    summary = mgr.merge_branch(proj.id, "V字仇杀队")
+    assert summary
+    assert mgr.get_session(proj.id, br.id).status == SessionStatus.MERGED
+
+    br2 = mgr.create_branch(proj.id, "月光小鸟")
+    mgr.discard_branch(proj.id, "月光小鸟")
+    assert mgr.get_session(proj.id, br2.id).status == SessionStatus.DISCARDED
+
+
 def test_branch_merge_does_not_touch_main_knowledge_or_workspace(tmp_path: Path) -> None:
     mgr = AtelierManager(root=tmp_path / "ateliers")
     proj = mgr.create_project("p1", no_scan=True)

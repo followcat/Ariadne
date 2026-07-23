@@ -47,28 +47,32 @@ def validate_slug(name: str) -> str:
     return slug
 
 
-def slug_from_name(name: str) -> str:
+def slug_from_name(name: str, *, prefix: str = "atelier") -> str:
     """Derive a filesystem-safe id from a human display name.
 
     - ASCII slug names (``my-app``) are kept as-is (lowercased).
-    - Chinese / mixed titles (``画画``, ``我的项目``) get a stable
-      ``atelier-<hash8>`` id; the original string remains the display name.
+    - Chinese / mixed titles (``画画``, ``V字仇杀队``) get a stable
+      ``{prefix}-<hash8>`` id; the original string remains the display title.
+    - Mixed titles with a meaningful ASCII stem (``draw-画画``) keep the stem
+      when at least 3 slug-safe characters remain after stripping non-ascii.
     """
     import hashlib
 
     raw = (name or "").strip()
     if not raw:
-        raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "atelier name is required"))
+        raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "name is required"))
+    pref = re.sub(r"[^a-z0-9]+", "", (prefix or "id").lower()) or "id"
     lower = raw.lower()
     if SLUG_RE.match(lower):
         return lower
     # Keep only slug-safe chars; collapse runs of junk.
     cleaned = re.sub(r"[^a-z0-9._-]+", "-", lower)
     cleaned = re.sub(r"[-._]{2,}", "-", cleaned).strip(".-_")
-    if cleaned and SLUG_RE.match(cleaned):
+    # Require ≥3 chars so "V字仇杀队" → "v" does not become a bare letter id.
+    if cleaned and len(cleaned) >= 3 and SLUG_RE.match(cleaned):
         return cleaned[:64]
     h = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
-    return f"atelier-{h}"
+    return f"{pref}-{h}"
 
 
 @dataclass

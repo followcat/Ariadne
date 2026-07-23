@@ -322,13 +322,14 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
       <div class="branch-create">
         <input
           v-model="branchName"
-          placeholder="想开个旁支试试？起个名…"
+          placeholder="旁支名，中文也行，如 V字仇杀队"
           @keydown.enter.prevent="createBranch"
         />
         <button type="button" class="primary sm" :disabled="creatingBranch || !branchName.trim()" @click="createBranch">
           开旁支
         </button>
       </div>
+      <p class="create-hint" style="margin-top: 0">中文名会自动生成内部 id，界面仍显示你起的名字</p>
 
       <div v-if="closedSessions.length" class="sec-label dim">以前的</div>
       <div v-if="closedSessions.length" class="slist closed">

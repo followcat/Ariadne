@@ -34,6 +34,10 @@ def test_slug_from_name_chinese_and_ascii() -> None:
     assert slug_from_name("画画") == s
     # mixed: ascii parts kept when enough remains
     assert slug_from_name("draw-画画").startswith("draw")
+    # branch prefix
+    b = slug_from_name("V字仇杀队", prefix="br")
+    assert b.startswith("br-")
+    assert slug_from_name("V字仇杀队", prefix="br") == b
 
 
 def test_project_roundtrip(tmp_path: Path) -> None:

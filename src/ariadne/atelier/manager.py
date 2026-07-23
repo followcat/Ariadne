@@ -26,6 +26,7 @@ from .models import (
     read_transcript,
     save_session_meta,
     session_jsonl_path,
+    slug_from_name,
     validate_slug,
 )
 
@@ -67,8 +68,6 @@ class AtelierManager:
         no_scan: bool = False,
         config: ProjectConfig | None = None,
     ) -> Project:
-        from .models import slug_from_name
-
         display = (name or "").strip()
         if not display:
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "atelier name is required"))
@@ -77,7 +76,7 @@ class AtelierManager:
         if project_id:
             slug = validate_slug(project_id)
         else:
-            slug = slug_from_name(display)
+            slug = slug_from_name(display, prefix="atelier")
             # Collision: append short counter while staying within slug rules
             base = slug
             n = 2
@@ -194,6 +193,30 @@ class AtelierManager:
             dest.mkdir(parents=True, exist_ok=True)
         return dest
 
+    def _resolve_branch_slug(self, project_id: str, branch_ref: str) -> str:
+        """Resolve user input (slug or Chinese title) to stored branch_name slug."""
+        raw = (branch_ref or "").strip()
+        if not raw:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "branch name is required"))
+        # Direct slug
+        try:
+            slug = validate_slug(raw)
+            # Prefer existing session with this branch_name
+            for s in self.list_sessions(project_id):
+                if s.branch_name == slug or s.id == f"branch-{slug}":
+                    return s.branch_name or slug
+            return slug
+        except AriadneError:
+            pass
+        # Match active/any branch by display title
+        for s in self.list_sessions(project_id):
+            if s.type != SessionType.BRANCH:
+                continue
+            if (s.title or "").strip() == raw and s.branch_name:
+                return s.branch_name
+        # Recompute hash slug (same Chinese name → same id)
+        return slug_from_name(raw, prefix="br")
+
     def create_branch(
         self,
         project_id: str,
@@ -202,11 +225,27 @@ class AtelierManager:
         initial_message: str | None = None,
     ) -> SessionMeta:
         project = self.get_project(project_id)
-        slug = validate_slug(branch_name)
+        display = (branch_name or "").strip()
+        if not display:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "branch name is required"))
+        # Chinese / free-form → br-<hash>; ASCII slug kept as-is
+        slug = slug_from_name(display, prefix="br")
+        base = slug
+        n = 2
+        while any(
+            s.branch_name == slug and s.status == SessionStatus.ACTIVE
+            for s in self.list_sessions(project_id)
+        ):
+            if n >= 100:
+                raise AriadneError(
+                    app_error("ARIADNE_CONFIG_INVALID", f"branch already exists: {base}")
+                )
+            suffix = f"-{n}"
+            slug = (base[: max(1, 64 - len(suffix))] + suffix).lower()
+            n += 1
         sid = f"branch-{slug}"
-        # uniqueness
         for s in self.list_sessions(project_id):
-            if s.id == sid or (s.branch_name == slug and s.status == SessionStatus.ACTIVE):
+            if s.id == sid and s.status == SessionStatus.ACTIVE:
                 raise AriadneError(
                     app_error("ARIADNE_CONFIG_INVALID", f"branch already exists: {slug}")
                 )
@@ -217,7 +256,7 @@ class AtelierManager:
         meta = SessionMeta(
             id=sid,
             project_id=project.id,
-            title=branch_name.strip() or slug,
+            title=display,
             type=SessionType.BRANCH,
             status=SessionStatus.ACTIVE,
             parent_session_id=main.id,
@@ -243,7 +282,7 @@ class AtelierManager:
         Branch files stay under branch_workspaces/ until user copies them manually.
         """
         project = self.get_project(project_id)
-        slug = validate_slug(branch_name)
+        slug = self._resolve_branch_slug(project_id, branch_name)
         sid = f"branch-{slug}"
         branch = load_session_meta(project, sid)
         if branch.type != SessionType.BRANCH:
@@ -253,7 +292,8 @@ class AtelierManager:
                 app_error("ARIADNE_CONFIG_INVALID", f"branch not active: {branch.status.value}")
             )
         transcript = read_transcript(project, sid)
-        summary = generate_branch_summary(transcript, branch_name=slug)
+        label = branch.title or slug
+        summary = generate_branch_summary(transcript, branch_name=label)
         # Persist merge report only on the branch side (main content untouched)
         report_dir = project.data_dir / "scopes" / sid
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -265,13 +305,15 @@ class AtelierManager:
 
     def discard_branch(self, project_id: str, branch_name: str) -> None:
         project = self.get_project(project_id)
-        slug = validate_slug(branch_name)
+        slug = self._resolve_branch_slug(project_id, branch_name)
         sid = f"branch-{slug}"
         branch = load_session_meta(project, sid)
         if branch.type != SessionType.BRANCH:
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "not a branch session"))
         before_k = read_knowledge(project)
-        before_main_ws = list(project.workspace_path.rglob("*")) if project.workspace_path.is_dir() else []
+        before_main_ws = (
+            list(project.workspace_path.rglob("*")) if project.workspace_path.is_dir() else []
+        )
         branch.status = SessionStatus.DISCARDED
         branch.container_id = None
         save_session_meta(project, branch)
