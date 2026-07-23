@@ -56,6 +56,26 @@ const knowledgeRefresh = ref(0)
 const historyLoading = ref(false)
 /** Cancel in-flight history fetch when switching sessions quickly. */
 let historyAbort: AbortController | null = null
+/** Client cache: instant paint when re-opening a thread. */
+const historyCache = new Map<string, ChatMsg[]>()
+
+function historyCacheKey(): string {
+  if (atelierId.value) {
+    return `a:${atelierId.value}:${atelierSession.value || 'main'}`
+  }
+  return `s:${sessionId.value}`
+}
+
+function putHistoryCache(msgs: ChatMsg[]) {
+  const key = historyCacheKey()
+  if (!key || key.endsWith(':') || key === 's:') return
+  historyCache.set(key, msgs)
+  // Bound memory: drop oldest if too many threads
+  if (historyCache.size > 40) {
+    const first = historyCache.keys().next().value
+    if (first !== undefined) historyCache.delete(first)
+  }
+}
 
 const tools = ref<ToolEntry[]>([])
 const toolsOpenIds = ref(new Set<string>())
@@ -117,16 +137,21 @@ function selectAtelier(id: string) {
 }
 
 function selectAtelierSession(sid: string) {
-  if (sid === atelierSession.value && messages.value.length) {
-    // still allow re-click reload when empty
-  }
   atelierSession.value = sid
   setActiveAtelierSession(sid)
   localStorage.setItem('ariadne_atelier_session', sid)
-  messages.value = []
   tools.value = []
-  void loadAtelierHistory()
   workspaceRefreshKey.value += 1
+  const key = `a:${atelierId.value}:${sid || 'main'}`
+  const cached = historyCache.get(key)
+  if (cached) {
+    messages.value = cached
+    historyLoading.value = false
+    void scrollChat()
+    return
+  }
+  messages.value = []
+  void loadAtelierHistory()
 }
 
 function exitAtelier() {
@@ -148,6 +173,14 @@ async function loadAtelierHistory() {
     historyLoading.value = false
     return
   }
+  const cached = historyCache.get(historyCacheKey())
+  if (cached) {
+    messages.value = cached
+    historyLoading.value = false
+    void scrollChat()
+    // Still refresh in background when stale is ok — skip for snappy UX
+    return
+  }
   historyAbort?.abort()
   const ac = new AbortController()
   historyAbort = ac
@@ -165,7 +198,7 @@ async function loadAtelierHistory() {
     }
     const data = await r.json()
     if (ac.signal.aborted) return
-    messages.value = (data.messages || [])
+    const next = (data.messages || [])
       .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
       .map((m: { role: string; content: string }, i: number) =>
         m.role === 'user'
@@ -179,7 +212,9 @@ async function loadAtelierHistory() {
               thinkingLive: false,
             },
       )
-    await scrollChat()
+    messages.value = next
+    putHistoryCache(next)
+    void scrollChat()
   } catch (e) {
     if ((e as { name?: string }).name === 'AbortError') return
     messages.value = []
@@ -277,6 +312,13 @@ async function loadHistory() {
     historyLoading.value = false
     return
   }
+  const cached = historyCache.get(historyCacheKey())
+  if (cached) {
+    messages.value = cached
+    historyLoading.value = false
+    void scrollChat()
+    return
+  }
   historyAbort?.abort()
   const ac = new AbortController()
   historyAbort = ac
@@ -294,7 +336,7 @@ async function loadHistory() {
     }
     const data = await r.json()
     if (ac.signal.aborted) return
-    messages.value = (data.messages || [])
+    const next = (data.messages || [])
       .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
       .map((m: { role: string; content: string }, i: number) =>
         m.role === 'user'
@@ -308,7 +350,9 @@ async function loadHistory() {
               thinkingLive: false,
             },
       )
-    await scrollChat()
+    messages.value = next
+    putHistoryCache(next)
+    void scrollChat()
   } catch (e) {
     if ((e as { name?: string }).name === 'AbortError') return
     messages.value = []
@@ -331,7 +375,14 @@ async function selectSession(id: string) {
   if (id === sessionId.value && messages.value.length) return
   setSession(id)
   tools.value = []
-  // Instant paint: clear old thread so switch feels immediate
+  const key = `s:${id}`
+  const cached = historyCache.get(key)
+  if (cached) {
+    messages.value = cached
+    historyLoading.value = false
+    void scrollChat()
+    return
+  }
   messages.value = []
   await loadHistory()
 }
@@ -519,15 +570,15 @@ async function send() {
       }
     }
     busy.value = false
+    // Invalidate cache so next open sees the new turn
+    historyCache.delete(historyCacheKey())
+    putHistoryCache([...messages.value])
     if (atelierId.value) {
-      // Knowledge may have been updated; bump panels.
       knowledgeRefresh.value += 1
     } else {
-      // Refresh topic title then reload session list so sidebar shows the new name.
       await refreshSessionTitle(false)
       await loadSessions()
     }
-    // Agent may have written files under /workspace — refresh file browser.
     workspaceRefreshKey.value += 1
     inputEl.value?.focus()
   }
@@ -952,6 +1003,7 @@ onMounted(() => {
                   (m.streaming ? '' : '这轮好像没说完，再说一句就好～')
                 "
                 :streaming="m.streaming && !!m.content"
+                :lite="!m.streaming"
               />
               <div v-else-if="m.streaming && !m.content" class="md-placeholder">…</div>
             </div>

@@ -349,8 +349,27 @@ def read_transcript(project: Project, session_id: str, *, limit: int = 500) -> l
     path = session_jsonl_path(project, session_id)
     if not path.is_file():
         return []
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    # Tail-read large transcripts (chat switch UX).
+    if size > 512_000:
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - 512_000))
+            raw = fh.read()
+        if size > 512_000:
+            nl = raw.find(b"\n")
+            if nl >= 0:
+                raw = raw[nl + 1 :]
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return []
     rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue

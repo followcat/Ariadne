@@ -5,20 +5,31 @@ import { renderMarkdown, rewriteWorkspaceSrc } from '../lib/markdown'
 const props = defineProps<{
   source: string
   streaming?: boolean
+  /** History: skip highlight + soft long bodies (default true when not streaming). */
+  lite?: boolean
 }>()
 
 const el = ref<HTMLElement | null>(null)
 const localBlobs = ref<string[]>([])
 const authToken = inject<Ref<string> | string | null>('authToken', null)
+/** Defer full image hydrate until idle so text paints first. */
+let hydrateTimer: ReturnType<typeof setTimeout> | null = null
 
-/** Session-scoped blob cache: same /api/workspace/file URL reuses one blob. */
 const blobCache: Map<string, string> =
   (globalThis as unknown as { __ariadneImgCache?: Map<string, string> }).__ariadneImgCache ||
   new Map()
 ;(globalThis as unknown as { __ariadneImgCache?: Map<string, string> }).__ariadneImgCache =
   blobCache
 
-const html = computed(() => renderMarkdown(props.source || ''))
+const useLite = computed(() => props.lite !== false && !props.streaming)
+
+const html = computed(() =>
+  renderMarkdown(props.source || '', {
+    highlight: !useLite.value,
+    // Long thrash dumps (minified JS) made history switch multi-second.
+    maxSourceChars: useLite.value ? 12_000 : undefined,
+  }),
+)
 
 function tokenValue(): string {
   if (!authToken) return ''
@@ -26,10 +37,6 @@ function tokenValue(): string {
   return authToken.value || ''
 }
 
-/**
- * Workspace files require Authorization. <img src> cannot send Bearer headers,
- * so we fetch as blob and swap to an object URL. Parallel + cached.
- */
 async function hydrateWorkspaceImages() {
   const root = el.value
   if (!root) return
@@ -78,7 +85,14 @@ async function hydrateWorkspaceImages() {
   )
 }
 
-// Wrap tables + hydrate auth-gated workspace images
+function scheduleHydrate() {
+  if (hydrateTimer) clearTimeout(hydrateTimer)
+  // Let text paint first; images fill in shortly after.
+  hydrateTimer = setTimeout(() => {
+    void hydrateWorkspaceImages()
+  }, props.streaming ? 0 : 40)
+}
+
 watch(
   html,
   async () => {
@@ -92,13 +106,13 @@ watch(
       table.parentNode?.insertBefore(wrap, table)
       wrap.appendChild(table)
     })
-    await hydrateWorkspaceImages()
+    scheduleHydrate()
   },
   { flush: 'post' },
 )
 
 onBeforeUnmount(() => {
-  // Keep global blobCache for reuse across message remounts when switching back.
+  if (hydrateTimer) clearTimeout(hydrateTimer)
   localBlobs.value = []
 })
 </script>
@@ -107,7 +121,7 @@ onBeforeUnmount(() => {
   <div
     ref="el"
     class="md-body"
-    :class="{ 'streaming-answer': streaming && source }"
+    :class="{ 'streaming-answer': streaming && source, lite: useLite }"
     v-html="html"
   />
 </template>
@@ -132,5 +146,9 @@ onBeforeUnmount(() => {
   color: var(--dim);
   font-size: 13px;
   max-width: 100%;
+}
+.md-body .md-truncated-note {
+  color: var(--muted);
+  font-size: 13px;
 }
 </style>

@@ -51,54 +51,76 @@ const IMG_EXT = 'png|jpe?g|gif|webp|svg'
 const WS_IMG =
   String.raw`\/?workspace\/[^\s)\]"'<>。，、；：！？]+?\.(?:` + IMG_EXT + ')'
 
-const md = new MarkdownIt({
-  html: false,
-  linkify: true,
-  breaks: true,
-  typographer: false,
-  highlight(str, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return (
-          '<pre class="hljs"><code class="language-' +
-          md.utils.escapeHtml(lang) +
-          '">' +
-          hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
-          '</code></pre>'
-        )
-      } catch {
-        /* fall through */
+function makeMd(withHighlight: boolean) {
+  return new MarkdownIt({
+    html: false,
+    linkify: true,
+    breaks: true,
+    typographer: false,
+    highlight(str, lang) {
+      // History loads can contain multi‑KB minified JS; highlight.js freezes the UI.
+      if (!withHighlight || str.length > 4000) {
+        return '<pre class="hljs"><code>' + escapePlain(str) + '</code></pre>'
       }
-    }
-    return (
-      '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>'
-    )
-  },
-})
+      if (lang && hljs.getLanguage(lang)) {
+        try {
+          return (
+            '<pre class="hljs"><code class="language-' +
+            escapePlain(lang) +
+            '">' +
+            hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
+            '</code></pre>'
+          )
+        } catch {
+          /* fall through */
+        }
+      }
+      return '<pre class="hljs"><code>' + escapePlain(str) + '</code></pre>'
+    },
+  })
+}
+
+function escapePlain(s: string): string {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/** Full pipeline for streaming answers (syntax highlight, capped). */
+const md = makeMd(true)
+/** Fast pipeline for history load — no highlight.js work. */
+const mdLite = makeMd(false)
 
 // GFM-like tables (pipes, alignment row, multi-line cells)
-md.use(multimdTable, {
-  multiline: true,
-  rowspan: false,
-  headerless: false,
-  multibody: true,
-})
-
-// Open links in new tab
-const defaultLinkOpen =
-  md.renderer.rules.link_open ||
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
-
-md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-  const token = tokens[idx]
-  const aIndex = token.attrIndex('target')
-  if (aIndex < 0) token.attrPush(['target', '_blank'])
-  else token.attrs![aIndex][1] = '_blank'
-  const rIndex = token.attrIndex('rel')
-  if (rIndex < 0) token.attrPush(['rel', 'noopener noreferrer'])
-  else token.attrs![rIndex][1] = 'noopener noreferrer'
-  return defaultLinkOpen(tokens, idx, options, env, self)
+for (const engine of [md, mdLite]) {
+  engine.use(multimdTable, {
+    multiline: true,
+    rowspan: false,
+    headerless: false,
+    multibody: true,
+  })
 }
+
+function patchLinkOpen(engine: MarkdownIt) {
+  const defaultLinkOpen =
+    engine.renderer.rules.link_open ||
+    ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
+  engine.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const aIndex = token.attrIndex('target')
+    if (aIndex < 0) token.attrPush(['target', '_blank'])
+    else token.attrs![aIndex][1] = '_blank'
+    const rIndex = token.attrIndex('rel')
+    if (rIndex < 0) token.attrPush(['rel', 'noopener noreferrer'])
+    else token.attrs![rIndex][1] = 'noopener noreferrer'
+    return defaultLinkOpen(tokens, idx, options, env, self)
+  }
+}
+patchLinkOpen(md)
+patchLinkOpen(mdLite)
+
 
 /**
  * Optional host absolute workspace root from /api/me (e.g. /home/…/project).
@@ -210,18 +232,21 @@ export function rewriteWorkspaceSrc(src: string): string {
 
 // At render time: convert ![alt](/workspace/…) → authenticated API URL so
 // DOMPurify (which only allows /api/workspace/file?) keeps the src.
-const defaultImage =
-  md.renderer.rules.image ||
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
-
-md.renderer.rules.image = (tokens, idx, options, env, self) => {
-  const token = tokens[idx]
-  const srcIdx = token.attrIndex('src')
-  if (srcIdx >= 0 && token.attrs) {
-    token.attrs[srcIdx][1] = rewriteWorkspaceSrc(token.attrs[srcIdx][1] || '')
+function patchImage(engine: MarkdownIt) {
+  const defaultImage =
+    engine.renderer.rules.image ||
+    ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
+  engine.renderer.rules.image = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const srcIdx = token.attrIndex('src')
+    if (srcIdx >= 0 && token.attrs) {
+      token.attrs[srcIdx][1] = rewriteWorkspaceSrc(token.attrs[srcIdx][1] || '')
+    }
+    return defaultImage(tokens, idx, options, env, self)
   }
-  return defaultImage(tokens, idx, options, env, self)
 }
+patchImage(md)
+patchImage(mdLite)
 
 const PURIFY: DOMPurify.Config = {
   USE_PROFILES: { html: true },
@@ -396,12 +421,46 @@ export function normalizeMarkdown(src: string): string {
   return s
 }
 
-export function renderMarkdown(src: string): string {
-  const normalized = normalizeMarkdown(src)
-  const dirty = md.render(normalized)
-  return DOMPurify.sanitize(dirty, PURIFY)
+export type RenderMarkdownOpts = {
+  /** Use syntax highlighting (streaming answers). History should pass false. */
+  highlight?: boolean
+  /** Soft-cap source length for fast history paint (default unlimited). */
+  maxSourceChars?: number
+}
+
+/** Rendered HTML cache — switching sessions back is instant. */
+const htmlCache = new Map<string, string>()
+const HTML_CACHE_MAX = 200
+
+export function renderMarkdown(src: string, opts: RenderMarkdownOpts = {}): string {
+  const highlight = opts.highlight !== false
+  let text = String(src || '')
+  const cap = opts.maxSourceChars
+  let truncated = false
+  if (cap && text.length > cap) {
+    text = text.slice(0, cap)
+    truncated = true
+  }
+  const cacheKey = (highlight ? 'h:' : 'l:') + (truncated ? 't:' : '') + text
+  const hit = htmlCache.get(cacheKey)
+  if (hit) return hit
+
+  const normalized = normalizeMarkdown(text)
+  const engine = highlight ? md : mdLite
+  let dirty = engine.render(normalized)
+  if (truncated) {
+    dirty +=
+      '<p class="md-truncated-note"><em>…内容较长，已折叠显示前半部分</em></p>'
+  }
+  const html = DOMPurify.sanitize(dirty, PURIFY)
+  if (htmlCache.size >= HTML_CACHE_MAX) {
+    const first = htmlCache.keys().next().value
+    if (first !== undefined) htmlCache.delete(first)
+  }
+  htmlCache.set(cacheKey, html)
+  return html
 }
 
 export function escapeHtml(s: string): string {
-  return md.utils.escapeHtml(String(s ?? ''))
+  return escapePlain(s)
 }

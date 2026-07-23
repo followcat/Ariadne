@@ -701,7 +701,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "title": title,
                 "title_source": source,
             }
-        messages = load_session_messages(user_data, session_id, limit=80)
+        messages = load_session_messages(user_data, session_id, limit=40)
         return {
             "session_id": session_id,
             "messages": messages,
@@ -900,7 +900,7 @@ def create_app(settings: Settings) -> FastAPI:
             session = _resolve_atelier_session(mgr, atelier_id, session_id)
         except AriadneError as exc:
             raise HTTPException(status_code=404, detail=exc.error.message) from exc
-        rows = read_transcript(project, session.id, limit=80)
+        rows = read_transcript(project, session.id, limit=40)
         messages = [
             {"role": r.get("role"), "content": r.get("content") or ""}
             for r in rows
