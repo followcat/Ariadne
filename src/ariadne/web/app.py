@@ -217,7 +217,7 @@ def create_app(settings: Settings) -> FastAPI:
             "model": provider.get("model", ""),
             # Active /workspace host path — models often print real FS paths; UI maps them.
             "workspace": str(ws),
-            # Derived binding kind (not a user-configurable mode): open folder | atelier.
+            # Derived: "project" = serve host dir (internal key, not UI 项目); or atelier.
             "workspace_binding": "project",
             "project_root": str(_project_root()),
         }

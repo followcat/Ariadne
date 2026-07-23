@@ -686,7 +686,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     ui.print_info(f"Ariadne web UI: http://{args.host}:{args.port}")
     ui.print_info(
         f"workspace: {settings.workspace}  "
-        f"(open folder shared by chats; 作坊/旁支 override — docs/design/web-workspace.md)"
+        f"(host dir for ordinary chats; 作坊/旁支 for per-account files — "
+        f"docs/design/web-workspace.md)"
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0

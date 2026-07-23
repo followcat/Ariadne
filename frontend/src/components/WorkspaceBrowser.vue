@@ -40,6 +40,7 @@ const blobUrls = ref<string[]>([])
 const listedHost = ref('')
 
 const modeLabel = computed(() => {
+  // No product 「项目」 surface — path/host binding only vs 作坊 trees.
   if (props.atelierId) {
     const sid = (props.atelierSession || 'main').trim()
     if (sid && sid !== 'main' && !/^main$/i.test(sid)) {
@@ -49,7 +50,7 @@ const modeLabel = computed(() => {
   }
   const m = (props.workspaceBinding || 'project').toLowerCase()
   if (m === 'atelier') return '作坊主线 · 本工坊文件'
-  return '打开的项目 · 多会话共用'
+  return '当前目录 · 多会话共用'
 })
 
 function atelierQs(): string {

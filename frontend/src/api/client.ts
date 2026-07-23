@@ -11,11 +11,14 @@ export type Me = {
   provider_configured: boolean
   model?: string
   base_url?: string
-  /** Host absolute path of the active /workspace root for ordinary chat. */
+  /** Host absolute path of active /workspace (ordinary chat = serve host dir). */
   workspace?: string
-  /** Derived: open folder (`project`) or atelier — not a serve mode switch. */
+  /**
+   * Derived binding: serve host dir (`project` internal key) or atelier.
+   * Not a user-facing “项目” and not a serve mode switch.
+   */
   workspace_binding?: 'project' | 'atelier' | string
-  /** Serve open-folder root. */
+  /** Serve process host directory (open folder). */
   project_root?: string
 }
 
