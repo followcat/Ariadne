@@ -240,7 +240,7 @@ Plugin credentials are **owned by the user**, not by a multi-company pack system
 | **Workspace** | Folder you open (`cwd` / `--workspace`) | **作坊** main/branch for per-account files; ordinary **工作区** tab = serve host dir (shared by chats on that serve, not a product “项目”) |
 | **Session** | Chat thread only — **not** a filesystem | Same: 对话 ≠ 文件树 |
 
-No serve-time `project|per_user` mode switch. Web UI surfaces: **历史 · 工作区 · 作坊** (no project picker).
+No serve-time `project|per_user` mode switch. Web UI surfaces: **对话 · 工作区 · 作坊** (no project picker).
 
 | Web resource | Scope |
 | --- | --- |

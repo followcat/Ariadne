@@ -37,7 +37,7 @@
 
 默认人机界面：面向你打开的文件夹的 **CLI 终端 Agent**（直接运行 `ariadne` 进入 REPL）。  
 **CLI 身份 = Linux 用户**；**Web 身份 = 注册账号**（账号级文件看 **作坊**）。  
-可选：**Atelier 工坊**（`ariadne atelier` / Web **工坊**）与 **Grok 风格 Vue Web UI**（`ariadne serve`）——历史 · 对话 · 工作区 · 作坊（Web **没有**一等「项目」产品对象）。
+可选：**Atelier 工坊**（`ariadne atelier` / Web **工坊**）与 **Grok 风格 Vue Web UI**（`ariadne serve`）——对话 · 工作区 · 作坊（Web **没有**一等「项目」产品对象）。
 
 它**不是**企业多租户平台、连接器中枢或公司打包栈。
 
@@ -97,7 +97,7 @@
 - **Skills** — pack、混合检索、分节加载、可选 discriminator、选择计划
 - **护栏** — secret 脱敏；注入警告；on-request 审批可持久化 grant
 - **官方插件** — GitLab / Redmine / Odoo 为**用户属性**（密钥显示为 `***`）
-- **Web UI（Vue 3）** — 三栏：历史 · 对话 · 工具；**工作区**（当前目录或作坊/旁支）· **作坊**；markdown-it 表格；thinking 折叠；回合统计；workspace 走势图内联
+- **Web UI（Vue 3）** — 三栏：对话列表 · 主栏聊天 · 工具；**工作区**（当前目录或作坊/旁支）· **作坊**；markdown-it 表格；thinking 折叠；回合统计；workspace 走势图内联
 - **OpenAI 兼容模型** — chat completions + tools + 可选 reasoning 流
 
 ## 宿主与界面
@@ -177,7 +177,7 @@ ariadne serve --host 127.0.0.1 --port 8420
 
 | 区域 | 行为 |
 | --- | --- |
-| **左侧栏** | **历史 \| 工作区 \| 作坊** · 会话标题 · 外观 / Provider / 插件 |
+| **左侧栏** | **对话 \| 工作区 \| 作坊** · 会话标题 · 外观 / Provider / 插件 |
 | **工作区浏览器** | `/workspace`：**当前目录**（serve 主机目录）或 **作坊主线/旁支** — 不是产品「项目」 |
 | **主栏** | 顶栏 · 对话 · thinking 折叠 · 回合统计 |
 | **右侧工具面板** | 可折叠 · 调用详情 · 耗时 / tokens / tool 数 |

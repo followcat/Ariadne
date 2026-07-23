@@ -46,7 +46,7 @@ product “项目” object.
 | **旁支 (branch)** | Snapshot copy for hands-on work; not git; not each chat. |
 | **Scratch `/session`** | Ephemeral sandbox scope files — never the browser root. |
 
-**Web product surfaces (UI):** 历史 · 工作区 · 作坊.  
+**Web product surfaces (UI):** 对话 · 工作区 · 作坊.  
 There is **no** first-class Web **「项目」** entity (no project picker, no project list).
 API may still use internal keys such as `workspace_binding: "project"` meaning
 **serve open-folder** — that is **not** a user-facing product name and is **not** a session.
@@ -123,7 +123,7 @@ Default backend mounts the **active host root** at `/workspace` (see
 | --- | --- |
 | CLI open folder | `Settings.workspace`, cwd / `--workspace` |
 | Web resolve root | `ariadne.web.app` `_workspace_root_for(…)` |
-| UI | 历史 · **工作区** · **作坊**; labels 当前目录 vs 作坊 |
+| UI | 对话 · **工作区** · **作坊**; labels 当前目录 vs 作坊 |
 | Atelier | [atelier.md](atelier.md) |
 
 ## 9. Acceptance checks

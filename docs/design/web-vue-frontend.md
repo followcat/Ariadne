@@ -49,7 +49,7 @@ FastAPI serves `static/dist/index.html` when present, else legacy `static/index.
 
 ## Workspace browser (left rail)
 
-- Tabs: **历史** (sessions) | **工作区** (`/workspace` tree + preview)
+- Tabs: **对话** (sessions list) | **工作区** (`/workspace` tree + preview)
 - Root binding: serve open folder or atelier main/branch when selected; UI labels 当前目录 / 作坊 (no product 「项目」). See
   [web-workspace.md](web-workspace.md). Not per chat session.
 - Chat inlines images via `/api/workspace/file` (host absolute paths under

@@ -858,7 +858,7 @@ onMounted(() => {
             :aria-selected="leftTab === 'sessions'"
             @click="setLeftTab('sessions')"
           >
-            历史
+            对话
           </button>
           <button
             type="button"

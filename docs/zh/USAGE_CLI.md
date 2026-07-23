@@ -225,7 +225,7 @@ sandbox_edit_file   {path, old_string, new_string}  → 精确一次匹配 + 统
 | **工作区** | 你打开的目录（`cwd` / `--workspace`） | 账号级 durable 看 **作坊** 主线/旁支；普通 **工作区** Tab = serve 主机目录（多会话共用，**不是**产品「项目」） |
 | **Session** | 仅聊天线程，**不是**文件系统 | 同：对话 ≠ 文件树 |
 
-无 serve 期 `project|per_user` 模式开关。Web 产品面：**历史 · 工作区 · 作坊**（无项目选择器）。
+无 serve 期 `project|per_user` 模式开关。Web 产品面：**对话 · 工作区 · 作坊**（无项目选择器）。
 
 | Web 资源 | 范围 |
 | --- | --- |
@@ -256,8 +256,8 @@ ariadne serve --port 8420
 2. 在 **Provider** 中绑定 `BASE_URL`、`API_KEY`、`MODEL`  
 3. 可选：在 **插件** 中启用官方插件  
 4. 通过 SSE 流式对话  
-5. **左侧栏**（类 Grok）：新对话、历史会话列表；底部 Provider / 插件 / 退出。  
-   切换会话会加载历史（`GET/POST/DELETE /api/sessions`、`GET /api/sessions/{id}`）  
+5. **左侧栏**（类 Grok）：新对话、**对话**列表 · 工作区 · 作坊；底部 Provider / 插件 / 退出。  
+   切换会话会加载该对话消息（`GET/POST/DELETE /api/sessions`、`GET /api/sessions/{id}`）  
 6. **主题**：顶栏 ☀/☾ 或侧栏 **外观** 可切换浅色 / 深色；偏好写入
    `localStorage`（`ariadne_theme`），默认跟随系统  
 

@@ -37,7 +37,7 @@
 
 Default human interface: a **CLI shell agent** over the folder you open (bare `ariadne` → REPL).  
 **CLI identity = Linux user**; **Web identity = registered accounts** (作坊 for per-account files).  
-Optional: **Atelier** workshops (`ariadne atelier` / Web **工坊**) and a **Grok-style Vue web UI** (`ariadne serve`) — 历史 · 对话 · 工作区 · 作坊 (Web has no product “project” object).
+Optional: **Atelier** workshops (`ariadne atelier` / Web **工坊**) and a **Grok-style Vue web UI** (`ariadne serve`) — 对话 · 工作区 · 作坊 (Web has no product “project” object).
 
 It is **not** an enterprise multi-tenant platform, connector hub, or company packaging stack.
 
@@ -179,7 +179,7 @@ ariadne serve --host 127.0.0.1 --port 8420
 
 | Area | Behavior |
 | --- | --- |
-| **Left sidebar** | **历史 \| 工作区 \| 作坊** · session titles · appearance / Provider / plugins |
+| **Left sidebar** | **对话 \| 工作区 \| 作坊** · session titles · appearance / Provider / plugins |
 | **Workspace browser** | `/workspace` tree: **当前目录** (serve host dir) or **作坊主线/旁支** when selected — not a product “项目” |
 | **Main column** | Top bar · chat · composer · thinking collapse · turn stats |
 | **Right tools panel** | Collapsible · per-call detail · duration / tokens / tool count |
