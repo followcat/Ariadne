@@ -80,7 +80,7 @@ Most “agent frameworks” give you either a thin chat wrapper, or a company pl
 | **Toolcall** | **One** capability registry, deferred schemas, audited loop |
 | **Memory** | Layered recall + curated facts + conversation state |
 | **Sandbox** | **Docker-first** hardened container (optional `local` / `null`) |
-| **Atelier** | Project workshop: shared workspace + `KNOWLEDGE.md` + main/branch sessions |
+| **Atelier** | Project workshop: main workspace + isolated branch sandboxes + `KNOWLEDGE.md` brief |
 | **Host UX** | Terminal agent + Vue web UI + workspace browser + plugins |
 
 ## Features
@@ -89,7 +89,7 @@ Most “agent frameworks” give you either a thin chat wrapper, or a company pl
 - **Docker-first sandbox** — default `ARIADNE_SANDBOX=docker`: cap-drop ALL, `--network none`, memory/CPU/pids limits, non-root, read-only rootfs; official image `ariadne-sandbox:minimal`
 - **Semantic tools first** — prefer `sandbox_read_file` / `write` / `edit` / `list_dir`; `sandbox_exec` is a policy-gated shell fallback; **`web_fetch`** runs on the **host** (egress allowlist) so the container stays offline by default
 - **Runtime agent (in-process)** — command allow/deny + secret redaction + audit JSONL (not a side daemon)
-- **Atelier (工坊)** — `ariadne atelier`: project workshop with shared code tree, `KNOWLEDGE.md`, main session (zero ceremony), optional **branch** sessions (conversation isolation ≠ git)
+- **Atelier (小作坊)** — `ariadne atelier`: main strategy thread + **isolated branch sandboxes** (files + memory; not git), short user-owned `KNOWLEDGE.md` brief
 - **Sessions** — continue / resume; **topic titles** (auto after each turn + `/title` or click web top-bar title)
 - **Images** — CLI `/image` (path or clipboard); web paste / drag-drop; fails clearly if model is not multimodal (`ARIADNE_VISION`)
 - **Memory L0–L4** — transcript, summaries, curated facts, semantic recall, L2 conversation state; optional consolidation → L3
@@ -114,31 +114,32 @@ Useful in-REPL commands: `/help`, `/title`, `/image`, `/resume`, `/status`, `/mo
 
 ### Atelier — project workshop
 
-A **Codex-like project room**: shared code tree, continuous main chat, optional experiment branches, and a short user-owned `KNOWLEDGE.md` (like **AGENTS.md**).
+A **Codex-like project room**: main strategy chat, optional **isolated** experiment branches, and a short user-owned `KNOWLEDGE.md` (like **AGENTS.md**).
 
 ```text
-Atelier = workshop
-├── workspace/       shared code (all sessions see the same files)
-├── KNOWLEDGE.md     project brief — user-written, always injected
-├── Main session     daily continuous dialogue (zero ceremony)
-└── Branch session*  isolated conversation + own sandbox scope
-                     (not a git branch)
+Atelier = 小作坊
+├── workspace/              main files only (branches cannot write here)
+├── KNOWLEDGE.md            user brief — always injected
+├── Main session            strategy / work definition
+└── Branch session*         snapshot copy of files + own memory
+                            (not a git branch; not shared workspace)
 ```
 
 ```bash
 ariadne atelier create my-app --from .     # workshop from existing code
-ariadne atelier open my-app                # REPL on main (shared workspace)
-ariadne atelier branch create my-app exp   # experiment conversation
-ariadne atelier branch merge my-app exp    # short merge note + notify main
+ariadne atelier open my-app                # REPL on main
+ariadne atelier branch create my-app exp   # isolated sandbox (file snapshot)
+ariadne atelier branch merge my-app exp    # archive summary only (no file promote)
 ariadne atelier knowledge show my-app      # edit with: knowledge edit
 ```
 
-**Project brief (`KNOWLEDGE.md`):** Codex-style — **you write** stable decisions/conventions; every turn injects a capped copy (+ workspace file tree).  
-**No auto-extract by default.** Branches share code, isolate chat; system inject may include a one-line main summary.  
-Empty model answers are recovered (thinking summary / tool nudge) instead of silent `(empty reply)`.  
-Turn-level memory stays in **Memory L0–L4**. Keep the brief short.
+**Brief (`KNOWLEDGE.md`):** you write stable decisions; every turn injects a capped copy (+ current session file tree). **No auto-extract by default.**  
+**Branches:** create = copy main files; work never touches main workspace or main chat; merge does not write main KNOWLEDGE.  
+**Tokens:** default completion **8k**; atelier turns **≥16k** (`ARIADNE_MAX_TOKENS` for global).  
+Empty replies recover from thinking/tools; thrash loops are capped with a clear wrap-up.  
+Automatic recall remains **Memory L0–L4**.
 
-**Web UI:** `ariadne serve` → **工坊** tab — workshops, main/branch sessions, markdown editor for the brief, turns with `atelier_id`. Store: `{data}/web/users/<user>/ateliers/`.
+**Web UI:** `ariadne serve` → **作坊** tab — main/branch, 小本本 editor, workspace browser scoped by `atelier_id` + `atelier_session`. Store: `{data}/web/users/<user>/ateliers/`.
 
 Design: [docs/design/atelier.md](docs/design/atelier.md).
 

@@ -172,12 +172,14 @@ hosts and kernel code.
 - [x] In-process RuntimeAgent (command policy + audit); host `web_fetch` + egress allowlist
 - [x] Semantic file tools preferred over shell in prompts/descriptions
 
-### Phase 13 — Atelier（工坊）
-- [x] Design: [design/atelier.md](design/atelier.md) — project workshop naming
-- [x] `ariadne atelier create|list|open|delete`
-- [x] Shared workspace + main/branch sessions; merge/discard
-- [x] `KNOWLEDGE.md` template, heuristic refresh, history, merge update
-- [x] Tests: `test_atelier_*`
+### Phase 13 — Atelier（工坊 / 小作坊）
+- [x] Design: [design/atelier.md](design/atelier.md) — naming + isolation
+- [x] `ariadne atelier create|list|open|delete` + branch create/list/merge/discard
+- [x] **Main workspace vs isolated branch sandboxes** (file snapshot + scopes/)
+- [x] Web 作坊 UI：`atelier_id` / `atelier_session` turns + workspace browse + images
+- [x] `KNOWLEDGE.md` user brief (no default auto-extract); history snapshots
+- [x] Delivery: empty-reply recovery, thrash cap, max_tokens 8k / atelier ≥16k
+- [x] Tests: `test_atelier_*` + web atelier API
 
 ## Explicitly deferred forever (unless product changes)
 

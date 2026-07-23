@@ -80,7 +80,7 @@
 | **Toolcall** | **唯一**能力注册表、延迟 schema、可审计循环 |
 | **Memory** | 分层召回 + 精选事实 + 会话状态 |
 | **Sandbox** | **Docker 优先**加固容器（可选 `local` / `null`） |
-| **Atelier** | 项目工坊：共享 workspace + `KNOWLEDGE.md` + 主/分支会话 |
+| **Atelier** | 项目工坊：主线 workspace + **隔离旁支沙箱** + `KNOWLEDGE.md` 小本本 |
 | **宿主体验** | 终端 Agent + Vue Web UI + 工作区浏览器 + 插件 |
 
 ## 功能特性
@@ -89,7 +89,7 @@
 - **Docker 优先沙箱** — 默认 `ARIADNE_SANDBOX=docker`：cap-drop ALL、`--network none`、内存/CPU/pids 限制、非 root、只读根文件系统；官方镜像 `ariadne-sandbox:minimal`
 - **语义化工具优先** — 优先 `sandbox_read_file` / `write` / `edit` / `list_dir`；`sandbox_exec` 为受策略约束的 shell 兜底；**`web_fetch` 在 host 执行**（外联白名单），容器默认无网
 - **进程内 Runtime Agent** — 命令允许/拒绝 + 脱敏 + 审计 JSONL（非独立守护进程）
-- **Atelier（工坊）** — `ariadne atelier`：共享代码树、`KNOWLEDGE.md`、主会话零管理；可选 **branch** 会话（对话隔离，**不是** git 分支）
+- **Atelier（小作坊）** — `ariadne atelier`：主线定策略 + **隔离旁支**（独立文件与记忆，**不是** git）；手写 `KNOWLEDGE.md` 小本本
 - **会话** — continue / resume；**主题标题**（每轮自动总结 + `/title` 或点 Web 顶栏）
 - **图片** — CLI `/image`；Web 粘贴/拖拽；非多模态明确报错（`ARIADNE_VISION`）
 - **记忆 L0–L4** — transcript、摘要、精选事实、语义召回、L2 状态；可选巩固写入 L3
@@ -114,31 +114,31 @@ REPL 常用：`/help`、`/title`、`/image`、`/resume`、`/status`、`/mode`、
 
 ### Atelier — 项目工坊
 
-对标 Codex「打开项目」体验：共享代码、连续主会话、可选实验分支，以及手写的 `KNOWLEDGE.md`（类似 **AGENTS.md**）。
+对标 Codex「打开项目」：主线连续对话、可选**隔离旁支**、手写 `KNOWLEDGE.md`（类似 **AGENTS.md**）。
 
 ```text
-Atelier = 工坊
-├── workspace/       共享代码（所有 session 同一份）
-├── KNOWLEDGE.md     项目说明 — 用户维护，始终注入
-├── Main session     日常连续对话（零管理）
-└── Branch session*  隔离对话 + 独立沙箱 scope
-                     （不是 git 分支）
+Atelier = 小作坊
+├── workspace/              主线文件（旁支改不到）
+├── KNOWLEDGE.md            小本本 — 用户维护，始终注入
+├── Main session            策略 / 工作定义
+└── Branch session*         文件快照拷贝 + 独立记忆
+                            （不是 git；不是共用 workspace）
 ```
 
 ```bash
 ariadne atelier create my-app --from .     # 从已有代码建工坊
 ariadne atelier open my-app                # 进入 main REPL
-ariadne atelier branch create my-app exp   # 实验会话
-ariadne atelier branch merge my-app exp    # 附简短合并笔记 + 通知 main
+ariadne atelier branch create my-app exp   # 隔离沙箱（拷贝主线文件）
+ariadne atelier branch merge my-app exp    # 仅归档摘要（不推广文件）
 ariadne atelier knowledge show my-app      # 编辑: knowledge edit
 ```
 
-**项目说明（`KNOWLEDGE.md`）：** Codex 式——**你来写**稳定决策/约定；每轮注入有长度上限，并附带 workspace 文件树。  
-**默认不做自动提取。** 分支共享代码、隔离对话；可注入主会话一行摘要作背景。  
-模型空正文会兜底（思考摘要 / 工具提示），避免静默 `(empty reply)`。  
-轮次记忆交给 **Memory L0–L4**。请保持说明文件精简。
+**小本本（`KNOWLEDGE.md`）：** 你写稳定决策；每轮注入有长度上限 + 当前会话文件树。**默认不自动提取。**  
+**旁支：** 创建=拷贝主线文件；干活不碰主线文件与主线聊天；「收」不写主线小本本。  
+**Token：** 默认补全 **8k**；作坊 turn **≥16k**（全局可用 `ARIADNE_MAX_TOKENS`）。  
+空回复会兜底；工具空转有上限与中文收尾。自动记忆仍是 **Memory L0–L4**。
 
-**Web UI：** `ariadne serve` → **工坊** 页——创建/打开、主/分支会话、Markdown 编辑说明文件、`atelier_id` 对话。路径：`{data}/web/users/<user>/ateliers/`。
+**Web UI：** `ariadne serve` → **作坊** 页——主线/旁支、小本本、工作区按 `atelier_id` + `atelier_session` 作用域。路径：`{data}/web/users/<user>/ateliers/`。
 
 设计：[docs/design/atelier.md](docs/design/atelier.md)。
 ### Docker 沙箱（默认）

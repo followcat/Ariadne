@@ -92,11 +92,12 @@ ariadne version
 # web UI — register users, bind each user’s own provider (BYOK)
 ariadne serve --host 127.0.0.1 --port 8420
 
-# Atelier (project workshop: shared workspace + KNOWLEDGE + optional branch sessions)
+# Atelier (main workspace + isolated branch sandboxes + KNOWLEDGE brief)
 ariadne atelier create my-app --from .
-ariadne atelier open my-app
-ariadne atelier branch create my-app experiment
-ariadne atelier branch merge my-app experiment
+ariadne atelier open my-app                    # main strategy thread
+ariadne atelier branch create my-app experiment  # file snapshot + own memory
+ariadne atelier branch merge my-app experiment   # summary only (no file promote)
+ariadne atelier branch discard my-app experiment
 ariadne atelier knowledge show my-app
 # design: docs/design/atelier.md
 # workspace mode: project (default, Codex-like shared project folder)
