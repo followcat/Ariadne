@@ -105,6 +105,12 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
  * When set, host paths under this root are rewritten to /workspace/… virtual paths.
  */
 let hostWorkspaceRoot = ''
+/**
+ * Active atelier id for image/file API scoping. Without this, /api/workspace/file
+ * hits the default project workspace and atelier outputs (e.g. moonlight_bird.png)
+ * 404 → broken chat images.
+ */
+let activeAtelierId = ''
 
 export function setHostWorkspaceRoot(root: string | null | undefined) {
   const r = String(root || '').trim().replace(/\/+$/, '')
@@ -115,11 +121,25 @@ export function getHostWorkspaceRoot(): string {
   return hostWorkspaceRoot
 }
 
+export function setActiveAtelierId(id: string | null | undefined) {
+  activeAtelierId = String(id || '').trim()
+}
+
+export function getActiveAtelierId(): string {
+  return activeAtelierId
+}
+
 /** Map sandbox / host / relative image paths to the authenticated file API URL. */
 export function workspaceFileUrl(rawPath: string): string {
   let p = String(rawPath || '').trim()
   if (!p) return ''
-  if (p.startsWith('/api/workspace/file?')) return p
+  if (p.startsWith('/api/workspace/file?')) {
+    // Ensure atelier_id is present when we are in a workshop.
+    if (activeAtelierId && !/[?&]atelier_id=/.test(p)) {
+      return p + (p.includes('?') ? '&' : '?') + 'atelier_id=' + encodeURIComponent(activeAtelierId)
+    }
+    return p
+  }
   // strip optional file:// prefix models sometimes emit
   p = p.replace(/^file:\/\//i, '')
   // Host absolute under known workspace → virtual /workspace/…
@@ -138,7 +158,11 @@ export function workspaceFileUrl(rawPath: string): string {
   }
   // Host absolute paths (no virtual prefix) are allowed; server rejects escapes.
   if (!/^\/workspace(\/|$)/i.test(p) && !p.startsWith('/')) return ''
-  return '/api/workspace/file?path=' + encodeURIComponent(p)
+  let url = '/api/workspace/file?path=' + encodeURIComponent(p)
+  if (activeAtelierId) {
+    url += '&atelier_id=' + encodeURIComponent(activeAtelierId)
+  }
+  return url
 }
 
 /**
@@ -230,7 +254,7 @@ export function rewriteWorkspaceImages(src: string): string {
       (_m, alt: string, path: string) => {
         const url = workspaceFileUrl(path)
         if (!url) return _m
-        return `![${alt || '走势图'}](${url})`
+        return `![${alt || '图片'}](${url})`
       },
     )
 
@@ -256,7 +280,7 @@ export function rewriteWorkspaceImages(src: string): string {
         }
         const url = workspaceFileUrl(p)
         if (!url) return _m
-        return `![${alt || '走势图'}](${url})`
+        return `![${alt || '图片'}](${url})`
       },
     )
 
@@ -277,7 +301,7 @@ export function rewriteWorkspaceImages(src: string): string {
       (_m, path: string) => {
         const url = workspaceFileUrl(path)
         if (!url) return _m
-        return `\n\n![走势图](${url})\n\n`
+        return `\n\n![图片](${url})\n\n`
       },
     )
 

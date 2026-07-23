@@ -59,7 +59,10 @@ my-app/
 | Code files | shared workspace | **same** workspace |
 | Transcript | own jsonl | own jsonl |
 | Sandbox container | own scope | own scope |
-| KNOWLEDGE.md | read + auto-update after turns | read; write on **merge** only |
+| KNOWLEDGE.md | user-owned brief (read always) | read; merge may append a short note |
+
+**Role (UX):** **Main** = strategy / work definition / decisions (prefer light on heavy coding).  
+**Branch** = hands-on implementation (code, images). Files stay shared; conversation is isolated.
 
 ## 6. CLI
 

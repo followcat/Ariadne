@@ -325,9 +325,9 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
       </div>
 
       <div class="tips">
-        <p>· 随便聊，想改文件就直接说</p>
-        <p>· 旁支 = 另开一桌试想法，文件还是同一份</p>
-        <p>· 小本本可选，想记才写，不记也没关系</p>
+        <p>· <b>主线</b>：定方向、写清楚要做什么</p>
+        <p>· <b>旁支</b>：动手改代码、出图（文件与主线共用）</p>
+        <p>· 小本本可选；出图后对话里应直接看到图片</p>
       </div>
     </template>
   </div>

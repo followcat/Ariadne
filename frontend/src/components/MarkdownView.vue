@@ -48,7 +48,7 @@ async function hydrateWorkspaceImages() {
         headers: token ? { Authorization: 'Bearer ' + token } : {},
       })
       if (!r.ok) {
-        img.alt = (img.alt || '走势图') + ` (加载失败 ${r.status})`
+        img.alt = (img.alt || '图片') + ` (加载失败 ${r.status})`
         img.classList.add('workspace-img-failed')
         continue
       }
@@ -58,9 +58,9 @@ async function hydrateWorkspaceImages() {
       img.src = url
       img.dataset.hydrated = '1'
       img.classList.add('workspace-img')
-      if (!img.alt) img.alt = '走势图'
+      if (!img.alt) img.alt = '图片'
     } catch {
-      img.alt = (img.alt || '走势图') + ' (加载失败)'
+      img.alt = (img.alt || '图片') + ' (加载失败)'
       img.classList.add('workspace-img-failed')
     }
   }

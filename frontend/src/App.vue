@@ -9,7 +9,7 @@ import ThinkingBlock from './components/ThinkingBlock.vue'
 import ToolsPanel, { type ToolEntry } from './components/ToolsPanel.vue'
 import WorkspaceBrowser from './components/WorkspaceBrowser.vue'
 import { api, parseSseBuffer, type Me, type SessionRow, type StreamEvent } from './api/client'
-import { setHostWorkspaceRoot } from './lib/markdown'
+import { setActiveAtelierId, setHostWorkspaceRoot } from './lib/markdown'
 
 type LeftTab = 'sessions' | 'workspace' | 'atelier'
 
@@ -98,6 +98,7 @@ function setLeftTab(tab: LeftTab) {
 function selectAtelier(id: string) {
   atelierId.value = id
   localStorage.setItem('ariadne_atelier', id)
+  setActiveAtelierId(id)
   atelierSession.value = 'main'
   localStorage.setItem('ariadne_atelier_session', 'main')
   messages.value = []
@@ -120,6 +121,7 @@ function exitAtelier() {
   atelierSession.value = 'main'
   localStorage.removeItem('ariadne_atelier')
   localStorage.removeItem('ariadne_atelier_session')
+  setActiveAtelierId('')
   knowledgeOpen.value = false
   messages.value = []
   void loadHistory()
@@ -180,6 +182,8 @@ async function bootstrap() {
     username.value = me.value?.username || ''
     // So chat can rewrite host absolute paths like /home/…/plot.png → workspace images
     setHostWorkspaceRoot(me.value?.workspace || '')
+    // Scope chat image URLs to atelier workspace when a workshop is open.
+    setActiveAtelierId(atelierId.value || '')
     if (!sessionId.value && !atelierId.value) {
       const sr = await api('/api/sessions', token.value, { method: 'POST' })
       if (sr.ok) {
