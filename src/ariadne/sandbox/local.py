@@ -32,32 +32,70 @@ class LocalWorkdirSession:
         workspace: Path,
         session_dir: Path,
         env_allowlist: tuple[str, ...] = DEFAULT_ENV_ALLOWLIST,
+        main_readonly: Path | None = None,
     ) -> None:
         self.id = session_id
         self.workspace = workspace.resolve()
         self.session_dir = session_dir.resolve()
         self.env_allowlist = env_allowlist
-        self.session_dir.mkdir(parents=True, exist_ok=True)
-        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.main_readonly = (
+            main_readonly.resolve() if main_readonly is not None else None
+        )
+        if self.main_readonly is not None:
+            self.main_readonly.mkdir(parents=True, exist_ok=True)
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.workspace.mkdir(parents=True, exist_ok=True)
 
-    def _resolve(self, path: str) -> Path:
+    def _resolve(self, path: str, *, for_write: bool = False) -> Path:
         raw = (path or "/workspace").strip() or "/workspace"
         if raw in {"/workspace", "workspace"}:
             return self.workspace
         if raw in {"/session", "session"}:
             return self.session_dir
+        if raw in {"/main-readonly", "main-readonly"}:
+            if self.main_readonly is None:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_SANDBOX_EXEC_FAILED",
+                        "/main-readonly is not mounted in this sandbox",
+                    )
+                )
+            if for_write:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_SANDBOX_EXEC_FAILED",
+                        "/main-readonly is read-only; write under /workspace",
+                        path=path,
+                    )
+                )
+            return self.main_readonly
         if raw.startswith("/workspace/"):
             return self._safe_join(self.workspace, raw[len("/workspace/") :])
         if raw.startswith("/session/"):
             return self._safe_join(self.session_dir, raw[len("/session/") :])
+        if raw.startswith("/main-readonly/"):
+            if self.main_readonly is None:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_SANDBOX_EXEC_FAILED",
+                        "/main-readonly is not mounted in this sandbox",
+                    )
+                )
+            if for_write:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_SANDBOX_EXEC_FAILED",
+                        "/main-readonly is read-only; write under /workspace",
+                        path=path,
+                    )
+                )
+            return self._safe_join(self.main_readonly, raw[len("/main-readonly/") :])
         if not raw.startswith("/"):
             return self._safe_join(self.workspace, raw)
         raise AriadneError(
             app_error(
                 "ARIADNE_SANDBOX_EXEC_FAILED",
-                f"path must be under /workspace or /session, got {path!r}",
+                f"path must be under /workspace, /session, or /main-readonly, got {path!r}",
             )
         )
 
@@ -75,7 +113,10 @@ class LocalWorkdirSession:
 
     async def exec(self, req: SandboxExecRequest) -> SandboxExecResult:
         cwd_path = self._map_cwd(req.cwd)
-        cwd_path.mkdir(parents=True, exist_ok=True)
+        # Never mkdir on read-only main tree
+        raw_cwd = (req.cwd or "/workspace").strip()
+        if not raw_cwd.startswith("/main-readonly"):
+            cwd_path.mkdir(parents=True, exist_ok=True)
         timeout = req.timeout_seconds if req.timeout_seconds is not None else 60.0
         # env allowlist only: never forward host secrets into the sandbox
         env: dict[str, str] = {}
@@ -136,7 +177,7 @@ class LocalWorkdirSession:
         )
 
     async def read_file(self, path: str) -> bytes:
-        target = self._resolve(path)
+        target = self._resolve(path, for_write=False)
         if not target.is_file():
             raise AriadneError(
                 app_error("ARIADNE_SANDBOX_EXEC_FAILED", f"file not found: {path!r}")
@@ -144,12 +185,12 @@ class LocalWorkdirSession:
         return target.read_bytes()
 
     async def write_file(self, path: str, data: bytes) -> None:
-        target = self._resolve(path)
+        target = self._resolve(path, for_write=True)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
 
     async def list_dir(self, path: str) -> list[str]:
-        target = self._resolve(path)
+        target = self._resolve(path, for_write=False)
         if not target.is_dir():
             raise AriadneError(
                 app_error("ARIADNE_SANDBOX_EXEC_FAILED", f"directory not found: {path!r}")
@@ -168,10 +209,14 @@ class LocalWorkdirSandbox(SandboxBackend):
         workspace: Path,
         data_dir: Path,
         env_allowlist: tuple[str, ...] = DEFAULT_ENV_ALLOWLIST,
+        main_readonly: Path | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
         self.data_dir = data_dir.resolve()
         self.env_allowlist = env_allowlist
+        self.main_readonly = (
+            main_readonly.resolve() if main_readonly is not None else None
+        )
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     async def start(self, *, scope_key: str) -> SandboxSession:
@@ -182,4 +227,5 @@ class LocalWorkdirSandbox(SandboxBackend):
             workspace=self.workspace,
             session_dir=session_dir,
             env_allowlist=self.env_allowlist,
+            main_readonly=self.main_readonly,
         )

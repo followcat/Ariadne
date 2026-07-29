@@ -17,6 +17,15 @@ from .docker_config import DockerSandboxConfig, build_run_argv
 from .port import SandboxBackend, SandboxExecRequest, SandboxExecResult, SandboxSession
 
 
+_ALLOWED_ROOTS = ("/workspace", "/session", "/main-readonly")
+
+
+def _path_under_allowed_roots(norm: str) -> bool:
+    if norm in _ALLOWED_ROOTS:
+        return True
+    return any(norm.startswith(f"{r}/") for r in _ALLOWED_ROOTS)
+
+
 class DockerSandboxSession:
     def __init__(
         self,
@@ -26,18 +35,18 @@ class DockerSandboxSession:
         workspace: Path,
         session_dir: Path,
         image: str,
+        main_readonly: Path | None = None,
     ) -> None:
         self.id = session_id
         self.container_id = container_id
         self.workspace = workspace
         self.session_dir = session_dir
         self.image = image
+        self.main_readonly = main_readonly.resolve() if main_readonly else None
 
     async def exec(self, req: SandboxExecRequest) -> SandboxExecResult:
         cwd = req.cwd or "/workspace"
-        if cwd not in {"/workspace", "/session"} and not cwd.startswith(
-            ("/workspace/", "/session/")
-        ):
+        if not _path_under_allowed_roots(posixpath.normpath(cwd)):
             if not cwd.startswith("/"):
                 cwd = f"/workspace/{cwd}"
             else:
@@ -107,20 +116,28 @@ class DockerSandboxSession:
         )
 
     @staticmethod
-    def _container_path(path: str) -> str:
+    def _container_path(path: str, *, for_write: bool = False) -> str:
         raw = (path or "").strip()
         if not raw:
             raise AriadneError(app_error("ARIADNE_SANDBOX_EXEC_FAILED", "path is required"))
         if not raw.startswith("/"):
             raw = f"/workspace/{raw}"
         norm = posixpath.normpath(raw)
-        if norm not in {"/workspace", "/session"} and not norm.startswith(
-            ("/workspace/", "/session/")
-        ):
+        if not _path_under_allowed_roots(norm):
             raise AriadneError(
                 app_error(
                     "ARIADNE_SANDBOX_EXEC_FAILED",
                     f"path escapes sandbox roots: {path!r}",
+                )
+            )
+        if for_write and (
+            norm == "/main-readonly" or norm.startswith("/main-readonly/")
+        ):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_SANDBOX_EXEC_FAILED",
+                    " /main-readonly is read-only (main workspace); write under /workspace",
+                    path=path,
                 )
             )
         return norm
@@ -138,7 +155,7 @@ class DockerSandboxSession:
         return int(proc.returncode if proc.returncode is not None else -1), out_b, err_b
 
     async def read_file(self, path: str) -> bytes:
-        cpath = self._container_path(path)
+        cpath = self._container_path(path, for_write=False)
         code, out_b, err_b = await self._run_capture(
             ["docker", "exec", self.container_id, "cat", "--", cpath]
         )
@@ -153,7 +170,7 @@ class DockerSandboxSession:
         return out_b
 
     async def write_file(self, path: str, data: bytes) -> None:
-        cpath = self._container_path(path)
+        cpath = self._container_path(path, for_write=True)
         payload = base64.b64encode(data)
         code, _, err_b = await self._run_capture(
             [
@@ -177,7 +194,7 @@ class DockerSandboxSession:
             )
 
     async def list_dir(self, path: str) -> list[str]:
-        cpath = self._container_path(path)
+        cpath = self._container_path(path, for_write=False)
         code, out_b, err_b = await self._run_capture(
             ["docker", "exec", self.container_id, "ls", "-1A", "--", cpath]
         )
@@ -219,6 +236,7 @@ class DockerSandbox(SandboxBackend):
         network: str = "none",
         config: DockerSandboxConfig | None = None,
         require_daemon: bool = True,
+        main_readonly: Path | None = None,
     ) -> None:
         if shutil.which("docker") is None:
             raise AriadneError(
@@ -233,6 +251,9 @@ class DockerSandbox(SandboxBackend):
                 raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", chk.detail))
         self.workspace = workspace.resolve()
         self.data_dir = data_dir.resolve()
+        self.main_readonly = (
+            main_readonly.resolve() if main_readonly is not None else None
+        )
         if config is None:
             config = DockerSandboxConfig(
                 image=image or "python:3.13-slim-bookworm",
@@ -288,6 +309,7 @@ class DockerSandbox(SandboxBackend):
             workspace=self.workspace,
             session_dir=session_dir,
             config=cfg,
+            main_readonly=self.main_readonly,
         )
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -310,4 +332,5 @@ class DockerSandbox(SandboxBackend):
             workspace=self.workspace,
             session_dir=session_dir,
             image=self.config.image,
+            main_readonly=self.main_readonly,
         )

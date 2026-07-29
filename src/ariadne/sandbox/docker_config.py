@@ -30,8 +30,13 @@ def build_run_argv(
     workspace: Path,
     session_dir: Path,
     config: DockerSandboxConfig,
+    main_readonly: Path | None = None,
 ) -> list[str]:
-    """Build ``docker run`` argv for a long-lived sleep infinity container."""
+    """Build ``docker run`` argv for a long-lived sleep infinity container.
+
+    Optional ``main_readonly`` is bind-mounted at ``/main-readonly:ro`` so branch
+    sandboxes can read the main atelier workspace without write access.
+    """
     ws = str(workspace.resolve())
     sess = str(session_dir.resolve())
     cmd: list[str] = [
@@ -74,6 +79,16 @@ def build_run_argv(
             f"{ws}:/workspace:rw",
             "-v",
             f"{sess}:/session:rw",
+        ]
+    )
+    if main_readonly is not None:
+        main_p = main_readonly.resolve()
+        main_p.mkdir(parents=True, exist_ok=True)
+        # Skip if same as writable workspace (main session — no need for RO twin)
+        if main_p != workspace.resolve():
+            cmd.extend(["-v", f"{main_p}:/main-readonly:ro"])
+    cmd.extend(
+        [
             "-w",
             config.workdir or "/workspace",
             config.image,

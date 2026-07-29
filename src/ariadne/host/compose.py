@@ -59,8 +59,16 @@ def compose_agent(settings: Settings) -> Agent:
     if network not in {"none", "bridge"}:
         network = "none"
 
+    main_ro = getattr(settings, "main_readonly_workspace", None)
+    if main_ro is not None:
+        main_ro = Path(main_ro)
+
     if settings.sandbox in {"local", "workdir", "localworkdir"}:
-        backend = LocalWorkdirSandbox(workspace=settings.workspace, data_dir=data_dir)
+        backend = LocalWorkdirSandbox(
+            workspace=settings.workspace,
+            data_dir=data_dir,
+            main_readonly=main_ro,
+        )
         backend_name = "local"
     elif settings.sandbox in {"null", "none", "off"}:
         backend = NullSandbox()
@@ -88,6 +96,7 @@ def compose_agent(settings: Settings) -> Agent:
             data_dir=data_dir,
             config=cfg,
             require_daemon=True,
+            main_readonly=main_ro,
         )
         backend_name = "docker"
     else:
@@ -173,7 +182,9 @@ def compose_agent(settings: Settings) -> Agent:
     store_paths = []
     if settings.merge_home_plugins:
         store_paths.append(Path.home() / ".ariadne" / "plugins.json")
-    store_paths.append(settings.resolved_data_dir / "plugins.json")
+    # plugins_dir keeps account plugins when data_dir is rebound (e.g. atelier scope).
+    plugin_root = getattr(settings, "plugins_dir", None) or settings.resolved_data_dir
+    store_paths.append(Path(plugin_root) / "plugins.json")
     for store_path in store_paths:
         plugin_configs.update(PluginStore(store_path).enabled())
     for plugin_name, plugin_config in plugin_configs.items():

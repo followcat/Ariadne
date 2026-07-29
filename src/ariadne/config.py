@@ -29,6 +29,8 @@ class Settings:
     api_key: str
     model: str
     workspace: Path
+    # Optional read-only host tree mounted at /main-readonly (atelier branch → main workspace).
+    main_readonly_workspace: Path | None = None
     session_id: str = "default"
     sandbox: str = "docker"  # docker default (personal Codex-style); local|null escape
     sandbox_lifecycle: str = "per_turn"
@@ -57,6 +59,10 @@ class Settings:
     idle_ttl_seconds: float = 600.0
     max_ttl_seconds: float = 3600.0
     data_dir: Path | None = None
+    # When set, load plugins.json from here instead of resolved_data_dir.
+    # Web: account dir (survives atelier session data_dir rebinding).
+    # CLI: leave None → plugins from resolved_data_dir (+ optional home merge).
+    plugins_dir: Path | None = None
     sandbox_prestart: bool = False
     approval_mode: str = "auto"  # auto | on-request | readonly
     merge_home_plugins: bool = True  # CLI: merge ~/.ariadne/plugins.json; web: off

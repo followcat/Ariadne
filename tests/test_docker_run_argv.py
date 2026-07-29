@@ -56,3 +56,24 @@ def test_build_run_argv_runtime_and_bridge(tmp_path: Path) -> None:
     assert "--runtime" in argv and "runsc" in argv
     assert "--read-only" not in argv
     assert "ariadne.scope=x" in " ".join(argv)
+
+
+def test_build_run_argv_main_readonly_mount(tmp_path: Path) -> None:
+    ws = tmp_path / "branch-ws"
+    main = tmp_path / "main-ws"
+    sess = tmp_path / "sess"
+    ws.mkdir()
+    main.mkdir()
+    (main / "keep.txt").write_text("from-main\n", encoding="utf-8")
+    sess.mkdir()
+    cfg = DockerSandboxConfig(image="python:3.13-slim-bookworm")
+    argv = build_run_argv(
+        name="ariadne-br",
+        workspace=ws,
+        session_dir=sess,
+        config=cfg,
+        main_readonly=main,
+    )
+    joined = " ".join(argv)
+    assert f"{ws.resolve()}:/workspace:rw" in joined
+    assert f"{main.resolve()}:/main-readonly:ro" in joined
