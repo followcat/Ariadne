@@ -165,4 +165,41 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   color: var(--dim);
   animation: blink 1s step-end infinite;
 }
+
+/* Mermaid / SVG diagrams in chat */
+.md-body .md-mermaid,
+.md-body .md-svg {
+  margin: .9em 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--bg-3);
+  overflow-x: auto;
+}
+/* markdown-it highlight must start with <pre>; empty skip node is not shown */
+.md-body pre.md-fence-skip {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
+.md-body .md-mermaid pre.mermaid {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.md-body .md-mermaid pre.mermaid[hidden],
+.md-body .md-mermaid.md-mermaid-done > pre.mermaid {
+  display: none;
+}
+.md-body .md-mermaid svg,
+.md-body .md-svg svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
 @keyframes blink { 50% { opacity: 0; } }

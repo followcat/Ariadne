@@ -45,11 +45,29 @@ hljs.registerLanguage('md', markdown)
 /** Image extensions we auto-inline from the sandbox workspace. */
 const IMG_EXT = 'png|jpe?g|gif|webp|svg'
 /**
+ * Non-image durable files models often hand back — show as download links.
+ * (Images stay inline via rewriteWorkspaceImages.)
+ */
+const FILE_EXT =
+  'md|txt|json|csv|pdf|py|js|ts|tsx|jsx|vue|html?|css|scss|ya?ml|toml|xml|zip|tar|gz|tgz|7z|rar|docx?|xlsx?|pptx?|log|sh|bash|zsh|rs|go|java|c|cc|cpp|h|hpp|rb|php|sql|ipynb|wasm|bin|dat|parquet|arrow|npy|npz|pt|onnx|pickle|pkl|env|ini|cfg|conf|lock|sum|mod|proto|graphql|svgz'
+/**
  * Sandbox path segment ending in an image extension.
  * Excludes trailing Chinese punctuation so "path.png。" does not leak into the URL.
  */
 const WS_IMG =
   String.raw`\/?workspace\/[^\s)\]"'<>。，、；：！？]+?\.(?:` + IMG_EXT + ')'
+const WS_FILE =
+  String.raw`\/?workspace\/[^\s)\]"'<>。，、；：！？]+?\.(?:` + FILE_EXT + ')'
+
+export function isImagePath(path: string): boolean {
+  return new RegExp(String.raw`\.(?:` + IMG_EXT + ')$', 'i').test(String(path || '').trim())
+}
+
+export function fileBasename(path: string): string {
+  const p = String(path || '').replace(/\\/g, '/').split('?')[0]
+  const parts = p.split('/').filter(Boolean)
+  return parts[parts.length - 1] || 'download'
+}
 
 function makeMd(withHighlight: boolean) {
   return new MarkdownIt({
@@ -58,6 +76,33 @@ function makeMd(withHighlight: boolean) {
     breaks: true,
     typographer: false,
     highlight(str, lang) {
+      const langKey = (lang || '').trim().toLowerCase()
+      // markdown-it only skips the outer <pre><code> wrap when the highlight
+      // result starts with "<pre". Nested <pre> inside <pre><code> is invalid HTML
+      // and breaks mermaid/SVG after history reload (browser auto-closes tags;
+      // DOMPurify also strips SVG attrs when nested under <code>).
+      // Leading empty <pre> is display:none via .md-fence-skip.
+      if (langKey === 'mermaid' || langKey === 'mmd') {
+        return (
+          '<pre class="md-fence-skip" hidden></pre>' +
+          '<div class="md-mermaid">' +
+          '<pre class="mermaid">' +
+          escapePlain(str) +
+          '</pre></div>'
+        )
+      }
+      // Inline SVG diagram fences → keep markup for sanitize (svg profile).
+      if (langKey === 'svg') {
+        const trimmed = String(str || '').trim()
+        if (/^<svg[\s>]/i.test(trimmed) && /<\/svg>/i.test(trimmed)) {
+          return (
+            '<pre class="md-fence-skip" hidden></pre>' +
+            '<div class="md-svg">' +
+            trimmed +
+            '</div>'
+          )
+        }
+      }
       // History loads can contain multi‑KB minified JS; highlight.js freezes the UI.
       if (!withHighlight || str.length > 4000) {
         return '<pre class="hljs"><code>' + escapePlain(str) + '</code></pre>'
@@ -109,12 +154,37 @@ function patchLinkOpen(engine: MarkdownIt) {
     ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
   engine.renderer.rules.link_open = (tokens, idx, options, env, self) => {
     const token = tokens[idx]
-    const aIndex = token.attrIndex('target')
-    if (aIndex < 0) token.attrPush(['target', '_blank'])
-    else token.attrs![aIndex][1] = '_blank'
-    const rIndex = token.attrIndex('rel')
-    if (rIndex < 0) token.attrPush(['rel', 'noopener noreferrer'])
-    else token.attrs![rIndex][1] = 'noopener noreferrer'
+    const hrefIdx = token.attrIndex('href')
+    let href = hrefIdx >= 0 && token.attrs ? token.attrs[hrefIdx][1] : ''
+    // Rewrite sandbox / host workspace file links to authenticated API URLs.
+    if (href && !href.startsWith('/api/workspace/file') && !/^(?:https?:|mailto:|data:|#)/i.test(href)) {
+      const rewritten = workspaceFileUrl(href)
+      if (rewritten) {
+        href = rewritten
+        if (token.attrs && hrefIdx >= 0) token.attrs[hrefIdx][1] = rewritten
+      }
+    } else if (href.startsWith('/api/workspace/file')) {
+      href = withAtelierQuery(href)
+      if (token.attrs && hrefIdx >= 0) token.attrs[hrefIdx][1] = href
+    }
+    if (href.startsWith('/api/workspace/file')) {
+      // Auth'd download via click handler (Bearer) — not a plain navigation.
+      const tIdx = token.attrIndex('target')
+      if (tIdx >= 0 && token.attrs) token.attrs.splice(tIdx, 1)
+      const rIdx = token.attrIndex('rel')
+      if (rIdx >= 0 && token.attrs) token.attrs.splice(rIdx, 1)
+      token.attrPush(['class', 'md-ws-file'])
+      token.attrPush(['data-workspace-href', href])
+      token.attrPush(['title', '点击下载'])
+      token.attrPush(['download', fileBasename(href)])
+    } else {
+      const aIndex = token.attrIndex('target')
+      if (aIndex < 0) token.attrPush(['target', '_blank'])
+      else token.attrs![aIndex][1] = '_blank'
+      const rIndex = token.attrIndex('rel')
+      if (rIndex < 0) token.attrPush(['rel', 'noopener noreferrer'])
+      else token.attrs![rIndex][1] = 'noopener noreferrer'
+    }
     return defaultLinkOpen(tokens, idx, options, env, self)
   }
 }
@@ -259,10 +329,66 @@ patchImage(md)
 patchImage(mdLite)
 
 const PURIFY: DOMPurify.Config = {
-  USE_PROFILES: { html: true },
-  ADD_ATTR: ['target', 'rel', 'class', 'src', 'alt', 'data-workspace-src'],
+  // svg profile keeps ```svg fences and mermaid-produced diagrams if re-sanitized.
+  USE_PROFILES: { html: true, svg: true, svgFilters: true },
+  ADD_ATTR: [
+    'target',
+    'rel',
+    'class',
+    'src',
+    'alt',
+    'title',
+    'download',
+    'hidden',
+    'data-workspace-src',
+    'data-workspace-href',
+    'viewBox',
+    'xmlns',
+    'fill',
+    'stroke',
+    'stroke-width',
+    'stroke-linecap',
+    'stroke-linejoin',
+    'stroke-dasharray',
+    'stroke-opacity',
+    'fill-opacity',
+    'opacity',
+    'd',
+    'cx',
+    'cy',
+    'r',
+    'rx',
+    'ry',
+    'x',
+    'y',
+    'x1',
+    'y1',
+    'x2',
+    'y2',
+    'width',
+    'height',
+    'transform',
+    'points',
+    'preserveAspectRatio',
+    'text-anchor',
+    'dominant-baseline',
+    'font-size',
+    'font-family',
+    'font-weight',
+    'marker-end',
+    'marker-start',
+    'clip-path',
+    'mask',
+  ],
+  ADD_TAGS: ['div', 'pre', 'foreignObject'],
+  /**
+   * Must keep DOMPurify's "relative / non-scheme" branches (`[^a-z]|[a-z+.\-]+…`).
+   * A scheme-only regexp causes SVG presentation attrs (cx, width, fill, …) to be
+   * treated as failed URI checks and stripped — diagrams vanish on history reload.
+   * Also allow blob: (hydrated workspace images) and data:image/.
+   */
   ALLOWED_URI_REGEXP:
-    /^(?:(?:https?|mailto):|data:image\/|\/api\/workspace\/file\?|#)/i,
+    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|blob):|data:image\/|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
 }
 
 /** Apply `fn` only outside fenced code blocks (``` / ~~~). */
@@ -411,6 +537,105 @@ export function rewriteWorkspaceImages(src: string): string {
   })
 }
 
+/**
+ * Turn non-image workspace file paths into markdown download links.
+ * Images are left to rewriteWorkspaceImages.
+ */
+export function rewriteWorkspaceFileLinks(src: string): string {
+  return mapOutsideFences(src, (chunk) => {
+    let s = chunk
+    s = s.replace(/file:\/\/(\/workspace\/)/gi, '$1')
+
+    // Markdown links already pointing at sandbox non-image files keep text.
+    s = s.replace(
+      new RegExp(String.raw`\[([^\]]+)\]\((${WS_FILE})\)`, 'gi'),
+      (m, text: string, path: string) => {
+        if (isImagePath(path)) return m
+        const url = workspaceFileUrl(path)
+        if (!url) return m
+        return `[📎 ${text || fileBasename(path)}](${url})`
+      },
+    )
+
+    // Relative / plain non-image file in md link: [报告](out/report.md)
+    s = s.replace(
+      new RegExp(
+        String.raw`\[([^\]]+)\]\((?!https?:|data:|blob:|\/api\/)(\.?\/?(?:[\w.-]+\/)*[\w.-]+\.(?:` +
+          FILE_EXT +
+          '))\\)',
+        'gi',
+      ),
+      (m, text: string, path: string) => {
+        if (isImagePath(path)) return m
+        let p = String(path || '').replace(/^\.\//, '')
+        if (p.startsWith('workspace/')) p = '/' + p
+        else if (!p.startsWith('/')) p = '/workspace/' + p
+        const url = workspaceFileUrl(p)
+        if (!url) return m
+        return `[📎 ${text || fileBasename(p)}](${url})`
+      },
+    )
+
+    // Backticks: `/workspace/report.md` → download link
+    s = s.replace(
+      new RegExp(
+        '`' +
+          String.raw`((?:\/?workspace\/|\/(?!api\/)[^\s` +
+          '`' +
+          String.raw`]*)[^\s` +
+          '`' +
+          String.raw`]+\.(?:` +
+          FILE_EXT +
+          '))' +
+          '`',
+        'gi',
+      ),
+      (m, path: string) => {
+        if (isImagePath(path)) return m
+        const url = workspaceFileUrl(path)
+        if (!url) return m
+        return `[📎 ${fileBasename(path)}](${url})`
+      },
+    )
+
+    // Bare /workspace/foo.md
+    s = s.replace(
+      new RegExp(
+        String.raw`(^|[^a-zA-Z0-9_\[\]])(\/workspace\/[^\s)\]"'<>。，、；：！？]+?\.(?:` +
+          FILE_EXT +
+          '))',
+        'gi',
+      ),
+      (full, prefix: string, path: string) => {
+        if (isImagePath(path)) return full
+        if (prefix.endsWith('](') || prefix.endsWith('(')) return full
+        const url = workspaceFileUrl(path)
+        if (!url) return full
+        return `${prefix}[📎 ${fileBasename(path)}](${url})`
+      },
+    )
+
+    // Relative workspace/foo.md
+    s = s.replace(
+      new RegExp(
+        String.raw`(^|[^a-zA-Z0-9_/\[\]])(workspace\/[^\s)\]"'<>。，、；：！？]+?\.(?:` +
+          FILE_EXT +
+          '))',
+        'gi',
+      ),
+      (full, prefix: string, path: string) => {
+        if (isImagePath(path)) return full
+        if (prefix === '/' || prefix.endsWith('](') || prefix.endsWith('(')) return full
+        const url = workspaceFileUrl(path)
+        if (!url) return full
+        return `${prefix}[📎 ${fileBasename(path)}](${url})`
+      },
+    )
+
+    return s
+  })
+}
+
 /** Normalize model quirks so tables parse more reliably. */
 export function normalizeMarkdown(src: string): string {
   let s = String(src || '').replace(/\r\n?/g, '\n')
@@ -428,6 +653,7 @@ export function normalizeMarkdown(src: string): string {
     return '| ' + line.trim().split('|').filter(Boolean).join(' | ') + ' |'
   })
   s = rewriteWorkspaceImages(s)
+  s = rewriteWorkspaceFileLinks(s)
   return s
 }
 

@@ -12,8 +12,9 @@ Status: **active** (2026-07-20)
 | markstream-vue / Streamdown | Optimized partial | incremental | Heavier; optional later if flicker matters |
 | Chrome AI `streaming-markdown` | experimental | token-level | Not needed for personal v1 message sizes |
 
-**Recommendation (implemented):** Vue 3 SPA + **markdown-it** + **markdown-it-multimd-table** + **DOMPurify** + **highlight.js**.  
-Streaming strategy: accumulate full Markdown string, re-parse on paint (rAF-friendly). Incomplete tables settle when header/separator/rows complete — industry standard for LLM chat.
+**Recommendation (implemented):** Vue 3 SPA + **markdown-it** + **markdown-it-multimd-table** + **DOMPurify** + **highlight.js** + lazy **mermaid** (```mermaid / ```mmd).  
+Fenced **```svg** is kept as inline SVG (DOMPurify svg profile).  
+Streaming strategy: accumulate full Markdown string, re-parse on paint (rAF-friendly). Incomplete tables settle when header/separator/rows complete — industry standard for LLM chat. Mermaid re-runs after paint; incomplete fences fail softly while streaming.
 
 ## Layout
 
