@@ -347,6 +347,13 @@ def append_transcript(project: Project, session_id: str, row: dict[str, Any]) ->
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    # Bump session meta so UI can show real "last activity" (not stuck 进行中).
+    try:
+        meta = load_session_meta(project, session_id)
+        meta.updated_at = time.time()
+        save_session_meta(project, meta)
+    except Exception:
+        pass
 
 
 def read_transcript(project: Project, session_id: str, *, limit: int = 500) -> list[dict[str, Any]]:

@@ -2,6 +2,10 @@
 
 | Term | Meaning in Ariadne |
 | --- | --- |
+| **Ariadne / 筑梦师** | Product name: mythic thread-bearer; Chinese “dream-builder” who keeps the path |
+| **Atelier / 小作坊** | Per-account workshop: main + optional branches + 便签 |
+| **便签 / KNOWLEDGE.md** | How *this* 作坊 runs (ops, paths, caveats); not Memory |
+| **`/main-readonly`** | Branch sandbox mount of **live main** workspace (read-only) |
 | **Kernel** | Callable application core that runs turns; not a full platform |
 | **Turn** | One user invocation cycle, including internal tool loops |
 | **Skill** | Procedural guidance package (`SKILL.md` + assets) |

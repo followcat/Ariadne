@@ -1,9 +1,12 @@
 # Design: Atelier（工坊 / 小作坊）
 
-Status: **normative for implementation** (2026-07-23)  
+Status: **normative for implementation** (2026-07-24)  
 CLI: `ariadne atelier …`  
 Module: `src/ariadne/atelier/`  
 Web: `ariadne serve` → left tab **作坊**
+
+Product kernel name: **Ariadne** / **筑梦师** (mythic thread + craft of dreams).  
+Atelier is the workshop surface where that thread is practiced.
 
 ## 1. Naming
 
@@ -63,10 +66,11 @@ my-app/
 
 | Resource | Main | Branch |
 | --- | --- | --- |
-| Files | `workspace/` | `.ariadne/branch_workspaces/<slug>/`（快照拷贝） |
+| Files (rw) | `workspace/` → sandbox `/workspace` | `.ariadne/branch_workspaces/<slug>/` → `/workspace`（创建时快照） |
+| Main files (ro) | — | 主线 `workspace/` → sandbox **`/main-readonly`**（实时只读） |
 | Memory / sandbox data | `.ariadne/` | `.ariadne/scopes/branch-<slug>/` |
 | Transcript | own jsonl | own jsonl |
-| KNOWLEDGE.md | 主线用户维护 | 只读参考；merge **不写** 主线 |
+| KNOWLEDGE.md | 主线用户维护 | 只读参考 + `/workspace/KNOWLEDGE.md` 副本；merge **不写** 主线 |
 | Agent session id | `aw-{id}-main` | `aw-{id}-branch-<slug>` |
 | max_tokens | ≥ global default | 至少 **16384**（实现向） |
 
@@ -88,20 +92,44 @@ ariadne atelier knowledge show|edit|refresh|history PROJECT
 
 `open` → bind **session workspace** + `extra_system_prompt` → `run_repl`。
 
-## 7. Knowledge（小本本）
+## 7. Knowledge（小本本 / 本坊便签）
 
-**Value:** 跨会话项目名片；用户手写为主。
+**Value:** 记**这间作坊怎么运作**——关键路径、运行方式、注意点。  
+跨主线/旁支注入的短说明书；旁支只读。
+
+| 写什么 | 不写什么 |
+| --- | --- |
+| 本坊目标与流程 | 整段聊天 transcript |
+| `/workspace`、入口文件、输出位置等**路径** | 一次性临时命令输出 |
+| 约束、坑、**注意** | Memory 级琐碎回忆 |
+| 主线定下的运作约定 | 旁支私货当权威 |
 
 | Do | Don't |
 | --- | --- |
-| 用户写稳定决策 / 约定 | 每轮自动提取（默认 **off**） |
-| 始终注入（约 4k 字符上限） | 当第二套 Memory |
-| 创建时可选文件树脚手架 | 把旁支 merge 自动灌进小本本 |
+| 用户可随时手写/改 | 当第二套 Memory（细节 → L0–L4） |
+| 始终注入（约 4k 字符上限） | 旁支或 merge 写主线便签 |
+| 权威路径 = 作坊根 `KNOWLEDGE.md`（**不是** `/workspace/KNOWLEDGE.md`） | 假定沙箱能改根目录便签 |
+| **主线 turn 后：运作/路径/注意类约定小步写入** | 每轮无脑重写全文 |
 
-模板偏口语（「我想记住的 / 随手记」）。  
-根 `KNOWLEDGE.md` 为主；若根文件空壳/污染而 `workspace/KNOWLEDGE.md` 更充实，注入可优先 workspace 副本（GET 时可 sync）。
+### 7.0 Main post-turn 更新（默认 on，保守）
 
-自动沉淀 → **Memory L0–L4**。
+```text
+主线 turn 完成
+  → 提取「运作 / 路径 / 注意 / 决策」类要点（启发式；可选 LLM）
+  → 闲聊 → noop
+  → 有 → 写入对应小节（本坊怎么运作 | 关键路径 | 注意）；history 快照
+旁支 turn → 永不写便签
+```
+
+| 规则 | 要求 |
+| --- | --- |
+| Session | **仅 `main`** |
+| 质量门 | 去重；拒过短/过长/纯问句；拒污染 JSON |
+| 步幅 | 每轮少 ops；禁止整文件 free rewrite |
+| 与 Memory | Memory 管细节；便签管**本坊运作说明书** |
+
+模板小节：`本坊怎么运作` · `关键路径` · `注意` · `随手记`。  
+根 `KNOWLEDGE.md` 权威；`workspace/KNOWLEDGE.md` 仅作空壳时的备选注入源。
 
 ## 7.1 Delivery + empty-reply
 
@@ -111,7 +139,7 @@ ariadne atelier knowledge show|edit|refresh|history PROJECT
 | Empty content | Kernel 从 reasoning / 工具提示恢复，禁止静默空回复 |
 | Thrash | 只读空转提醒；近上限强制收尾；循环耗尽中文说明 |
 | 大写入 | 禁止超大单次 `sandbox_write_file`；小步改 |
-| 出图 | 写到当前 `/workspace`，并用 `![…](/workspace/…)` 展示 |
+| 出图 / 文档 | **以本坊便签「输出规范」为准**（画画→PNG、架构坊→md+svg 等）；旁支只读本坊便签，不作坊互通默认架构交付 |
 
 ## 7.2 Tokens
 

@@ -4,6 +4,14 @@
 
 Ariadne is a personal open-source **agent kernel** you can call: skills guide, tools act, memory persists, sandbox optionally executes.
 
+## Name (Ariadne · 筑梦师)
+
+| | |
+| --- | --- |
+| **Myth** | **Ariadne** (Greek): offered Theseus a **thread** through the labyrinth — orientation, not the maze itself. |
+| **Chinese** | **筑梦师**: craft dreams into navigable structure; leave a map worth returning to. |
+| **Product metaphor** | Skills = thread · tools = maze · memory = map · sandbox / 作坊 = safe workshop. |
+
 ## Product definition
 
 Ariadne is the runtime that owns a single turn (and multi-step tool loops inside it):

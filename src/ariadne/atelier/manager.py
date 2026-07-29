@@ -160,13 +160,33 @@ class AtelierManager:
         return load_session_meta(project, session_id)
 
     def list_sessions(self, project_id: str) -> list[SessionMeta]:
+        from .models import session_jsonl_path
+
         project = self.get_project(project_id)
         out: list[SessionMeta] = []
         for p in sorted(project.sessions_dir.glob("*.meta.json")):
             try:
-                out.append(load_session_meta(project, p.name.removesuffix(".meta.json")))
+                meta = load_session_meta(project, p.name.removesuffix(".meta.json"))
             except Exception:
                 continue
+            # Prefer transcript mtime when newer so "last chat" reflects real activity
+            # (legacy metas only updated on create).
+            try:
+                jp = session_jsonl_path(project, meta.id)
+                if jp.is_file():
+                    mtime = jp.stat().st_mtime
+                    if mtime > float(meta.updated_at or 0):
+                        meta.updated_at = mtime
+            except OSError:
+                pass
+            out.append(meta)
+        # Active first (main always first among actives), then by recent activity
+        def _sort_key(s: SessionMeta) -> tuple:
+            active = 0 if (s.status.value == "active" or s.id == "main") else 1
+            main = 0 if s.id == "main" else 1
+            return (active, main, -float(s.updated_at or 0))
+
+        out.sort(key=_sort_key)
         return out
 
     def _seed_branch_workspace(self, project: Project, branch_name: str) -> Path:
@@ -262,6 +282,10 @@ class AtelierManager:
             parent_session_id=main.id,
             branch_name=slug,
         )
+        # Place root 便签 under branch /workspace so tools can read it
+        from .knowledge import ensure_knowledge_in_session_workspace
+
+        ensure_knowledge_in_session_workspace(project, meta)
         save_session_meta(project, meta)
         session_jsonl_path(project, sid).touch()
         if initial_message:

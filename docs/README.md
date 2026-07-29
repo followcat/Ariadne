@@ -2,7 +2,7 @@
 
 > Language: **English** · [简体中文索引](zh/README.md)
 
-Normative design documents for the Ariadne personal open-source agent kernel.  
+Normative design documents for **Ariadne** (筑梦师) — personal open-source agent kernel.  
 User-facing pages are bilingual; design contracts stay **English-first** (see [I18N.md](I18N.md)).
 
 ## User docs (EN · 中文)

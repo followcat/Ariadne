@@ -177,7 +177,8 @@ hosts and kernel code.
 - [x] `ariadne atelier create|list|open|delete` + branch create/list/merge/discard
 - [x] **Main workspace vs isolated branch sandboxes** (file snapshot + scopes/)
 - [x] Web 作坊 UI：`atelier_id` / `atelier_session` turns + workspace browse + images
-- [x] `KNOWLEDGE.md` user brief (no default auto-extract); history snapshots
+- [x] `KNOWLEDGE.md` 便签: user edit + main post-turn constrained 约定 auto-append;
+  branch read-only; history snapshots
 - [x] Delivery: empty-reply recovery, thrash cap, max_tokens 8k / atelier ≥16k
 - [x] Tests: `test_atelier_*` + web atelier API
 

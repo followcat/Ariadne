@@ -2,7 +2,8 @@
 
 ## Product scope
 
-Ariadne is a **personal open-source agent kernel**.
+Ariadne (**筑梦师**) is a **personal open-source agent kernel** — named for the mythic
+thread-bearer and for building navigable dreams, not a multi-tenant platform.
 
 In scope: callable agent turns, skills, toolcall, memory, sandbox port.
 

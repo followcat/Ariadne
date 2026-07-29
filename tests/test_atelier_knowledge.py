@@ -18,9 +18,12 @@ from ariadne.atelier.manager import AtelierManager
 
 def test_template_is_short_agents_style() -> None:
     t = knowledge_template("demo")
-    assert "小本本" in t or "记住" in t or "用户" in t
-    assert "我想记住的" in t or "决策" in t
-    assert len(t) < 800
+    assert "本坊" in t or "运作" in t
+    assert "关键路径" in t
+    assert "/workspace" in t
+    assert "KNOWLEDGE.md" in t
+    assert "注意" in t
+    assert len(t) < 1200
 
 
 def test_knowledge_prefer_workspace_when_root_thin(tmp_path: Path) -> None:
@@ -42,8 +45,48 @@ def test_knowledge_prefer_workspace_when_root_thin(tmp_path: Path) -> None:
     inj = knowledge_for_inject(proj)
     assert "蜡笔" in inj or "index.html" in inj
     assert '"has_update"' not in inj
-    assert sync_knowledge_from_workspace_if_empty(proj) is True
+    # inject already promotes; second call is no-op if same
     assert "蜡笔" in (root / "KNOWLEDGE.md").read_text(encoding="utf-8")
+
+
+def test_promote_workspace_handbook_over_scaffold(tmp_path: Path) -> None:
+    """Agent rewrote /workspace/KNOWLEDGE.md; panel root was still scaffold."""
+    from ariadne.atelier.knowledge import (
+        read_knowledge,
+        sync_knowledge_from_workspace_if_empty,
+    )
+    from ariadne.atelier.models import Project
+
+    root = tmp_path / "atelier-y"
+    ws = root / "workspace"
+    ws.mkdir(parents=True)
+    (root / ".ariadne" / "knowledge_history").mkdir(parents=True)
+    scaffold = (
+        "# 架构整理和描述\n\n"
+        "> 小本本草稿（扫了一眼文件夹自动填的，随便改）。\n\n"
+        "## 我想记住的\n"
+        "- 大概用了: （未能从文件树推断，请手写）\n"
+        "- （还没想好也可以先空着）\n\n"
+        "## 随手记\n"
+        "- 扫到大约 0 个文件 · 2026-07-24\n"
+    )
+    handbook = (
+        "# 架构整理和描述 · 作坊运作手册\n\n"
+        "## 本坊怎么运作\n"
+        "- 主线定策略，旁支动手\n\n"
+        "## 关键路径\n"
+        "- 工作区: `/workspace`\n"
+        "- 便签: 作坊根 KNOWLEDGE.md\n\n"
+        "## 注意\n"
+        "- 别把 demo 坑写进便签\n"
+    )
+    (root / "KNOWLEDGE.md").write_text(scaffold, encoding="utf-8")
+    (ws / "KNOWLEDGE.md").write_text(handbook, encoding="utf-8")
+    proj = Project(id="y", name="y", path=root, workspace_path=ws)
+    assert sync_knowledge_from_workspace_if_empty(proj) is True
+    body = read_knowledge(proj)
+    assert "作坊运作手册" in body or "本坊怎么运作" in body
+    assert "扫了一眼文件夹" not in body
 
 
 def test_heuristic_and_history(tmp_path: Path) -> None:
@@ -168,3 +211,29 @@ def test_extract_knowledge_llm_with_complete() -> None:
         assert upd.has_update
 
     asyncio.run(run())
+
+
+def test_workspace_tree_lists_files_when_host_path_contains_dot_ariadne(
+    tmp_path: Path,
+) -> None:
+    """Web ateliers live under …/.ariadne/…/workspace — must not skip all files."""
+    from ariadne.atelier.knowledge import workspace_tree_lines
+
+    # Mimic web data layout: host path contains a ".ariadne" parent segment
+    ws = tmp_path / ".ariadne" / "web" / "users" / "u" / "ateliers" / "x" / "workspace"
+    ws.mkdir(parents=True)
+    (ws / "KNOWLEDGE.md").write_text("# k\n", encoding="utf-8")
+    (ws / "aiflow-core-architecture.md").write_text("# doc\n", encoding="utf-8")
+    (ws / "aiflow-core-architecture.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"/>\n', encoding="utf-8"
+    )
+    # Nested skip dir should still be ignored
+    bad = ws / ".venv" / "lib"
+    bad.mkdir(parents=True)
+    (bad / "x.py").write_text("1\n", encoding="utf-8")
+
+    tree = workspace_tree_lines(ws)
+    assert "KNOWLEDGE.md" in tree
+    assert "aiflow-core-architecture.md" in tree
+    assert "aiflow-core-architecture.svg" in tree
+    assert not any(".venv" in p for p in tree)

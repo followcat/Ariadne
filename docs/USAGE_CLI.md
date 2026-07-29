@@ -94,7 +94,7 @@ ariadne version
 # web UI — register users, bind each user’s own provider (BYOK)
 ariadne serve --host 127.0.0.1 --port 8420
 
-# Atelier (main workspace + isolated branch sandboxes + KNOWLEDGE brief)
+# Atelier (main + branch sandboxes + KNOWLEDGE 便签; main may auto-append 约定)
 ariadne atelier create my-app --from .
 ariadne atelier open my-app                    # main strategy thread
 ariadne atelier branch create my-app experiment  # file snapshot + own memory
@@ -230,7 +230,7 @@ Plugin credentials are **owned by the user**, not by a multi-company pack system
 | Host | Default store | Notes |
 | --- | --- | --- |
 | CLI | `~/.ariadne/plugins.json` (mode `0600`) | Cross-workspace. Use `--workspace-scope` for project `data_dir/plugins.json`. Compose merges **user → workspace** (workspace wins on name). |
-| Web | `data_dir/web/users/<username>/plugins.json` | Per registered account. API: `GET/PUT/DELETE /api/me/plugins`. Home merge is **off** for web. |
+| Web | `data_dir/web/users/<username>/plugins.json` | Per registered account. API: `GET/PUT/DELETE /api/me/plugins`. Home merge is **off** for web. Enabled plugins register on **every** Web turn, including 作坊 main/branch (account store via `plugins_dir`, independent of atelier `data_dir`). |
 
 ### Dual host: CLI vs Web (identity & workspace)
 
@@ -245,9 +245,11 @@ No serve-time `project|per_user` mode switch. Web UI surfaces: **对话 · 工�
 | Web resource | Scope |
 | --- | --- |
 | `/workspace` (no 作坊) | Serve host directory — multi-session, multi-account share on one `serve` |
-| `/workspace` (in 作坊) | That account’s atelier main or branch tree |
+| `/workspace` (in 作坊) | Main tree or branch snapshot (writable for that session) |
+| `/main-readonly` (branch only) | Live main `workspace/` — **read-only** |
 | Chat session | Transcript + title; `/new` does not clone files |
-| Atelier branch | Full-tree isolation for hands-on work (not each chat) |
+| Atelier branch | Snapshot + own memory; read live main via `/main-readonly` |
+| 便签 | Root `KNOWLEDGE.md` (+ `/workspace/KNOWLEDGE.md` copy for tools) |
 | Memory / BYOK / plugins / ateliers | Per registered web account |
 
 Normative design: [design/web-workspace.md](design/web-workspace.md).

@@ -215,7 +215,7 @@ sandbox_edit_file   {path, old_string, new_string}  → 精确一次匹配 + 统
 | 宿主 | 默认存储 | 说明 |
 | --- | --- | --- |
 | CLI | `~/.ariadne/plugins.json`（权限 `0600`） | 跨工作区。`--workspace-scope` 写入项目 `data_dir/plugins.json`。Compose 合并顺序：**用户 → 工作区**（同名工作区优先）。 |
-| Web | `data_dir/web/users/<username>/plugins.json` | 按注册账号隔离。API：`GET/PUT/DELETE /api/me/plugins`。Web **不**合并 home。 |
+| Web | `data_dir/web/users/<username>/plugins.json` | 按注册账号隔离。API：`GET/PUT/DELETE /api/me/plugins`。Web **不**合并 home。已启用插件在**每次** Web turn 注册（含作坊主线/旁支；经 `plugins_dir` 读账号 store，不随作坊 `data_dir` 丢失）。 |
 
 ### 双宿主：CLI vs Web（身份与工作区）
 
@@ -230,9 +230,11 @@ sandbox_edit_file   {path, old_string, new_string}  → 精确一次匹配 + 统
 | Web 资源 | 范围 |
 | --- | --- |
 | `/workspace`（未进作坊） | serve 主机目录 — 同一 `serve` 上多会话/多账号共用 |
-| `/workspace`（作坊内） | 该账号的作坊主线或旁支树 |
+| `/workspace`（作坊内） | 主线树或旁支快照（当前会话可写） |
+| `/main-readonly`（仅旁支） | 主线 `workspace/` **实时只读** |
 | 对话 session | transcript + 标题；`/new` 不拷贝整树 |
-| 作坊旁支 | 整树隔离动手（不是每个聊天一份盘） |
+| 作坊旁支 | 快照 + 独立记忆；读主线最新用 `/main-readonly` |
+| 便签 | 作坊根 `KNOWLEDGE.md`（工具可读 `/workspace/KNOWLEDGE.md` 副本） |
 | 记忆 / BYOK / 插件 / 作坊 | 按 Web 注册账号 |
 
 规范设计：[design/web-workspace.md](../design/web-workspace.md)。

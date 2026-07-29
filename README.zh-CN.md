@@ -5,7 +5,7 @@
 <h1 align="center">Ariadne</h1>
 
 <p align="center">
-  <strong>个人向开源 Agent 内核</strong><br/>
+  <strong>个人向开源 Agent 内核 · 筑梦师</strong><br/>
   Skills 是线 · Tools 是迷宫 · Memory 是你留下的地图
 </p>
 
@@ -33,13 +33,21 @@
 
 ---
 
-**Ariadne** 是一个可调用的运行时：把一次用户 turn 变成模型推理、技能引导、工具调用、分层记忆，以及 **Docker 隔离执行**（对标 Codex 的容器模型，跑在你本机）。
+**Ariadne**（希腊神话中把 **线团** 交给忒修斯、助他走出迷宫的阿莉阿德涅；中文产品名 **筑梦师**——搭梦、理线、留地图）是一个可调用的 **Agent 内核**：一次 turn 变成模型推理、技能引导、工具调用、分层记忆，以及本机 **Docker 隔离执行**。
 
 默认人机界面：面向你打开的文件夹的 **CLI 终端 Agent**（直接运行 `ariadne` 进入 REPL）。  
 **CLI 身份 = Linux 用户**；**Web 身份 = 注册账号**（账号级文件看 **作坊**）。  
 可选：**Atelier 工坊**（`ariadne atelier` / Web **工坊**）与 **Grok 风格 Vue Web UI**（`ariadne serve`）——对话 · 工作区 · 作坊（Web **没有**一等「项目」产品对象）。
 
 它**不是**企业多租户平台、连接器中枢或公司打包栈。
+
+### 名字
+
+| | |
+| --- | --- |
+| **Ariadne** | 神话里握住 **线** 的人——让迷宫可走，而不是迷宫本身。 |
+| **筑梦师** | 中文产品名：把想法做成可回访的结构与路径。 |
+| **产品隐喻** | Skills = 线 · Tools = 迷宫 · Memory = 地图 · 沙箱 = 安全的小作坊。 |
 
 ```text
 你的提示
@@ -90,7 +98,7 @@
 - **Docker 优先沙箱** — 默认 `ARIADNE_SANDBOX=docker`：cap-drop ALL、`--network none`、内存/CPU/pids 限制、非 root、只读根文件系统；官方镜像 `ariadne-sandbox:minimal`
 - **语义化工具优先** — 优先 `sandbox_read_file` / `write` / `edit` / `list_dir`；`sandbox_exec` 为受策略约束的 shell 兜底；**`web_fetch` 在 host 执行**（外联白名单），容器默认无网
 - **进程内 Runtime Agent** — 命令允许/拒绝 + 脱敏 + 审计 JSONL（非独立守护进程）
-- **Atelier（小作坊）** — `ariadne atelier`：主线定策略 + **隔离旁支**（独立文件与记忆，**不是** git）；手写 `KNOWLEDGE.md` 小本本
+- **Atelier（小作坊）** — `ariadne atelier`：主线定策略 + **隔离旁支**（独立文件与记忆，**不是** git）；`KNOWLEDGE.md` 本坊便签（主线明确约定可自动补记；旁支只读）
 - **会话** — continue / resume；**主题标题**（每轮自动总结 + `/title` 或点 Web 顶栏）
 - **图片** — CLI `/image`；Web 粘贴/拖拽；非多模态明确报错（`ARIADNE_VISION`）
 - **记忆 L0–L4** — transcript、摘要、精选事实、语义召回、L2 状态；可选巩固写入 L3
@@ -113,17 +121,19 @@ ariadne exec "…"        # run 别名
 
 REPL 常用：`/help`、`/title`、`/image`、`/resume`、`/status`、`/mode`、`/exit`。
 
-### Atelier — 项目工坊
+### Atelier — 小作坊
 
-对标 Codex「打开项目」：主线连续对话、可选**隔离旁支**、手写 `KNOWLEDGE.md`（类似 **AGENTS.md**）。
+对标 Codex「打开项目」：主线连续对话、可选**隔离旁支**、**本坊便签**（`KNOWLEDGE.md`）记本坊怎么运作。
 
 ```text
 Atelier = 小作坊
-├── workspace/              主线文件（旁支改不到）
-├── KNOWLEDGE.md            小本本 — 用户维护，始终注入
-├── Main session            策略 / 工作定义
-└── Branch session*         文件快照拷贝 + 独立记忆
-                            （不是 git；不是共用 workspace）
+├── workspace/                 主线文件 → 沙箱 /workspace（主线）
+├── KNOWLEDGE.md               便签（运作 / 路径 / 注意）— 始终注入
+├── Main session               策略 · 工作定义
+└── Branch session*            /workspace = 旁支快照（可写）
+                               /main-readonly = 主线最新盘（只读）
+                               /workspace/KNOWLEDGE.md = 便签副本
+                               （不是 git）
 ```
 
 ```bash
@@ -134,10 +144,11 @@ ariadne atelier branch merge my-app exp    # 仅归档摘要（不推广文件�
 ariadne atelier knowledge show my-app      # 编辑: knowledge edit
 ```
 
-**小本本（`KNOWLEDGE.md`）：** 你写稳定决策；每轮注入有长度上限 + 当前会话文件树。**默认不自动提取。**  
-**旁支：** 创建=拷贝主线文件；干活不碰主线文件与主线聊天；「收」不写主线小本本。  
-**Token：** 默认补全 **8k**；作坊 turn **≥16k**（全局可用 `ARIADNE_MAX_TOKENS`）。  
-空回复会兜底；工具空转有上限与中文收尾。自动记忆仍是 **Memory L0–L4**。
+**便签：** 记**本坊怎么运作**——关键路径、怎么跑、注意点。可手写；每轮注入有上限。**主线**聊清运作约定会自动补几条；**旁支不写**权威便签。  
+**旁支：** 写 `/workspace`；读主线最新用 **`/main-readonly`**；工具/插件按账号共用。  
+**Token：** 默认补全 **8k**；作坊 turn **≥16k**。空回复兜底；工具空转有上限。自动记忆仍是 **Memory L0–L4**。
+
+**Web UI：** `ariadne serve` → **对话 · 工作区 · 作坊**——主线/旁支、便签、按会话作用域的文件。路径：`{data}/web/users/<user>/ateliers/`。
 
 **Web UI：** `ariadne serve` → **作坊** 页——主线/旁支、小本本、工作区按 `atelier_id` + `atelier_session` 作用域。路径：`{data}/web/users/<user>/ateliers/`。
 

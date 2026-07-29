@@ -5,7 +5,7 @@
 <h1 align="center">Ariadne</h1>
 
 <p align="center">
-  <strong>Personal open-source agent kernel</strong><br/>
+  <strong>Personal open-source agent kernel · 筑梦师</strong><br/>
   Skills as the thread · Tools as the maze · Memory as the map you keep
 </p>
 
@@ -33,13 +33,21 @@
 
 ---
 
-**Ariadne** is a callable runtime that turns one user turn into model reasoning, skill guidance, tool calls, layered memory, and **Docker-isolated** execution (Codex-style containers on *your* machine).
+**Ariadne** (Greek mythology: the princess who gave Theseus a **thread** through the labyrinth; in Chinese product voice **筑梦师** — a builder of dreams who keeps the path clear) is a callable **agent kernel**: one turn becomes model reasoning, skill guidance, tool calls, layered memory, and **Docker-isolated** execution on *your* machine.
 
 Default human interface: a **CLI shell agent** over the folder you open (bare `ariadne` → REPL).  
 **CLI identity = Linux user**; **Web identity = registered accounts** (作坊 for per-account files).  
 Optional: **Atelier** workshops (`ariadne atelier` / Web **工坊**) and a **Grok-style Vue web UI** (`ariadne serve`) — 对话 · 工作区 · 作坊 (Web has no product “project” object).
 
 It is **not** an enterprise multi-tenant platform, connector hub, or company packaging stack.
+
+### Name
+
+| | |
+| --- | --- |
+| **Ariadne** | In myth, she holds the **thread** that makes the maze navigable — not the maze itself. |
+| **筑梦师** | Chinese product name: craft dreams, keep structure, leave a map you can revisit. |
+| **In the product** | Skills = thread · tools = maze · memory = map · sandbox = safe workshop. |
 
 ```text
 Your prompt
@@ -90,7 +98,7 @@ Most “agent frameworks” give you either a thin chat wrapper, or a company pl
 - **Docker-first sandbox** — default `ARIADNE_SANDBOX=docker`: cap-drop ALL, `--network none`, memory/CPU/pids limits, non-root, read-only rootfs; official image `ariadne-sandbox:minimal`
 - **Semantic tools first** — prefer `sandbox_read_file` / `write` / `edit` / `list_dir`; `sandbox_exec` is a policy-gated shell fallback; **`web_fetch`** runs on the **host** (egress allowlist) so the container stays offline by default
 - **Runtime agent (in-process)** — command allow/deny + secret redaction + audit JSONL (not a side daemon)
-- **Atelier (小作坊)** — `ariadne atelier`: main strategy thread + **isolated branch sandboxes** (files + memory; not git), short user-owned `KNOWLEDGE.md` brief
+- **Atelier (小作坊)** — `ariadne atelier`: main strategy thread + **isolated branch sandboxes** (files + memory; not git); `KNOWLEDGE.md` 便签 (main may auto-append clear 约定; branch read-only)
 - **Sessions** — continue / resume; **topic titles** (auto after each turn + `/title` or click web top-bar title)
 - **Images** — CLI `/image` (path or clipboard); web paste / drag-drop; fails clearly if model is not multimodal (`ARIADNE_VISION`)
 - **Memory L0–L4** — transcript, summaries, curated facts, semantic recall, L2 conversation state; optional consolidation → L3
@@ -113,17 +121,19 @@ ariadne exec "…"        # alias of run
 
 Useful in-REPL commands: `/help`, `/title`, `/image`, `/resume`, `/status`, `/mode`, `/exit`.
 
-### Atelier — project workshop
+### Atelier — 小作坊 (workshop)
 
-A **Codex-like project room**: main strategy chat, optional **isolated** experiment branches, and a short user-owned `KNOWLEDGE.md` (like **AGENTS.md**).
+A **Codex-like project room**: main strategy chat, optional **isolated** experiment branches, and a **本坊便签** (`KNOWLEDGE.md`) — how *this* workshop runs (paths, caveats), not a chat diary.
 
 ```text
 Atelier = 小作坊
-├── workspace/              main files only (branches cannot write here)
-├── KNOWLEDGE.md            user brief — always injected
-├── Main session            strategy / work definition
-└── Branch session*         snapshot copy of files + own memory
-                            (not a git branch; not shared workspace)
+├── workspace/                 main files → sandbox /workspace (main)
+├── KNOWLEDGE.md               便签 (ops / paths / notes) — always injected
+├── Main session               strategy · work definition
+└── Branch session*            /workspace = snapshot (rw)
+                               /main-readonly = live main workspace (ro)
+                               /workspace/KNOWLEDGE.md = 便签 copy
+                               (not a git branch)
 ```
 
 ```bash
@@ -134,13 +144,11 @@ ariadne atelier branch merge my-app exp    # archive summary only (no file promo
 ariadne atelier knowledge show my-app      # edit with: knowledge edit
 ```
 
-**Brief (`KNOWLEDGE.md`):** you write stable decisions; every turn injects a capped copy (+ current session file tree). **No auto-extract by default.**  
-**Branches:** create = copy main files; work never touches main workspace or main chat; merge does not write main KNOWLEDGE.  
-**Tokens:** default completion **8k**; atelier turns **≥16k** (`ARIADNE_MAX_TOKENS` for global).  
-Empty replies recover from thinking/tools; thrash loops are capped with a clear wrap-up.  
-Automatic recall remains **Memory L0–L4**.
+**便签:** how **this 作坊 runs** — ops, key paths, caveats. Edit anytime; inject capped each turn. **Main** may auto-append clear operational 约定; **branch never writes** the authority brief.  
+**Branches:** write under `/workspace`; **read live main** under `/main-readonly`; tools/plugins are account-shared.  
+**Tokens:** default completion **8k**; atelier turns **≥16k**. Empty-reply recovery + thrash caps. Automatic recall remains **Memory L0–L4**.
 
-**Web UI:** `ariadne serve` → **作坊** tab — main/branch, 小本本 editor, workspace browser scoped by `atelier_id` + `atelier_session`. Store: `{data}/web/users/<user>/ateliers/`.
+**Web UI:** `ariadne serve` → **对话 · 工作区 · 作坊** — main/branch, 便签 panel, session-scoped files. Store: `{data}/web/users/<user>/ateliers/`.
 
 Design: [docs/design/atelier.md](docs/design/atelier.md).
 

@@ -26,6 +26,7 @@ Run: `pytest -q` from repo root. Optional web browser: `python scripts/verify_we
 | --- | --- | --- |
 | A1 | Atelier create/list + **isolated branch workspace/memory** + merge/discard | `tests/test_atelier_manager.py` |
 | A2 | Atelier knowledge template/heuristic/history | `tests/test_atelier_knowledge.py` |
+| A2b | Main post-turn 约定 → 便签 (branch skip) | `tests/test_atelier_knowledge_auto.py` |
 | A3 | Atelier prompt inject + settings bind | `tests/test_atelier_runner.py` |
 | C1 | Parser: bare entry, subcommands, flags | `tests/test_cli_parser.py` |
 | C2 | Sessions list/continue helpers | `tests/test_sessions.py` |
