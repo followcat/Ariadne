@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 小本本：只属于「当前这一间作坊」的便签，不是全局记忆。
+ * 本坊便签：只属于当前作坊。主线可手写；主线对话里明确约定时也会自动补几条。
  */
 import { computed, ref, watch } from 'vue'
 import { api } from '../api/client'
@@ -14,6 +14,8 @@ const props = defineProps<{
   /** main | branch-… — 旁支时本本只读（权威在主线） */
   atelierSession?: string
   open: boolean
+  /** Bump after main turns so open panel reloads auto-updated brief */
+  refreshKey?: number
 }>()
 
 const emit = defineEmits<{
@@ -39,7 +41,7 @@ const workshopLabel = computed(
 const canEdit = computed(() => !isBranch.value)
 const editPlaceholder = computed(
   () =>
-    `# ${workshopLabel.value}\n\n## 我想记住的\n- 只写这间作坊的约定\n- 例如：蜡笔质感、纯本地`,
+    `# ${workshopLabel.value}\n\n## 本坊怎么运作\n- 目标与流程…\n\n## 关键路径\n- /workspace → …\n\n## 注意\n- …`,
 )
 
 async function load() {
@@ -101,7 +103,7 @@ function cancelEdit() {
 }
 
 watch(
-  () => [props.open, props.atelierId] as const,
+  () => [props.open, props.atelierId, props.refreshKey] as const,
   ([open]) => {
     if (open) {
       mode.value = 'view'
@@ -145,10 +147,12 @@ watch(
     </div>
 
     <p class="hint">
-      <strong>只属于这一间作坊</strong>——换作坊是另一本；普通聊天也看不到它。
-      写短约定就行（风格、目标、别踩的坑）。对话细节靠记忆，不用全抄进来。
+      记<strong>这间作坊怎么运作</strong>：关键路径、怎么跑、注意点（不是聊天日记）。
+      换作坊是另一本。权威在作坊根 <code>KNOWLEDGE.md</code>，不在沙箱
+      <code>/workspace</code> 里。
+      <strong>主线</strong>聊清运作约定时会<strong>自动补几条</strong>；旁支只读。
       <template v-if="isBranch">
-        <br />你在旁支里：可看本坊便签，改请回<strong>主线</strong>。
+        <br />旁支只读；要改请回<strong>主线</strong>。
       </template>
     </p>
 

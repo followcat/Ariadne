@@ -15,9 +15,17 @@ import {
 } from 'vue'
 import MarkdownView from './MarkdownView.vue'
 import ThinkingBlock from './ThinkingBlock.vue'
+import { contentHasDiagrams } from '../lib/mermaid'
 
 export type ChatMsg =
-  | { id: string; role: 'user'; content: string }
+  | {
+      id: string
+      role: 'user'
+      content: string
+      turnId?: string
+      turnIndex?: number
+      toolCount?: number
+    }
   | {
       id: string
       role: 'assistant'
@@ -25,12 +33,21 @@ export type ChatMsg =
       thinking: string
       streaming: boolean
       thinkingLive: boolean
+      turnId?: string
+      turnIndex?: number
+      toolCount?: number
     }
 
 const props = defineProps<{
   msg: ChatMsg
   /** Force full render (e.g. last few messages / streaming). */
   eager?: boolean
+  /** Highlight turn badge when tools for this turn are shown. */
+  activeTurn?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'open-turn', payload: { turnId?: string; turnIndex?: number }): void
 }>()
 
 const chatScrollRoot = inject<Ref<HTMLElement | null> | null>('chatScrollRoot', null)
@@ -43,9 +60,30 @@ const isUser = computed(() => props.msg.role === 'user')
 const asst = computed(() =>
   props.msg.role === 'assistant' ? props.msg : null,
 )
+const turnIndex = computed(() => props.msg.turnIndex || 0)
+const toolCount = computed(() => props.msg.toolCount ?? 0)
+const showTurnBadge = computed(() => turnIndex.value > 0)
+const turnTitle = computed(() => {
+  const n = turnIndex.value
+  const tc = toolCount.value
+  if (tc > 0) return `第 ${n} 轮 · ${tc} 次工具调用（点击查看）`
+  return `第 ${n} 轮`
+})
+
+function onTurnClick() {
+  if (!showTurnBadge.value) return
+  emit('open-turn', {
+    turnId: props.msg.turnId,
+    turnIndex: props.msg.turnIndex,
+  })
+}
+
+/** Diagrams must mount MarkdownView or mermaid/SVG never paint after history reload. */
+const hasDiagrams = computed(() => contentHasDiagrams(props.msg.content || ''))
 
 const shouldRenderFull = computed(() => {
   if (props.eager) return true
+  if (hasDiagrams.value) return true
   if (asst.value?.streaming) return true
   return revealed.value
 })
@@ -101,7 +139,7 @@ function setupIo() {
 }
 
 onMounted(async () => {
-  if (props.eager || asst.value?.streaming) {
+  if (props.eager || hasDiagrams.value || asst.value?.streaming) {
     revealed.value = true
     return
   }
@@ -110,9 +148,10 @@ onMounted(async () => {
 })
 
 watch(
-  () => [props.eager, asst.value?.streaming, chatScrollRoot?.value] as const,
-  async ([eager, streaming]) => {
-    if (eager || streaming) {
+  () =>
+    [props.eager, hasDiagrams.value, asst.value?.streaming, chatScrollRoot?.value] as const,
+  async ([eager, diagrams, streaming]) => {
+    if (eager || diagrams || streaming) {
       revealed.value = true
       disconnectIo()
       return
@@ -133,7 +172,18 @@ onBeforeUnmount(() => disconnectIo())
     ref="shell"
     class="msg user"
   >
-    {{ msg.content }}
+    <button
+      v-if="showTurnBadge"
+      type="button"
+      class="turn-badge user-turn"
+      :class="{ active: activeTurn, 'has-tools': toolCount > 0 }"
+      :title="turnTitle"
+      @click="onTurnClick"
+    >
+      <span class="tn">#{{ turnIndex }}</span>
+      <span v-if="toolCount > 0" class="tc">{{ toolCount }}</span>
+    </button>
+    <div class="user-body">{{ msg.content }}</div>
   </div>
   <div
     v-else
@@ -144,6 +194,17 @@ onBeforeUnmount(() => disconnectIo())
     <div class="meta">
       <span class="avatar">A</span>
       <span>Ariadne</span>
+      <button
+        v-if="showTurnBadge"
+        type="button"
+        class="turn-badge"
+        :class="{ active: activeTurn, 'has-tools': toolCount > 0 }"
+        :title="turnTitle"
+        @click="onTurnClick"
+      >
+        <span class="tn">第 {{ turnIndex }} 轮</span>
+        <span v-if="toolCount > 0" class="tc">🔧{{ toolCount }}</span>
+      </button>
       <span v-if="asst?.streaming" class="status">
         · {{ asst.thinkingLive ? '思考中' : asst.content ? '生成中' : '思考中' }}
       </span>
@@ -182,10 +243,18 @@ onBeforeUnmount(() => disconnectIo())
   border-radius: 18px 18px 4px 18px;
   background: var(--bg-3);
   border: 1px solid var(--line);
-  white-space: pre-wrap;
-  word-break: break-word;
   font-size: 15px;
   line-height: 1.55;
+  position: relative;
+}
+.msg.user .user-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.user .turn-badge.user-turn {
+  position: absolute;
+  top: -10px;
+  left: -4px;
 }
 .msg.assistant {
   max-width: min(100%, 720px);
@@ -197,6 +266,43 @@ onBeforeUnmount(() => disconnectIo())
   font-size: 12.5px;
   color: var(--dim);
   margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.turn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg-3);
+  color: var(--dim);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+.turn-badge:hover {
+  border-color: color-mix(in srgb, var(--blue) 50%, var(--line));
+  color: var(--fg);
+  background: var(--bg-hover, var(--bg-3));
+}
+.turn-badge.has-tools {
+  border-color: color-mix(in srgb, var(--blue) 35%, var(--line));
+  color: var(--blue);
+}
+.turn-badge.active {
+  background: color-mix(in srgb, var(--blue) 22%, transparent);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.turn-badge .tc {
+  font-size: 10px;
+  opacity: 0.9;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--blue) 15%, transparent);
 }
 .avatar {
   width: 22px;

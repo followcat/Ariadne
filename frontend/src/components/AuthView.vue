@@ -37,7 +37,11 @@ async function doAuth(kind: 'login' | 'register') {
     <div class="card">
       <div class="logo">A</div>
       <h1>Ariadne</h1>
-      <p class="tag">个人开源 Agent 内核 · Vue 前端 · 流式 Markdown</p>
+      <p class="cn-name">筑梦师</p>
+      <p class="tag">
+        希腊神话中的引线者 · 个人开源 Agent 内核<br />
+        Skills 是线 · 作坊是迷宫旁的安全桌面
+      </p>
       <input v-model="username" placeholder="用户名" autocomplete="username" />
       <input
         v-model="password"
@@ -75,6 +79,18 @@ async function doAuth(kind: 'login' | 'register') {
   border: 1px solid var(--line);
   border-radius: 20px;
   padding: 36px 28px 28px;
+}
+.cn-name {
+  margin: -4px 0 10px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-2);
+  letter-spacing: 0.2em;
+}
+.tag {
+  text-align: center;
+  line-height: 1.55;
 }
 .logo {
   width: 44px;

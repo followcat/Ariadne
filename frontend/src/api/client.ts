@@ -79,6 +79,12 @@ export type StreamEvent = {
     reason?: string
     ops?: Array<{ type?: string; section?: string; new_text?: string; old_text?: string }>
   }
+  /** Persisted turn index after tools written to *.turns.jsonl */
+  turn_record?: {
+    turn_id?: string
+    turn_index?: number
+    tool_count?: number
+  }
 }
 
 /** Parse SSE body chunks into discrete events. */

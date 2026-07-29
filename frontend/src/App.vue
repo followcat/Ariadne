@@ -13,11 +13,19 @@ import {
   setActiveAtelierSession,
   setHostWorkspaceRoot,
 } from './lib/markdown'
+import { contentHasDiagrams } from './lib/mermaid'
 
 type LeftTab = 'sessions' | 'workspace' | 'atelier'
 
 type ChatMsg =
-  | { id: string; role: 'user'; content: string }
+  | {
+      id: string
+      role: 'user'
+      content: string
+      turnId?: string
+      turnIndex?: number
+      toolCount?: number
+    }
   | {
       id: string
       role: 'assistant'
@@ -25,7 +33,30 @@ type ChatMsg =
       thinking: string
       streaming: boolean
       thinkingLive: boolean
+      turnId?: string
+      turnIndex?: number
+      toolCount?: number
     }
+
+/** Persisted turn tool history (from *.turns.jsonl). */
+export type TurnRecord = {
+  turn_id: string
+  turn_index: number
+  tool_count?: number
+  status?: string
+  tools?: Array<{
+    call_id?: string
+    name?: string
+    status?: string
+    arguments?: unknown
+    output?: unknown
+    error?: { code?: string; message?: string }
+  }>
+  usage?: Record<string, number>
+  model?: string
+  text_preview?: string
+  ts?: number
+}
 
 const token = ref(localStorage.getItem('ariadne_token') || '')
 provide('authToken', token)
@@ -55,8 +86,14 @@ const knowledgeRefresh = ref(0)
 const historyLoading = ref(false)
 /** Cancel in-flight history fetch when switching sessions quickly. */
 let historyAbort: AbortController | null = null
-/** Client cache: instant paint when re-opening a thread. */
+/** Client cache: instant paint when re-opening a thread. Always store clones. */
 const historyCache = new Map<string, ChatMsg[]>()
+/**
+ * Live message arrays for in-flight streams, keyed by historyCacheKey().
+ * Stream deltas always mutate this buffer — never the currently displayed
+ * messages of another thread (fixes mid-answer session switch corruption).
+ */
+const streamBuffers = new Map<string, ChatMsg[]>()
 
 function historyCacheKey(): string {
   if (atelierId.value) {
@@ -65,14 +102,232 @@ function historyCacheKey(): string {
   return `s:${sessionId.value}`
 }
 
-function putHistoryCache(msgs: ChatMsg[]) {
-  const key = historyCacheKey()
-  if (!key || key.endsWith(':') || key === 's:') return
-  historyCache.set(key, msgs)
-  // Bound memory: drop oldest if too many threads
+/** Stable Vue :key prefix so h-a-0 from different threads never share a component. */
+const messageListKey = computed(() => historyCacheKey())
+
+function cloneChatMsg(m: ChatMsg): ChatMsg {
+  if (m.role === 'user') {
+    return {
+      id: m.id,
+      role: 'user',
+      content: m.content,
+      turnId: m.turnId,
+      turnIndex: m.turnIndex,
+      toolCount: m.toolCount,
+    }
+  }
+  return {
+    id: m.id,
+    role: 'assistant',
+    content: m.content,
+    thinking: m.thinking,
+    streaming: m.streaming,
+    thinkingLive: m.thinkingLive,
+    turnId: m.turnId,
+    turnIndex: m.turnIndex,
+    toolCount: m.toolCount,
+  }
+}
+
+/** Turn tool history for the currently viewed thread (restart-safe). */
+const turnRecords = ref<TurnRecord[]>([])
+const selectedTurnId = ref('')
+/** Cache turns by historyCacheKey so switch is snappy */
+const turnsCache = new Map<string, TurnRecord[]>()
+
+function setTurnRecords(rows: TurnRecord[], key?: string) {
+  const k = key ?? historyCacheKey()
+  const list = Array.isArray(rows) ? rows : []
+  if (k && k !== 's:' && !k.endsWith(':')) turnsCache.set(k, list)
+  // Only paint into the live panel when this is the viewed thread
+  if (!key || key === historyCacheKey()) {
+    turnRecords.value = list
+  }
+}
+
+function toolCountForTurn(turnId?: string, turnIndex?: number): number {
+  if (turnId) {
+    const r = turnRecords.value.find((t) => t.turn_id === turnId)
+    if (r) return Number(r.tool_count ?? r.tools?.length ?? 0)
+  }
+  if (turnIndex && turnIndex > 0) {
+    const r = turnRecords.value.find((t) => t.turn_index === turnIndex)
+    if (r) return Number(r.tool_count ?? r.tools?.length ?? 0)
+  }
+  return 0
+}
+
+function applyTurnMetaToMessages(msgs: ChatMsg[]): ChatMsg[] {
+  return msgs.map((m) => {
+    const tc = toolCountForTurn(m.turnId, m.turnIndex)
+    if (tc === (m.toolCount || 0)) return m
+    return { ...m, toolCount: tc }
+  })
+}
+
+function mapServerMessages(
+  raw: Array<{
+    role: string
+    content?: string
+    turn_id?: string
+    turn_index?: number
+  }>,
+): ChatMsg[] {
+  let pairIdx = 0
+  return raw
+    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .map((m, i) => {
+      if (m.role === 'user') {
+        pairIdx =
+          typeof m.turn_index === 'number' && m.turn_index > 0
+            ? m.turn_index
+            : pairIdx + 1
+      }
+      const turnIndex =
+        typeof m.turn_index === 'number' && m.turn_index > 0
+          ? m.turn_index
+          : Math.max(1, pairIdx)
+      const turnId = m.turn_id ? String(m.turn_id) : undefined
+      if (m.role === 'user') {
+        return {
+          id: 'h-u-' + i,
+          role: 'user' as const,
+          content: m.content || '',
+          turnId,
+          turnIndex,
+          toolCount: toolCountForTurn(turnId, turnIndex),
+        }
+      }
+      return {
+        id: 'h-a-' + i,
+        role: 'assistant' as const,
+        content: m.content || '',
+        thinking: '',
+        streaming: false,
+        thinkingLive: false,
+        turnId,
+        turnIndex,
+        toolCount: toolCountForTurn(turnId, turnIndex),
+      }
+    })
+}
+
+function openTurnTools(payload: { turnId?: string; turnIndex?: number }) {
+  const rec =
+    (payload.turnId &&
+      turnRecords.value.find((t) => t.turn_id === payload.turnId)) ||
+    (payload.turnIndex &&
+      turnRecords.value.find((t) => t.turn_index === payload.turnIndex)) ||
+    null
+  selectedTurnId.value = rec?.turn_id || payload.turnId || ''
+  if (!rec) {
+    // No persisted tools — still open panel with empty/current filter hint
+    toolsCollapsed.value = false
+    localStorage.setItem('ariadne_tools_panel', '1')
+    if (!tools.value.some((t) => t.call_id.startsWith('info-turn-empty-'))) {
+      upsertTool({
+        call_id: 'info-turn-empty-' + (payload.turnIndex || Date.now()),
+        name: 'info',
+        status: 'info',
+        summary: `第 ${payload.turnIndex || '?'} 轮暂无工具调用记录`,
+        details: {
+          note: '本轮没有工具，或记录来自升级前（旧对话无 turns 文件）',
+        },
+      })
+    }
+    return
+  }
+  // Rebuild tools panel from persisted turn
+  const entries: ToolEntry[] = (rec.tools || []).map((t, i) => ({
+    call_id: String(t.call_id || `turn-${rec.turn_id}-${i}`),
+    name: String(t.name || '?'),
+    status:
+      t.status === 'failed'
+        ? 'failed'
+        : t.status === 'started'
+          ? 'started'
+          : 'completed',
+    arguments: t.arguments,
+    output: t.output,
+    error: t.error as ToolEntry['error'],
+  }))
+  const usage = rec.usage || {}
+  const nTools = entries.length
+  entries.push({
+    call_id: 'info-turn-' + rec.turn_id,
+    name: 'info',
+    status: 'info',
+    summary: `第 ${rec.turn_index} 轮 · ${nTools} tool${nTools === 1 ? '' : 's'}${
+      usage.total_tokens ? ` · ${usage.total_tokens} tokens` : ''
+    }`,
+    details: {
+      turn_id: rec.turn_id,
+      turn_index: rec.turn_index,
+      status: rec.status || 'completed',
+      ...(rec.model ? { model: rec.model } : {}),
+      ...(usage.total_tokens != null ? { tokens_total: Number(usage.total_tokens) } : {}),
+      ...(usage.prompt_tokens != null
+        ? { tokens_prompt: Number(usage.prompt_tokens) }
+        : {}),
+      ...(usage.completion_tokens != null
+        ? { tokens_completion: Number(usage.completion_tokens) }
+        : {}),
+    },
+  })
+  tools.value = entries
+  toolsOpenIds.value = new Set(entries.map((e) => e.call_id).slice(0, 3))
+  toolsCollapsed.value = false
+  localStorage.setItem('ariadne_tools_panel', '1')
+}
+
+function cloneMessages(msgs: ChatMsg[]): ChatMsg[] {
+  return msgs.map(cloneChatMsg)
+}
+
+function putHistoryCache(msgs: ChatMsg[], key?: string) {
+  const k = key ?? historyCacheKey()
+  if (!k || k.endsWith(':') || k === 's:') return
+  // Always clone so later push/stream never mutates the cache entry in place
+  historyCache.set(k, cloneMessages(msgs))
   if (historyCache.size > 40) {
     const first = historyCache.keys().next().value
     if (first !== undefined) historyCache.delete(first)
+  }
+}
+
+/** Show a thread: prefer live stream buffer, else cloned cache. */
+function showThreadMessages(key: string, fallback: ChatMsg[] | null = null) {
+  const live = streamBuffers.get(key)
+  if (live) {
+    messages.value = live
+    return
+  }
+  if (fallback) {
+    messages.value = cloneMessages(fallback)
+    return
+  }
+  const cached = historyCache.get(key)
+  if (cached) {
+    messages.value = cloneMessages(cached)
+    return
+  }
+  messages.value = []
+}
+
+/**
+ * Before leaving a thread, snapshot into cache (or keep stream buffer).
+ * Prevents losing partial turns and avoids sharing refs across threads.
+ */
+function stashCurrentThread() {
+  const key = historyCacheKey()
+  if (!key || key === 's:' || key.endsWith(':')) return
+  if (streamBuffers.has(key)) {
+    // Live stream owns this array; also mirror a clone into cache for safety
+    putHistoryCache(streamBuffers.get(key)!, key)
+    return
+  }
+  if (messages.value.length) {
+    putHistoryCache(messages.value, key)
   }
 }
 
@@ -81,12 +336,24 @@ const toolsOpenIds = ref(new Set<string>())
 const chatEl = ref<HTMLElement | null>(null)
 provide('chatScrollRoot', chatEl)
 const inputEl = ref<HTMLTextAreaElement | null>(null)
+/** Only auto-scroll while the user is near the bottom (so browsing history is free). */
+const stickToBottom = ref(true)
+/** Scope key of the in-flight stream; ignore scroll when user switched session. */
+let activeStreamScope = ''
+const STICK_THRESHOLD_PX = 96
+
+/** True when a turn is streaming on the *currently viewed* thread. */
+const busyHere = computed(
+  () => busy.value && !!activeStreamScope && activeStreamScope === historyCacheKey(),
+)
 
 /** Last N messages always fully rendered; older ones lazy. */
 const EAGER_TAIL = 8
 function isMessageEager(id: string, index: number): boolean {
   const m = messages.value[index]
   if (m && m.role === 'assistant' && 'streaming' in m && m.streaming) return true
+  // History reload: keep mermaid / ```svg / .svg media fully mounted (not lazy ph).
+  if (m && contentHasDiagrams(m.content || '')) return true
   return index >= Math.max(0, messages.value.length - EAGER_TAIL)
 }
 /** Wall-clock start of the in-flight turn (ms). */
@@ -137,6 +404,7 @@ function setLeftTab(tab: LeftTab) {
 }
 
 function selectAtelier(id: string, name?: string) {
+  stashCurrentThread()
   atelierId.value = id
   if (name) atelierDisplayName.value = name
   localStorage.setItem('ariadne_atelier', id)
@@ -172,17 +440,21 @@ async function refreshAtelierName() {
 }
 
 function selectAtelierSession(sid: string) {
+  stashCurrentThread()
   atelierSession.value = sid
   setActiveAtelierSession(sid)
   localStorage.setItem('ariadne_atelier_session', sid)
   tools.value = []
+  selectedTurnId.value = ''
   workspaceRefreshKey.value += 1
+  stickToBottom.value = true
   const key = `a:${atelierId.value}:${sid || 'main'}`
-  const cached = historyCache.get(key)
-  if (cached) {
-    messages.value = cached
+  setTurnRecords(turnsCache.get(key) || [], key)
+  if (streamBuffers.has(key) || historyCache.has(key)) {
+    showThreadMessages(key)
+    messages.value = applyTurnMetaToMessages(messages.value)
     historyLoading.value = false
-    void scrollChat()
+    void scrollChat(true)
     return
   }
   messages.value = []
@@ -190,6 +462,7 @@ function selectAtelierSession(sid: string) {
 }
 
 function exitAtelier() {
+  stashCurrentThread()
   atelierId.value = ''
   atelierDisplayName.value = ''
   atelierSession.value = 'main'
@@ -209,12 +482,18 @@ async function loadAtelierHistory() {
     historyLoading.value = false
     return
   }
-  const cached = historyCache.get(historyCacheKey())
-  if (cached) {
-    messages.value = cached
+  const key = historyCacheKey()
+  // Prefer in-flight stream / cache — never replace a live stream buffer with server snapshot
+  if (streamBuffers.has(key)) {
+    showThreadMessages(key)
     historyLoading.value = false
     void scrollChat()
-    // Still refresh in background when stale is ok — skip for snappy UX
+    return
+  }
+  if (historyCache.has(key)) {
+    showThreadMessages(key)
+    historyLoading.value = false
+    void scrollChat()
     return
   }
   historyAbort?.abort()
@@ -234,26 +513,21 @@ async function loadAtelierHistory() {
     }
     const data = await r.json()
     if (ac.signal.aborted) return
-    const next = (data.messages || [])
-      .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-      .map((m: { role: string; content: string }, i: number) =>
-        m.role === 'user'
-          ? { id: 'h-u-' + i, role: 'user' as const, content: m.content || '' }
-          : {
-              id: 'h-a-' + i,
-              role: 'assistant' as const,
-              content: m.content || '',
-              thinking: '',
-              streaming: false,
-              thinkingLive: false,
-            },
-      )
-    messages.value = next
-    putHistoryCache(next)
+    // If user switched away while fetching, don't paint into the wrong thread
+    if (historyCacheKey() !== key) return
+    if (streamBuffers.has(key)) {
+      showThreadMessages(key)
+      return
+    }
+    if (Array.isArray(data.turns)) setTurnRecords(data.turns, key)
+    else setTurnRecords(turnsCache.get(key) || [], key)
+    const next = applyTurnMetaToMessages(mapServerMessages(data.messages || []))
+    putHistoryCache(next, key)
+    showThreadMessages(key)
     void scrollChat()
   } catch (e) {
     if ((e as { name?: string }).name === 'AbortError') return
-    messages.value = []
+    if (historyCacheKey() === key) messages.value = []
   } finally {
     if (historyAbort === ac) historyLoading.value = false
   }
@@ -349,9 +623,9 @@ async function loadHistory() {
     historyLoading.value = false
     return
   }
-  const cached = historyCache.get(historyCacheKey())
-  if (cached) {
-    messages.value = cached
+  const key = historyCacheKey()
+  if (streamBuffers.has(key) || historyCache.has(key)) {
+    showThreadMessages(key)
     historyLoading.value = false
     void scrollChat()
     return
@@ -368,54 +642,78 @@ async function loadHistory() {
     )
     if (ac.signal.aborted) return
     if (!r.ok) {
-      messages.value = []
+      if (historyCacheKey() === key) messages.value = []
       return
     }
     const data = await r.json()
     if (ac.signal.aborted) return
-    const next = (data.messages || [])
-      .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
-      .map((m: { role: string; content: string }, i: number) =>
-        m.role === 'user'
-          ? { id: 'h-u-' + i, role: 'user' as const, content: m.content || '' }
-          : {
-              id: 'h-a-' + i,
-              role: 'assistant' as const,
-              content: m.content || '',
-              thinking: '',
-              streaming: false,
-              thinkingLive: false,
-            },
-      )
-    messages.value = next
-    putHistoryCache(next)
+    if (historyCacheKey() !== key) return
+    if (streamBuffers.has(key)) {
+      showThreadMessages(key)
+      return
+    }
+    if (Array.isArray(data.turns)) setTurnRecords(data.turns, key)
+    else setTurnRecords(turnsCache.get(key) || [], key)
+    const next = applyTurnMetaToMessages(mapServerMessages(data.messages || []))
+    putHistoryCache(next, key)
+    showThreadMessages(key)
     void scrollChat()
   } catch (e) {
     if ((e as { name?: string }).name === 'AbortError') return
-    messages.value = []
+    if (historyCacheKey() === key) messages.value = []
   } finally {
     if (historyAbort === ac) historyLoading.value = false
   }
 }
 
 async function createSession() {
+  stashCurrentThread()
+  // Leave 作坊 so this is a normal account chat, not atelier-bound
+  if (inAtelier.value) {
+    atelierId.value = ''
+    atelierDisplayName.value = ''
+    atelierSession.value = 'main'
+    localStorage.removeItem('ariadne_atelier')
+    localStorage.removeItem('ariadne_atelier_session')
+    setActiveAtelierId('')
+    setActiveAtelierSession('')
+    knowledgeOpen.value = false
+  }
   const r = await api('/api/sessions', token.value, { method: 'POST' })
   if (!r.ok) return
   const data = await r.json()
   setSession(data.session_id)
   messages.value = []
   tools.value = []
+  leftTab.value = 'sessions'
+  localStorage.setItem('ariadne_left_tab', 'sessions')
   await loadSessions()
+  workspaceRefreshKey.value += 1
 }
 
 async function selectSession(id: string) {
-  if (id === sessionId.value && messages.value.length) return
+  stashCurrentThread()
+  // Switching to a normal chat leaves atelier context
+  if (inAtelier.value) {
+    atelierId.value = ''
+    atelierDisplayName.value = ''
+    atelierSession.value = 'main'
+    localStorage.removeItem('ariadne_atelier')
+    localStorage.removeItem('ariadne_atelier_session')
+    setActiveAtelierId('')
+    setActiveAtelierSession('')
+    knowledgeOpen.value = false
+    workspaceRefreshKey.value += 1
+  }
+  if (id === sessionId.value && messages.value.length && !inAtelier.value) return
   setSession(id)
   tools.value = []
+  selectedTurnId.value = ''
   const key = `s:${id}`
-  const cached = historyCache.get(key)
-  if (cached) {
-    messages.value = cached
+  setTurnRecords(turnsCache.get(key) || [], key)
+  if (streamBuffers.has(key) || historyCache.has(key)) {
+    showThreadMessages(key)
+    messages.value = applyTurnMetaToMessages(messages.value)
     historyLoading.value = false
     void scrollChat()
     return
@@ -444,15 +742,31 @@ function fmtTime(ts: number) {
   return d.getMonth() + 1 + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
 }
 
-async function scrollChat() {
+function onChatScroll() {
+  const el = chatEl.value
+  if (!el) return
+  const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+  stickToBottom.value = dist <= STICK_THRESHOLD_PX
+}
+
+/**
+ * Scroll chat to latest. By default only if user is already near bottom.
+ * Pass force=true after sending a message or loading a thread.
+ * Skips when a stream is running for another session (e.g. branch→main).
+ */
+async function scrollChat(force = false) {
+  if (!force) {
+    if (!stickToBottom.value) return
+    if (activeStreamScope && activeStreamScope !== historyCacheKey()) return
+  }
   await nextTick()
   const el = chatEl.value
   if (!el) return
-  // Pin the conversation to the latest assistant / thinking output.
   el.scrollTop = el.scrollHeight
-  // Second frame: thinking-body max-height layout may grow after paint.
   requestAnimationFrame(() => {
-    if (chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight
+    if (!chatEl.value) return
+    if (!force && !stickToBottom.value) return
+    chatEl.value.scrollTop = chatEl.value.scrollHeight
   })
 }
 
@@ -524,6 +838,11 @@ function autoSize() {
 }
 
 async function send() {
+  // Only block if this thread already has a live turn (other threads stay browsable)
+  if (busyHere.value) return
+  if (busy.value && activeStreamScope === historyCacheKey()) return
+  // Allow queue while another thread streams? For now one global busy to avoid
+  // overlapping streamBuffers complexity — still safe to *browse* other threads.
   if (busy.value) return
   const text = input.value.trim()
   if (!text) return
@@ -532,20 +851,45 @@ async function send() {
   busy.value = true
   clearTools()
   turnStartedAt = performance.now()
+  stickToBottom.value = true
+  activeStreamScope = historyCacheKey()
+  const streamScope = activeStreamScope
 
-  messages.value.push({ id: 'u-' + Date.now(), role: 'user', content: text })
+  // Dedicated buffer: stream mutations always hit this array, not another thread's view
+  const streamMsgs = cloneMessages(messages.value)
+  const nextTurnIndex =
+    streamMsgs.reduce((mx, m) => Math.max(mx, m.turnIndex || 0), 0) + 1
+  streamMsgs.push({
+    id: 'u-' + Date.now(),
+    role: 'user',
+    content: text,
+    turnIndex: nextTurnIndex,
+    toolCount: 0,
+  })
   const asstId = 'a-' + Date.now()
-  messages.value.push({
+  streamMsgs.push({
     id: asstId,
     role: 'assistant',
     content: '',
     thinking: '',
     streaming: true,
     thinkingLive: false,
+    turnIndex: nextTurnIndex,
+    toolCount: 0,
   })
-  await scrollChat()
+  streamBuffers.set(streamScope, streamMsgs)
+  messages.value = streamMsgs
+  putHistoryCache(streamMsgs, streamScope)
+  selectedTurnId.value = ''
+  await scrollChat(true)
 
-  const asst = () => messages.value.find((m) => m.id === asstId) as Extract<ChatMsg, { role: 'assistant' }> | undefined
+  const asst = () =>
+    (streamBuffers.get(streamScope) || []).find((m) => m.id === asstId) as
+      | Extract<ChatMsg, { role: 'assistant' }>
+      | undefined
+  const onStreamScope = () => historyCacheKey() === streamScope
+  /** Apply tool panel only when user is still viewing this thread */
+  const toolsOnView = () => onStreamScope()
 
   try {
     const turnBody: Record<string, unknown> = { input: text }
@@ -586,8 +930,11 @@ async function send() {
       buf += decoder.decode(value, { stream: true })
       const { events, rest } = parseSseBuffer(buf)
       buf = rest
-      for (const ev of events) handleEvent(ev, asstId)
-      await scrollChat()
+      for (const ev of events) {
+        // Message text always goes into stream buffer; tools only if still viewing
+        handleEvent(ev, asstId, streamScope, { toolsOnView: toolsOnView() })
+      }
+      if (onStreamScope()) await scrollChat()
     }
   } catch (e) {
     const m = asst()
@@ -606,42 +953,64 @@ async function send() {
           '这轮好像没说完。再说一句就好，比如：「接着改，把文件存好」。'
       }
     }
+    const finalMsgs = streamBuffers.get(streamScope)
+    if (finalMsgs) {
+      putHistoryCache(finalMsgs, streamScope)
+      streamBuffers.delete(streamScope)
+      // If user is still (or back) on this thread, re-bind to a cache clone
+      // so the next edit doesn't mutate the stored snapshot in place.
+      if (onStreamScope()) {
+        showThreadMessages(streamScope)
+      }
+    }
+    if (activeStreamScope === streamScope) activeStreamScope = ''
     busy.value = false
-    // Invalidate cache so next open sees the new turn
-    historyCache.delete(historyCacheKey())
-    putHistoryCache([...messages.value])
-    if (atelierId.value) {
+    if (atelierId.value && onStreamScope()) {
       knowledgeRefresh.value += 1
-    } else {
+    } else if (onStreamScope() && !atelierId.value) {
       await refreshSessionTitle(false)
       await loadSessions()
     }
-    workspaceRefreshKey.value += 1
-    inputEl.value?.focus()
+    if (onStreamScope()) {
+      workspaceRefreshKey.value += 1
+      inputEl.value?.focus()
+    }
   }
 }
 
-function handleEvent(ev: StreamEvent, asstId: string) {
-  const m = messages.value.find((x) => x.id === asstId) as
+function handleEvent(
+  ev: StreamEvent,
+  asstId: string,
+  streamScope: string,
+  opts?: { toolsOnView?: boolean },
+) {
+  const buf = streamBuffers.get(streamScope)
+  const m = buf?.find((x) => x.id === asstId) as
     | Extract<ChatMsg, { role: 'assistant' }>
     | undefined
-  if (!m) return
   const data = (ev.data || {}) as Record<string, unknown>
+  // Tool chips only when user is viewing the streaming thread
+  const toolsOnView =
+    opts?.toolsOnView === true || historyCacheKey() === streamScope
 
   if (ev.kind === 'model_thinking_delta') {
+    if (!m) return
     m.thinking += String(data.text || '')
     if (!m.content) m.thinkingLive = true
   } else if (ev.kind === 'model_delta') {
+    if (!m) return
     const chunk = String(data.text || '')
     if (chunk && m.thinkingLive) m.thinkingLive = false
     m.content += chunk
   } else if (ev.kind === 'tool_started') {
+    if (!toolsOnView) return
     upsertTool({
       call_id: String(data.call_id || data.name + '-' + Date.now()),
       name: String(data.name || '?'),
       status: 'started',
     })
   } else if (ev.kind === 'tool_completed') {
+    if (!toolsOnView) return
     upsertTool({
       call_id: String(data.call_id || data.name + '-' + Date.now()),
       name: String(data.name || '?'),
@@ -651,6 +1020,22 @@ function handleEvent(ev: StreamEvent, asstId: string) {
       error: data.error as ToolEntry['error'],
     })
   } else if (ev.kind === 'turn_completed' || ev.kind === 'turn_failed') {
+    if (ev.atelier_knowledge?.updated) {
+      // Always bump so 便签 panel refreshes when user returns
+      knowledgeRefresh.value += 1
+      if (toolsOnView) {
+        upsertTool({
+          call_id: 'knowledge-' + Date.now(),
+          name: '本坊便签',
+          status: 'completed',
+          summary: '已根据本轮约定更新便签',
+          details: {
+            ops: (ev.atelier_knowledge.ops || []).length,
+            source: ev.atelier_knowledge.source || '',
+          },
+        })
+      }
+    }
     if (ev.result && typeof ev.result === 'object') {
       const res = ev.result as {
         text?: string
@@ -662,18 +1047,90 @@ function handleEvent(ev: StreamEvent, asstId: string) {
           total_tokens?: number
           reasoning_tokens?: number
         }
-        tool_calls?: unknown[]
+        tool_calls?: Array<{
+          call_id?: string
+          name?: string
+          status?: string
+          arguments?: unknown
+          output?: unknown
+          error?: { code?: string; message?: string }
+        }>
         model?: string
         turn_id?: string
       }
-      // Prefer model/host text (includes friendly loop-limit wrap-up).
-      if (res.text) {
+      if (m && res.text) {
         if (!m.content) m.content = res.text
-        else if (ev.kind === 'turn_failed' && !m.content.includes(res.text.slice(0, 40))) {
+        else if (
+          ev.kind === 'turn_failed' &&
+          !m.content.includes(res.text.slice(0, 40))
+        ) {
           m.content = (m.content ? m.content + '\n\n' : '') + res.text
         }
       }
-      if (res.status && res.status !== 'completed') {
+      // Stamp turn_id on the live user+assistant bubble for this pair
+      const tid = res.turn_id ? String(res.turn_id) : ''
+      if (tid && buf) {
+        for (let i = buf.length - 1; i >= 0; i--) {
+          const row = buf[i]
+          if (row.role === 'assistant' && row.id === asstId) {
+            row.turnId = tid
+            const n = Array.isArray(res.tool_calls) ? res.tool_calls.length : 0
+            row.toolCount = n
+            // matching user bubble (previous)
+            for (let j = i - 1; j >= 0; j--) {
+              if (buf[j].role === 'user') {
+                buf[j].turnId = tid
+                buf[j].toolCount = n
+                break
+              }
+            }
+            break
+          }
+        }
+      }
+      // Merge into turnRecords (also from SSE turn_record if present)
+      const tr = (ev as StreamEvent & { turn_record?: TurnRecord }).turn_record
+      const toolsFromRes = Array.isArray(res.tool_calls)
+        ? res.tool_calls.map((t) => ({
+            call_id: t.call_id,
+            name: t.name,
+            status: t.status,
+            arguments: t.arguments,
+            output: t.output,
+            error: t.error,
+          }))
+        : tools.value
+            .filter((t) => t.status !== 'info')
+            .map((t) => ({
+              call_id: t.call_id,
+              name: t.name,
+              status: t.status,
+              arguments: t.arguments,
+              output: t.output,
+              error: t.error,
+            }))
+      if (tid) {
+        const prevList = turnsCache.get(streamScope) || turnRecords.value
+        const rec: TurnRecord = {
+          turn_id: tid,
+          turn_index:
+            (typeof tr?.turn_index === 'number' ? tr.turn_index : 0) ||
+            m?.turnIndex ||
+            prevList.length + 1,
+          tool_count: toolsFromRes.length,
+          status: res.status || (ev.kind === 'turn_failed' ? 'failed' : 'completed'),
+          tools: toolsFromRes,
+          usage: res.usage as Record<string, number> | undefined,
+          model: res.model,
+          text_preview: (res.text || '').slice(0, 240),
+        }
+        const others = prevList.filter((t) => t.turn_id !== tid)
+        setTurnRecords(
+          [...others, rec].sort((a, b) => a.turn_index - b.turn_index),
+          streamScope,
+        )
+      }
+      if (toolsOnView && res.status && res.status !== 'completed') {
         upsertTool({
           call_id: 'turn-' + Date.now(),
           name: 'turn',
@@ -681,17 +1138,21 @@ function handleEvent(ev: StreamEvent, asstId: string) {
           error: res.error || { code: 'failed', message: 'turn failed' },
         })
       }
-      pushTurnInfo(res)
+      if (toolsOnView) pushTurnInfo(res)
     } else if (ev.error?.message) {
-      m.content =
-        m.content ||
-        '**' + (ev.error.code || 'ERROR') + '**\n\n' + ev.error.message
-      pushTurnInfo({ status: 'failed' })
-    } else {
+      if (m) {
+        m.content =
+          m.content ||
+          '**' + (ev.error.code || 'ERROR') + '**\n\n' + ev.error.message
+      }
+      if (toolsOnView) pushTurnInfo({ status: 'failed' })
+    } else if (toolsOnView) {
       pushTurnInfo({ status: ev.kind === 'turn_failed' ? 'failed' : 'completed' })
     }
-    m.streaming = false
-    m.thinkingLive = false
+    if (m) {
+      m.streaming = false
+      m.thinkingLive = false
+    }
   }
 }
 
@@ -831,24 +1292,19 @@ onMounted(() => {
       }"
     >
       <div class="sb-top">
-        <div class="sb-brand"><span class="mark">A</span> Ariadne</div>
+        <div class="sb-brand" title="Ariadne · 筑梦师 — 希腊神话中的引线者">
+          <span class="mark">A</span> Ariadne
+          <span class="brand-sub">筑梦师</span>
+        </div>
         <button
-          v-if="!inAtelier"
           type="button"
           class="new-chat"
+          title="新建普通对话（离开当前作坊）"
           @click="createSession"
         >
           <span class="plus">+</span> 新对话
         </button>
-        <button
-          v-else
-          type="button"
-          class="new-chat atelier-banner"
-          @click="knowledgeOpen = !knowledgeOpen"
-        >
-          <span class="plus at">◈</span>
-          {{ knowledgeOpen ? '合上本坊便签' : '本坊便签' }}
-        </button>
+        <!-- 本坊便签只在「作坊」页内打开，避免像跨作坊全局按钮 -->
         <div class="sb-tabs three" role="tablist" aria-label="侧栏">
           <button
             type="button"
@@ -883,30 +1339,28 @@ onMounted(() => {
         </div>
       </div>
       <div v-show="leftTab === 'sessions'" class="sess-list">
-        <div v-if="inAtelier" class="sb-empty atelier-hint">
-          在作坊里玩 · 左边点「作坊」换聊天
-        </div>
-        <template v-else>
-          <div v-if="!sessions.length" class="sb-empty">暂无会话</div>
-          <button
-            v-for="s in sessions"
-            :key="s.session_id"
-            type="button"
-            class="sess-row"
-            :class="{ active: s.session_id === sessionId }"
-            @click="selectSession(s.session_id)"
-          >
-            <span class="body">
-              <span class="title-line">{{ s.title || s.preview || s.session_id }}</span>
-              <span class="meta">{{ s.turns || 0 }} 轮 · {{ fmtTime(s.mtime) }}</span>
-            </span>
-            <span
-              class="del"
-              title="删除"
-              @click.stop="deleteSession(s.session_id)"
-            >×</span>
-          </button>
-        </template>
+        <p v-if="inAtelier" class="atelier-hint sess-hint">
+          以下是<strong>普通对话</strong>。点一条或「新对话」会离开当前作坊；作坊内聊天请切回「作坊」。
+        </p>
+        <div v-if="!sessions.length" class="sb-empty">暂无会话 · 点上方「新对话」开始</div>
+        <button
+          v-for="s in sessions"
+          :key="s.session_id"
+          type="button"
+          class="sess-row"
+          :class="{ active: !inAtelier && s.session_id === sessionId }"
+          @click="selectSession(s.session_id)"
+        >
+          <span class="body">
+            <span class="title-line">{{ s.title || s.preview || s.session_id }}</span>
+            <span class="meta">{{ s.turns || 0 }} 轮 · {{ fmtTime(s.mtime) }}</span>
+          </span>
+          <span
+            class="del"
+            title="删除"
+            @click.stop="deleteSession(s.session_id)"
+          >×</span>
+        </button>
       </div>
       <WorkspaceBrowser
         v-show="leftTab === 'workspace'"
@@ -1013,7 +1467,7 @@ onMounted(() => {
         </span>
       </div>
 
-      <div ref="chatEl" class="chat">
+      <div ref="chatEl" class="chat" @scroll.passive="onChatScroll">
         <div class="chat-inner" :class="{ empty: !messages.length && !historyLoading }">
           <div v-if="historyLoading" class="empty-hint loading-hist">
             <div class="spin" />
@@ -1027,11 +1481,45 @@ onMounted(() => {
             </p>
             <p v-else>聊两句，或点左边「作坊」开个小角落</p>
           </div>
+          <!-- Compact turn strip: click a pill to open that turn's tools -->
+          <div v-if="turnRecords.length" class="turn-strip" aria-label="对话轮次">
+            <button
+              v-for="t in turnRecords"
+              :key="t.turn_id"
+              type="button"
+              class="turn-pill"
+              :class="{
+                active: selectedTurnId === t.turn_id,
+                has: (t.tool_count || t.tools?.length || 0) > 0,
+              }"
+              :title="
+                (t.tool_count || t.tools?.length || 0) > 0
+                  ? `第 ${t.turn_index} 轮 · ${t.tool_count || t.tools?.length} 次工具`
+                  : `第 ${t.turn_index} 轮`
+              "
+              @click="
+                openTurnTools({ turnId: t.turn_id, turnIndex: t.turn_index })
+              "
+            >
+              <span class="n">{{ t.turn_index }}</span>
+              <span v-if="(t.tool_count || t.tools?.length || 0) > 0" class="c">
+                {{ t.tool_count || t.tools?.length }}
+              </span>
+            </button>
+          </div>
           <ChatMessage
             v-for="(m, i) in messages"
-            :key="(inAtelier ? atelierId + ':' + atelierSession + ':' : '') + m.id"
+            :key="messageListKey + ':' + m.id"
             :msg="m"
             :eager="isMessageEager(m.id, i)"
+            :active-turn="
+              !!selectedTurnId &&
+              (m.turnId === selectedTurnId ||
+                (!!m.turnIndex &&
+                  turnRecords.find((t) => t.turn_id === selectedTurnId)
+                    ?.turn_index === m.turnIndex))
+            "
+            @open-turn="openTurnTools"
           />
           <button
             v-if="tools.length"
@@ -1055,7 +1543,13 @@ onMounted(() => {
             ref="inputEl"
             v-model="input"
             rows="1"
-            :placeholder="inAtelier ? '说说你想干嘛… 比如：帮我画只小鸟' : '给 Ariadne 说点什么…'"
+            :placeholder="
+              busy && !busyHere
+                ? '其他会话还在回答…可先浏览历史'
+                : inAtelier
+                  ? '说说你想干嘛… 比如：帮我画只小鸟'
+                  : '给 Ariadne 说点什么…'
+            "
             :disabled="busy"
             @input="autoSize"
             @keydown.enter.exact.prevent="send"
@@ -1065,7 +1559,7 @@ onMounted(() => {
           </button>
         </div>
         <div class="foot">
-          Ariadne · {{ inAtelier ? '小作坊' : '随便聊聊' }}
+          Ariadne · 筑梦师 · {{ inAtelier ? '小作坊' : '随便聊聊' }}
         </div>
       </div>
     </div>
@@ -1076,6 +1570,7 @@ onMounted(() => {
       :atelier-name="atelierDisplayName || atelierId"
       :atelier-session="atelierSession"
       :open="knowledgeOpen && inAtelier"
+      :refresh-key="knowledgeRefresh"
       @close="knowledgeOpen = false"
       @updated="knowledgeRefresh += 1"
     />
@@ -1154,15 +1649,16 @@ onMounted(() => {
 .sb-tabs.three {
   grid-template-columns: 1fr 1fr 1fr;
 }
-.new-chat.atelier-banner {
-  border-color: color-mix(in srgb, var(--blue) 40%, var(--line-2));
-  background: color-mix(in srgb, var(--blue) 8%, transparent);
-}
-.plus.at {
-  background: linear-gradient(135deg, #1d9bf0 0%, #7856ff 100%);
-  color: #fff;
-}
 .atelier-hint { font-size: 12.5px; line-height: 1.45; }
+.sess-hint {
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  color: var(--dim);
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.sess-hint strong { color: var(--fg-2); font-weight: 650; }
 .chip.atelier-chip {
   color: var(--blue);
   border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
@@ -1196,9 +1692,16 @@ onMounted(() => {
 .sb-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   padding: 6px 8px;
   font-weight: 700;
+}
+.sb-brand .brand-sub {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0.04em;
 }
 .mark {
   width: 28px;
@@ -1381,6 +1884,58 @@ onMounted(() => {
 }
 .chat-inner.empty {
   justify-content: center;
+}
+.turn-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 2px 2px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: linear-gradient(
+    to bottom,
+    var(--bg) 65%,
+    color-mix(in srgb, var(--bg) 0%, transparent)
+  );
+  margin: 0 0 2px;
+}
+.turn-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-3);
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.turn-pill:hover {
+  border-color: color-mix(in srgb, var(--blue) 45%, var(--line));
+  color: var(--fg);
+}
+.turn-pill.has {
+  color: var(--blue);
+  border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
+}
+.turn-pill.active {
+  background: color-mix(in srgb, var(--blue) 22%, transparent);
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.turn-pill .c {
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.9;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--blue) 14%, transparent);
 }
 .empty-hint {
   text-align: center;

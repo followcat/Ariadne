@@ -55,6 +55,31 @@ const closedSessions = computed(() =>
   sessions.value.filter((s) => s.status !== 'active' && s.id !== 'main'),
 )
 
+/** Human status line — never stamp every row with the same 进行中. */
+function formatRelative(ts: number): string {
+  if (!ts || !Number.isFinite(ts)) return ''
+  // Server may send seconds or ms
+  const sec = ts > 1e12 ? ts / 1000 : ts
+  const diff = Date.now() / 1000 - sec
+  if (diff < 45) return '刚刚'
+  if (diff < 3600) return Math.max(1, Math.floor(diff / 60)) + ' 分钟前'
+  if (diff < 86400) return Math.max(1, Math.floor(diff / 3600)) + ' 小时前'
+  if (diff < 86400 * 7) return Math.max(1, Math.floor(diff / 86400)) + ' 天前'
+  const d = new Date(sec * 1000)
+  return d.getMonth() + 1 + '/' + d.getDate()
+}
+
+function sessionMetaLine(s: AtelierSession): string {
+  if (s.type === 'main' || s.id === 'main') return '本坊主线'
+  if (s.status === 'merged') return '已收'
+  if (s.status === 'discarded') return '已丢'
+  if (s.status === 'active') {
+    const rel = formatRelative(s.updated_at)
+    return rel ? '最近 ' + rel : '旁支'
+  }
+  return s.status || '旁支'
+}
+
 async function loadList() {
   if (!props.token) return
   loading.value = true
@@ -274,19 +299,26 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
           <div class="ap-title">{{ selected?.name || selectedId }}</div>
           <div class="ap-sub mono">{{ selectedId }}</div>
         </div>
-        <button
-          type="button"
-          class="chip"
-          title="本坊便签（只属于这一间作坊）"
-          @click="emit('openKnowledge')"
-        >本坊便签</button>
       </div>
 
       <p v-if="err" class="err">{{ err }}</p>
 
+      <button
+        type="button"
+        class="knowledge-entry"
+        title="只属于当前这一间作坊的运作说明"
+        @click="emit('openKnowledge')"
+      >
+        <span class="ke-ico">◈</span>
+        <span class="ke-body">
+          <span class="ke-title">本坊便签</span>
+          <span class="ke-sub">仅「{{ selected?.name || selectedId }}」· 换作坊不会带走</span>
+        </span>
+        <span class="ke-go">打开</span>
+      </button>
+
       <p class="scope-note">
-        便签、主线文件都<strong>只属于「{{ selected?.name || selectedId }}」</strong>，
-        换作坊不会带走。
+        主线文件也<strong>只属于本坊</strong>；旁支动手不写回主线。
       </p>
 
       <div class="sec-label">聊到哪儿了</div>
@@ -302,7 +334,7 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
           <span class="badge" :class="s.type">{{ s.type === 'main' ? '主' : '玩' }}</span>
           <span class="body">
             <span class="name">{{ s.type === 'main' ? '主线' : (s.title || s.id) }}</span>
-            <span class="meta">{{ s.status === 'active' ? '进行中' : s.status }}</span>
+            <span class="meta">{{ sessionMetaLine(s) }}</span>
           </span>
           <template v-if="s.type === 'branch' && s.status === 'active' && s.branch_name">
             <span
@@ -342,9 +374,9 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
       </div>
 
       <div class="tips">
-        <p>· <b>本坊便签</b>：只给这间作坊用，不是全局记忆</p>
-        <p>· <b>主线</b>：定方向；改文件/改便签都在主线</p>
-        <p>· <b>旁支</b>：独立拷贝；「收」不写回主线文件与便签</p>
+        <p>· <b>本坊便签</b>：本坊怎么运作 / 路径 / 注意；主线可自动补约定，旁支只读</p>
+        <p>· <b>主线</b>：定方向；文件在 <code>/workspace</code></p>
+        <p>· <b>旁支</b>：可写 <code>/workspace</code>；读主线最新用 <code>/main-readonly</code>；「收」不写回主线</p>
       </div>
     </template>
   </div>
@@ -370,6 +402,59 @@ defineExpose({ reload: loadList, reloadSessions: loadSessions })
 .ap-title { font-weight: 700; font-size: 13.5px; }
 .ap-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 .ap-sub.mono, .mono { font-family: var(--mono); }
+.knowledge-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px 8px;
+  padding: 10px 12px;
+  width: calc(100% - 24px);
+  text-align: left;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--blue) 40%, var(--line));
+  background: color-mix(in srgb, var(--blue) 10%, var(--bg-3));
+  cursor: pointer;
+}
+.knowledge-entry:hover {
+  background: color-mix(in srgb, var(--blue) 16%, var(--bg-hover));
+}
+.ke-ico {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--blue) 22%, transparent);
+  color: var(--blue);
+  font-size: 14px;
+}
+.ke-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ke-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--fg);
+}
+.ke-sub {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ke-go {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--blue);
+}
 .scope-note {
   margin: 0 12px 8px;
   padding: 8px 10px;
