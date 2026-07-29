@@ -24,7 +24,11 @@ class TranscriptStore:
 
     def recent_messages(
         self, *, limit: int | None = None, session_id: str | None = None
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
+        """User/assistant messages for UI (oldest first within window).
+
+        Each row is ``{role, content}`` and optional ``turn_id`` when stamped.
+        """
         window = limit if limit is not None else self.recent_limit
         # Prefer a tail read for large transcripts (chat history UI switches often).
         try:
@@ -48,7 +52,7 @@ class TranscriptStore:
                 text = self.path.read_text(encoding="utf-8")
             except OSError:
                 return []
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         for line in text.splitlines():
             if not line.strip():
                 continue
@@ -65,7 +69,11 @@ class TranscriptStore:
             role = str(item.get("role") or "")
             content = str(item.get("content") or "")
             if role in {"user", "assistant"} and content:
-                messages.append({"role": role, "content": content})
+                row: dict[str, Any] = {"role": role, "content": content}
+                tid = str(item.get("turn_id") or "").strip()
+                if tid:
+                    row["turn_id"] = tid
+                messages.append(row)
         return messages[-window:] if window else messages
 
     def all_records(self, *, session_id: str | None = None) -> list[dict[str, Any]]:

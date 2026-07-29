@@ -37,8 +37,10 @@ def test_list_sessions_counts_user_turns(tmp_path: Path) -> None:
     assert by_id["alpha"].preview.startswith("q0")
     assert most_recent(tmp_path) in {"alpha", "beta"}
     msgs = load_session_messages(tmp_path, "alpha", limit=10)
-    assert msgs[0] == {"role": "user", "content": "q0"}
-    assert msgs[-1] == {"role": "assistant", "content": "a2"}
+    assert msgs[0]["role"] == "user" and msgs[0]["content"] == "q0"
+    assert msgs[0].get("turn_id") == "t0"
+    assert msgs[-1]["role"] == "assistant" and msgs[-1]["content"] == "a2"
+    assert msgs[-1].get("turn_id") == "t2"
     assert delete_session(tmp_path, "beta") is True
     assert delete_session(tmp_path, "beta") is False
 

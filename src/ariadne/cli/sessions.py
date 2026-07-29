@@ -225,9 +225,10 @@ def most_recent(data_dir: Path) -> str | None:
 
 def load_session_messages(
     data_dir: Path, session_id: str, *, limit: int = 80
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """User/assistant messages for UI history (oldest first within the window).
 
+    Each message may include ``turn_id`` when the transcript was stamped.
     Default limit is modest for snappy chat-switch UX; callers can raise it.
     """
     path = session_path(data_dir, session_id)
@@ -238,15 +239,34 @@ def load_session_messages(
     return TranscriptStore(path=path).recent_messages(limit=limit)
 
 
+def annotate_turn_indices(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add 1-based ``turn_index`` for each user→assistant pair (display badges)."""
+    idx = 0
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        row = dict(m)
+        if row.get("role") == "user":
+            idx += 1
+            row["turn_index"] = idx
+        elif row.get("role") == "assistant":
+            row["turn_index"] = idx if idx > 0 else 1
+        out.append(row)
+    return out
+
+
 def delete_session(data_dir: Path, session_id: str) -> bool:
-    """Remove transcript jsonl and title meta. Returns True if transcript existed."""
+    """Remove transcript jsonl, turn tools history, and title meta."""
     path = session_path(data_dir, session_id)
     meta = session_meta_path(data_dir, session_id)
+    turns = data_dir / "sessions" / f"{session_id}.turns.jsonl"
     deleted = False
     if path.is_file():
         path.unlink()
         deleted = True
     if meta.is_file():
         meta.unlink()
+        deleted = True
+    if turns.is_file():
+        turns.unlink()
         deleted = True
     return deleted

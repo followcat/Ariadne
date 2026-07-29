@@ -162,10 +162,12 @@ def test_sessions_api(tmp_path: Path) -> None:
             r = await client.get(f"/api/sessions/{sid}", headers=headers)
             body = r.json()
             msgs = body["messages"]
-            assert msgs == [
-                {"role": "user", "content": "hello session"},
-                {"role": "assistant", "content": "hi there"},
-            ]
+            assert len(msgs) == 2
+            assert msgs[0]["role"] == "user" and msgs[0]["content"] == "hello session"
+            assert msgs[0].get("turn_index") == 1
+            assert msgs[1]["role"] == "assistant" and msgs[1]["content"] == "hi there"
+            assert msgs[1].get("turn_index") == 1
+            assert "turns" in body
             # auto title summary
             r = await client.patch(
                 f"/api/sessions/{sid}",

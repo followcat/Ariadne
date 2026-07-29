@@ -22,6 +22,29 @@ from .users import UserStore
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+def _persist_turn_tools(
+    *,
+    sessions_dir: Path,
+    session_id: str,
+    result_payload: dict[str, Any] | None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Write turn tool history to disk (survives restart)."""
+    if not session_id or not result_payload:
+        return None
+    try:
+        from ..cli.turn_history import append_turn_from_result_payload
+
+        return append_turn_from_result_payload(
+            sessions_dir,
+            session_id,
+            result_payload,
+            status=status,
+        )
+    except Exception:
+        return None
+
+
 class RegisterBody(BaseModel):
     username: str
     password: str
@@ -145,7 +168,8 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=400, detail="provider not configured (PUT /api/me/provider)")
         user_data = _user_data_dir(username)
         user_data.mkdir(parents=True, exist_ok=True)
-        # Agent sandbox /workspace must match browse APIs for this user + mode.
+        # Agent sandbox /workspace must match browse APIs for this user.
+        # plugins_dir stays on the account even when atelier rebinds data_dir.
         return dataclasses.replace(
             settings,
             base_url=provider["base_url"],
@@ -153,6 +177,7 @@ def create_app(settings: Settings) -> FastAPI:
             model=provider["model"],
             workspace=_workspace_root_for(username),
             data_dir=user_data,
+            plugins_dir=user_data,
             merge_home_plugins=False,  # web users only get their own plugins
         )
 
@@ -513,21 +538,62 @@ def create_app(settings: Settings) -> FastAPI:
         except AriadneError as exc:
             raise HTTPException(status_code=400, detail=exc.error.message) from exc
         out = json.loads(render_json(result))
+        # Persist tools for both atelier and plain sessions
+        turn_sid = str(out.get("session_id") or getattr(result, "session_id", "") or "")
+        if project is not None and session is not None:
+            _persist_turn_tools(
+                sessions_dir=project.sessions_dir,
+                session_id=session.id,
+                result_payload=out,
+            )
+        elif turn_sid:
+            _persist_turn_tools(
+                sessions_dir=_user_data_dir(username) / "sessions",
+                session_id=body.session_id or turn_sid,
+                result_payload=out,
+            )
         if project is not None and session is not None:
             from ..atelier.models import append_transcript
+            from ..atelier.runner import update_knowledge_after_turn
 
-            # Dual-write atelier transcript for branch merge notes; no auto KNOWLEDGE extract.
+            # Dual-write transcript; main may small-step update 便签 when 约定 present.
             asst = str(getattr(result, "text", None) or out.get("text") or "")
+            tid = str(out.get("turn_id") or getattr(result, "turn_id", "") or "")
             append_transcript(
                 project,
                 session.id,
-                {"role": "user", "content": body.input, "session_id": session.id},
+                {
+                    "role": "user",
+                    "content": body.input,
+                    "session_id": session.id,
+                    **({"turn_id": tid} if tid else {}),
+                },
             )
             append_transcript(
                 project,
                 session.id,
-                {"role": "assistant", "content": asst, "session_id": session.id},
+                {
+                    "role": "assistant",
+                    "content": asst,
+                    "session_id": session.id,
+                    **({"turn_id": tid} if tid else {}),
+                },
             )
+            try:
+                krep = await update_knowledge_after_turn(
+                    project,
+                    session,
+                    user_text=body.input,
+                    assistant_text=asst,
+                    settings=user_settings,
+                )
+                out["atelier_knowledge"] = krep
+            except Exception:
+                out["atelier_knowledge"] = {
+                    "updated": False,
+                    "reason": "error",
+                    "source": "none",
+                }
         return out
 
     async def _sse_for_turn(
@@ -562,10 +628,47 @@ def create_app(settings: Settings) -> FastAPI:
                 async for event in agent.run_stream(text, images=images or None):
                     if event.kind in {"turn_completed", "turn_failed"}:
                         result = event.data.get("result")
+                        result_payload = (
+                            json.loads(render_json(result)) if result else None
+                        )
                         payload: dict[str, Any] = {
                             "kind": event.kind,
-                            "result": json.loads(render_json(result)) if result else None,
+                            "result": result_payload,
                         }
+                        # Persist tools for restart-safe turn badges (atelier + plain)
+                        persist_sid = ""
+                        persist_dir: Path | None = None
+                        if project is not None and session is not None:
+                            persist_sid = session.id
+                            persist_dir = project.sessions_dir
+                        else:
+                            persist_sid = str(
+                                session_id
+                                or (result_payload or {}).get("session_id")
+                                or user_settings.session_id
+                                or ""
+                            )
+                            persist_dir = _user_data_dir(username) / "sessions"
+                        if persist_sid and persist_dir is not None and result_payload:
+                            turn_row = _persist_turn_tools(
+                                sessions_dir=persist_dir,
+                                session_id=persist_sid,
+                                result_payload=result_payload,
+                                status=str(
+                                    (result_payload or {}).get("status")
+                                    or (
+                                        "failed"
+                                        if event.kind == "turn_failed"
+                                        else "completed"
+                                    )
+                                ),
+                            )
+                            if turn_row:
+                                payload["turn_record"] = {
+                                    "turn_id": turn_row.get("turn_id"),
+                                    "turn_index": turn_row.get("turn_index"),
+                                    "tool_count": turn_row.get("tool_count", 0),
+                                }
                         if (
                             event.kind == "turn_completed"
                             and project is not None
@@ -573,10 +676,16 @@ def create_app(settings: Settings) -> FastAPI:
                             and result is not None
                         ):
                             from ..atelier.models import append_transcript
+                            from ..atelier.runner import update_knowledge_after_turn
 
                             asst = str(getattr(result, "text", None) or "")
-                            if not asst and payload.get("result"):
-                                asst = str((payload["result"] or {}).get("text") or "")
+                            if not asst and result_payload:
+                                asst = str(result_payload.get("text") or "")
+                            tid = str(
+                                (result_payload or {}).get("turn_id")
+                                or getattr(result, "turn_id", "")
+                                or ""
+                            )
                             append_transcript(
                                 project,
                                 session.id,
@@ -584,6 +693,7 @@ def create_app(settings: Settings) -> FastAPI:
                                     "role": "user",
                                     "content": text,
                                     "session_id": session.id,
+                                    **({"turn_id": tid} if tid else {}),
                                 },
                             )
                             append_transcript(
@@ -593,8 +703,24 @@ def create_app(settings: Settings) -> FastAPI:
                                     "role": "assistant",
                                     "content": asst,
                                     "session_id": session.id,
+                                    **({"turn_id": tid} if tid else {}),
                                 },
                             )
+                            try:
+                                krep = await update_knowledge_after_turn(
+                                    project,
+                                    session,
+                                    user_text=text,
+                                    assistant_text=asst,
+                                    settings=user_settings,
+                                )
+                                payload["atelier_knowledge"] = krep
+                            except Exception:
+                                payload["atelier_knowledge"] = {
+                                    "updated": False,
+                                    "reason": "error",
+                                    "source": "none",
+                                }
                     else:
                         payload = {"kind": event.kind, "data": event.data}
                     yield f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
@@ -692,14 +818,44 @@ def create_app(settings: Settings) -> FastAPI:
                 "title": title,
                 "title_source": source,
             }
-        messages = load_session_messages(user_data, session_id, limit=40)
+        from ..cli.sessions import annotate_turn_indices
+        from ..cli.turn_history import list_turn_records
+
+        messages = annotate_turn_indices(
+            load_session_messages(user_data, session_id, limit=40)
+        )
+        turns = list_turn_records(user_data / "sessions", session_id, limit=80)
         return {
             "session_id": session_id,
             "messages": messages,
+            "turns": turns,
             "exists": True,
             "title": title,
             "title_source": source,
         }
+
+    @app.get("/api/sessions/{session_id}/turns")
+    def get_session_turns(
+        session_id: str, username: str = Depends(current_user)
+    ) -> Any:
+        """Tool-call history per turn (survives restart)."""
+        from ..cli.turn_history import list_turn_records
+
+        user_data = _user_data(username)
+        turns = list_turn_records(user_data / "sessions", session_id, limit=200)
+        return {"session_id": session_id, "turns": turns}
+
+    @app.get("/api/sessions/{session_id}/turns/{turn_id}")
+    def get_session_turn(
+        session_id: str, turn_id: str, username: str = Depends(current_user)
+    ) -> Any:
+        from ..cli.turn_history import get_turn_record
+
+        user_data = _user_data(username)
+        rec = get_turn_record(user_data / "sessions", session_id, turn_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail=f"turn not found: {turn_id}")
+        return rec
 
     @app.patch("/api/sessions/{session_id}")
     def patch_session(
@@ -891,18 +1047,52 @@ def create_app(settings: Settings) -> FastAPI:
             session = _resolve_atelier_session(mgr, atelier_id, session_id)
         except AriadneError as exc:
             raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        from ..cli.sessions import annotate_turn_indices
+        from ..cli.turn_history import list_turn_records
+
         rows = read_transcript(project, session.id, limit=40)
-        messages = [
-            {"role": r.get("role"), "content": r.get("content") or ""}
-            for r in rows
-            if r.get("role") in {"user", "assistant"}
-        ]
+        messages = annotate_turn_indices(
+            [
+                {
+                    "role": r.get("role"),
+                    "content": r.get("content") or "",
+                    **(
+                        {"turn_id": r.get("turn_id")}
+                        if r.get("turn_id")
+                        else {}
+                    ),
+                }
+                for r in rows
+                if r.get("role") in {"user", "assistant"}
+            ]
+        )
+        turns = list_turn_records(project.sessions_dir, session.id, limit=80)
         return {
             "atelier_id": atelier_id,
             "session_id": session.id,
             "type": session.type.value,
             "status": session.status.value,
             "messages": messages,
+            "turns": turns,
+        }
+
+    @app.get("/api/ateliers/{atelier_id}/sessions/{session_id}/turns")
+    def atelier_session_turns(
+        atelier_id: str, session_id: str, username: str = Depends(current_user)
+    ) -> Any:
+        from ..cli.turn_history import list_turn_records
+
+        mgr = _atelier_mgr(username)
+        try:
+            project = mgr.get_project(atelier_id)
+            session = _resolve_atelier_session(mgr, atelier_id, session_id)
+        except AriadneError as exc:
+            raise HTTPException(status_code=404, detail=exc.error.message) from exc
+        turns = list_turn_records(project.sessions_dir, session.id, limit=200)
+        return {
+            "atelier_id": atelier_id,
+            "session_id": session.id,
+            "turns": turns,
         }
 
     @app.post("/api/ateliers/{atelier_id}/branches")
