@@ -52,6 +52,10 @@ MemoryContext
 - Query-conditioned retrieval
 - Good for long-tail details
 - Known weakness if used alone for multi-hop / state transitions — pair with state/summaries
+- **Cross-session episodic recall** is not automatic L0: use explicit graded
+  **`memory_search`** (`scope=session|workspace|user`, `mode=auto|fast|deep`).
+  Hits must carry real `turn_id` (+ `session_id`); never LLM-fabricated history.
+  See [design/memory-search.md](design/memory-search.md) (Retrieval modes).
 
 ### 3.5 Conversation state projection (advanced)
 
@@ -185,4 +189,10 @@ Kernel does not require a hosted multi-tenant DB.
 
 ## Deep design
 
-See [design/memory-v1.md](design/memory-v1.md) for the improved layered architecture, conversation state, and phased delivery plan.
+| Doc | Topic |
+| --- | --- |
+| [design/memory-v1.md](design/memory-v1.md) | Layered architecture (L0–L5), conversation state, phased delivery |
+| [design/memory-scopes.md](design/memory-scopes.md) | Personal **user / workspace / session** scopes, host layout, `user_id`, boundary with atelier `KNOWLEDGE.md` |
+| [design/memory-search.md](design/memory-search.md) | **Graded retrieval** — Retrieval modes, `memory_search` contract, auto/fast/deep (hard long-context recall without per-turn pre-classifier) |
+
+Normative product contract stays in this file; implementers follow the design notes above for scopes and search.
