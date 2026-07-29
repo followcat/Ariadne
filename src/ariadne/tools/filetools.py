@@ -31,11 +31,26 @@ def _require_sandbox(ctx: ToolContext):
     return ctx.sandbox
 
 
+def _is_missing_file_error(message: str) -> bool:
+    """True when sandbox read failed because the path does not exist yet.
+
+    Docker ``cat`` reports ``No such file or directory``; local may say
+    ``not found``. New-file writes must treat these as empty, not hard fail.
+    """
+    m = (message or "").lower()
+    return (
+        "not found" in m
+        or "no such file" in m
+        or "does not exist" in m
+        or "errno 2" in m
+    )
+
+
 async def _read_text(sandbox: Any, path: str) -> str:
     try:
         data = await sandbox.read_file(path)
     except AriadneError as exc:
-        if "not found" in exc.error.message:
+        if _is_missing_file_error(exc.error.message):
             return ""
         raise
     return data.decode("utf-8", errors="replace")

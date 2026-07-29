@@ -83,6 +83,42 @@ def test_edit_requires_unique_match(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_write_new_file_tolerates_docker_no_such_file_message() -> None:
+    """Pre-write read must treat Docker 'No such file' as empty, not fail."""
+    from ariadne.errors import app_error
+    from ariadne.tools.filetools import _is_missing_file_error, _read_text
+
+    assert _is_missing_file_error(
+        "read_file failed: cat: /workspace/KNOWLEDGE.md: No such file or directory"
+    )
+
+    class FakeSandbox:
+        async def read_file(self, path: str) -> bytes:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_SANDBOX_EXEC_FAILED",
+                    f"read_file failed: cat: {path}: No such file or directory",
+                    path=path,
+                )
+            )
+
+        async def write_file(self, path: str, data: bytes) -> None:
+            self.last = (path, data)
+
+    async def run() -> None:
+        sb = FakeSandbox()
+        assert await _read_text(sb, "/workspace/KNOWLEDGE.md") == ""
+        ctx = _ctx(sb)
+        out = await sandbox_write_file(
+            {"path": "/workspace/KNOWLEDGE.md", "content": "# note\n"},
+            ctx,
+        )
+        assert out["created"] is True
+        assert sb.last[0] == "/workspace/KNOWLEDGE.md"
+
+    asyncio.run(run())
+
+
 def test_file_tools_registered_and_sandboxless_fastfail() -> None:
     registry = ToolRegistry.builtins(include_sandbox=True)
     for name in ("sandbox_read_file", "sandbox_write_file", "sandbox_edit_file"):
