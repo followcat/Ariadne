@@ -3,21 +3,24 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# obvious secret patterns redacted from traces / tool outputs (SANDBOX §6,
-# TOOLCALL §4 rule 4). Patterns are intentionally conservative.
-_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), "sk-***"),
-    (re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer ***"),
-    (
-        re.compile(
-            r"(?i)\b(api[_-]?key|(?:auth|access|refresh|session)[_-]?token|"
-            r"(?:client[_-]?)?secret(?:[_-]?key)?|private[_-]?key|"
-            r"password|passwd|token|authorization|cookie|credential)"
-            r"((?:[\"']?\s*[:=]\s*[\"']?))((?!bearer\b)[^\s\"']{6,})"
-        ),
-        r"\1\2***",
-    ),
-]
+# Obvious value patterns plus structural assignment parsing (SANDBOX §6,
+# TOOLCALL §4 rule 4). Secret key recognition has one implementation below;
+# text assignments do not maintain a second finite credential-name list.
+_OPENAI_KEY = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+_AUTHORIZATION_SCHEME = re.compile(
+    r"(?i)(?P<prefix>\bauthorization[\"']?\s*[:=]\s*[\"']?)"
+    r"(?P<scheme>bearer|basic|token|apikey)\s+"
+    r"(?P<credential>[^\s,;]+)"
+)
+_BEARER_VALUE = re.compile(
+    r"(?i)\b(?P<scheme>bearer)\s+(?P<credential>[^\s,;]+)"
+)
+_ASSIGNMENT = re.compile(
+    r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{1,95})"
+    r"(?P<separator>[\"']?\s*[:=]\s*[\"']?)"
+    r"(?P<value>[^\s\"',;}\]]+)"
+)
+_AUTHORIZATION_SCHEMES = {"bearer", "basic", "token", "apikey"}
 
 # Structured payloads need a key-aware boundary in addition to value regexes.
 # Keep this conservative: false positives lose diagnostic detail, while false
@@ -46,10 +49,32 @@ def _is_secret_key(value: Any) -> bool:
 def redact_text(text: str) -> str:
     """Redact credential assignments, including camelCase key names."""
 
-    out = text
-    for pattern, repl in _PATTERNS:
-        out = pattern.sub(repl, out)
-    return out
+    out = _OPENAI_KEY.sub("sk-***", text)
+    out = _AUTHORIZATION_SCHEME.sub(
+        lambda match: (
+            f"{match.group('prefix')}{match.group('scheme')} ***"
+        ),
+        out,
+    )
+    out = _BEARER_VALUE.sub(
+        lambda match: f"{match.group('scheme')} ***",
+        out,
+    )
+
+    def replace_assignment(match: re.Match[str]) -> str:
+        key = match.group("key")
+        value = match.group("value")
+        if not _is_secret_key(key):
+            return match.group(0)
+        if (
+            _normalize_key(key) == "authorization"
+            and value.casefold() in _AUTHORIZATION_SCHEMES
+        ):
+            # The scheme-specific pass already replaced its following value.
+            return match.group(0)
+        return f"{key}{match.group('separator')}***"
+
+    return _ASSIGNMENT.sub(replace_assignment, out)
 
 
 def redact_secrets(value: Any) -> Any:

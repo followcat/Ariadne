@@ -1,8 +1,8 @@
 # Design: Memory Intelligence Vertical Slice
 
-Status: **functional vertical slice complete; affinity and terminal-authority
-hardening landed, while goal identity, secret-boundary completeness, and
-journal migration remain pending**
+Status: **functional vertical slice complete; affinity, terminal authority,
+Goal identity, and secret-boundary hardening landed, while journal migration
+remains pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -97,9 +97,13 @@ deterministic `goal:legacy:<digest>` identity before installing the pointer.
 
 Tool arguments and outputs cross an independent Memory redaction boundary.
 Sensitive structured keys are normalized across camelCase and separators
-before matching. Credential assignments inside scalar strings use the same
-camelCase-aware boundary. Episodes retain only bounded scalar fields from the
-status allowlist; nested or oversized values become digest-only markers.
+before matching. Scalar text uses a generic assignment parser and routes every
+captured key through that same normalization/matching function, covering
+provider-prefixed token/secret names without a second finite list.
+Authorization `Bearer`, `Basic`, `Token`, and `ApiKey` schemes have a separate
+closed redaction pass, including short credentials. Episodes retain only
+bounded scalar fields from the status allowlist; nested or oversized values
+become digest-only markers.
 Records keep payload digests and tool-call evidence references, never the full
 raw payload. Disabling trace redaction never authorizes secret persistence in
 Memory.

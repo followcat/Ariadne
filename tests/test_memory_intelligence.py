@@ -1168,6 +1168,7 @@ def test_allowlisted_scalar_camel_case_secret_assignments_are_redacted(
             "QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ),
         ("authorization=Token abcdefghijkl", "abcdefghijkl"),
+        ("Authorization: ApiKey shortkey", "shortkey"),
         ("Authorization: Bearer abcdef", "abcdef"),
     ],
 )
