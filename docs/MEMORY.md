@@ -131,7 +131,9 @@ Episode search adds problem/attempt/observation/error/decision/outcome chains
 above the existing turn index. Failed attempts are nonterminal. Assistant
 self-reports and user free-text terminal phrases remain non-authoritative; in
 the current slice only closed `verified_check` evidence may close an Episode or
-authoritative goal.
+authoritative goal. The model-facing state tool cannot transition
+`session:current_goal`; StateStore authority is monotonic and terminal entities
+cannot be reactivated in place.
 Deep search can traverse stored entities, relations, timelines, decisions, and
 outcomes, but always returns real turn citations. Search returns a bounded event
 window and stable event ids; `memory_expand_evidence` pages full stored events
@@ -143,10 +145,12 @@ workspace, query, file, tool, or event triggers match. See
 Automatic capture uses `capture_journal.json` to resume per-Store stages after
 failure. Before each new capture it processes a bounded batch ordered by the
 oldest attempt; failures are recorded and rotated so one bad record cannot
-starve the queue. Store writes are turn-idempotent and completion is recorded
-only after all stages finish. Recovery ids/counts enter the `auto_capture`
-layer report, and recovery failure remains non-fatal to the user turn. Tool
-payloads are independently redacted at the Memory boundary;
+starve the queue. Pending enumeration is scoped by `workspace_key`, and every
+record is additionally fenced to an opaque StateStore identity. Store writes
+are turn-idempotent and completion is recorded only after all stages finish.
+Recovery ids/counts enter the `auto_capture` layer report, and recovery failure
+remains non-fatal to the user turn. Tool payloads are independently redacted at
+the Memory boundary;
 camelCase/separated sensitive keys and credential assignments inside scalar
 strings are normalized before matching.
 Episode records keep bounded scalar status fields, digests, and evidence refs;

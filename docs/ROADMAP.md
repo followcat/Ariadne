@@ -310,8 +310,8 @@ Production-hardening backlog.
 
 Design: [design/memory-intelligence.md](design/memory-intelligence.md).
 
-**Status: functional personal-kernel vertical slice; memory correctness
-hardening mostly complete, with terminal transition integrity pending.**
+**Status: functional personal-kernel vertical slice; reviewed correctness
+hardening complete; production/ranking hardening remains usage-driven work.**
 
 - [x] Deterministic-first automatic turn projector with ambiguity-only optional LLM
 - [x] Typed preference supersession with temporal validity and evidence
@@ -322,9 +322,9 @@ hardening mostly complete, with terminal transition integrity pending.**
 - [x] Structured Prospective memory triggers; host owns external scheduling
 - [x] Turn-level observability and grounded end-to-end tests
 - [x] Action-bound Reflection confirmation contracts; negative text cannot accept
-- [x] Host-owned Goal/Episode terminal authority; free-text user/Assistant and ordinary tool assertions remain nonterminal
+- [x] Host-owned Goal/Episode transitions, monotonic status authority, and no in-place terminal reactivation
 - [x] Independent structured-secret redaction, including camelCase keys/scalar assignments and digest-only nested allowlist values
-- [x] Recoverable capture journal, capture-scoped Store idempotency, and bounded/fair next-turn pending recovery
+- [x] Recoverable capture journal, workspace/StateStore affinity fencing, Store idempotency, and bounded/fair next-turn recovery
 - [x] Nonterminal failure/retry Episode lifecycle and strict LLM capture protocol
 - [x] Windowed Episode hits, stable event ids, paged evidence, and total byte caps
 

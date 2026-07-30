@@ -41,7 +41,8 @@ Host
 9. A completed task contributes `verified_check` goal evidence; Assistant text
    alone cannot complete authoritative Memory state.
 10. Before capturing the new turn, automatic Memory resumes a bounded, fair
-    batch of pending journal records from their durable prepared plans. A
+    batch of pending journal records for the active workspace from their
+    durable prepared plans. An opaque StateStore identity fences L2 replay. A
     recovery failure is persisted and reported without changing the user-task
     result or starving other pending records.
 

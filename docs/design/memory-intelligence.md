@@ -1,7 +1,7 @@
 # Design: Memory Intelligence Vertical Slice
 
-Status: **functional vertical slice complete; memory correctness hardening
-mostly complete, but terminal transition integrity remains pending**
+Status: **functional vertical slice; reviewed correctness hardening complete;
+production/ranking hardening pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
