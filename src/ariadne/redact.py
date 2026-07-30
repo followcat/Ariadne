@@ -13,7 +13,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
             r"(?i)\b(api[_-]?key|(?:auth|access|refresh|session)[_-]?token|"
             r"(?:client[_-]?)?secret(?:[_-]?key)?|private[_-]?key|"
             r"password|passwd|token|authorization|cookie|credential)"
-            r"((?:[\"']?\s*[:=]\s*[\"']?))([^\s\"']{6,})"
+            r"((?:[\"']?\s*[:=]\s*[\"']?))((?!bearer\b)[^\s\"']{6,})"
         ),
         r"\1\2***",
     ),
