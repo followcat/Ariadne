@@ -151,7 +151,8 @@ def make_llm_deep_planner(model: Any, *, max_candidates: int = 16) -> DeepPlanne
                 "You plan memory retrieval. Reply with JSON only: "
                 '{"subqueries":["..."],"alias_extra":["..."]}. '
                 "subqueries are short search strings to run next. "
-                "Do not invent dialogue or turn ids. Do not include rerank_order yet."
+                "Do not invent dialogue or turn ids. "
+                "Do not reorder hits in this step."
             )
             user = (
                 f"query: {query}\n"
