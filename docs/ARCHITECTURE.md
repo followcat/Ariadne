@@ -98,7 +98,7 @@ verification and evidence-bound replan around the tool loop. An opt-in strict L2
 projector and the shared `ContextCompiler` add evidence-bound state plus prompt
 attribution. Outcome-aware skills, typed personalization, optional semantic/
 image verification, host-scheduled checks, and bounded advisory delegation
-complete 14a–e — see
+form the functional 14a–e vertical slice. Production-hardening gates remain — see
 [design/agent-closed-loop.md](design/agent-closed-loop.md). Default short turns
 remain the direct loop above.
 

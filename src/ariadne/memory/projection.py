@@ -175,6 +175,7 @@ class ProjectionJob:
     attempts: int = 0
     lease_owner: str = ""
     lease_until: float = 0.0
+    lease_token: int = 0
     error: str = ""
 
 
@@ -225,6 +226,7 @@ class ProjectionWorker:
                     "attempts": 0,
                     "lease_owner": "",
                     "lease_until": 0.0,
+                    "lease_token": 0,
                     "error": "",
                 }
             )
@@ -275,6 +277,7 @@ class ProjectionWorker:
                 job["lease_owner"] = worker_id
                 job["lease_until"] = now + self.lease_seconds
                 job["attempts"] = int(job.get("attempts") or 0) + 1
+                job["lease_token"] = int(job.get("lease_token") or 0) + 1
                 claimed = dict(job)
                 break
             data["jobs"] = jobs
@@ -299,20 +302,45 @@ class ProjectionWorker:
         self,
         job_id: str,
         *,
+        worker_id: str,
+        lease_token: int,
         status: str,
         error: str = "",
         reason: str = "",
     ) -> None:
+        clock = time.time()
+
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             for job in data.get("jobs") or []:
                 if job.get("job_id") == job_id:
+                    if (
+                        job.get("status") != "leased"
+                        or str(job.get("lease_owner") or "") != worker_id
+                        or int(job.get("lease_token") or 0) != int(lease_token)
+                        or float(job.get("lease_until") or 0) <= clock
+                    ):
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_MEMORY_PROJECTION_LEASE_LOST",
+                                "projection lease is no longer valid",
+                                job_id=job_id,
+                                worker_id=worker_id,
+                                lease_token=lease_token,
+                            )
+                        )
                     job["status"] = status
                     job["error"] = error
                     job["reason"] = reason
                     job["lease_owner"] = ""
                     job["lease_until"] = 0.0
-                    break
-            return data
+                    return data
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_PROJECTION_JOB_NOT_FOUND",
+                    "projection job was not found",
+                    job_id=job_id,
+                )
+            )
 
         locked_update_json(self.path, mut, default={"jobs": []})
 
@@ -333,6 +361,18 @@ class ProjectionWorker:
         job = self.claim(worker_id=worker_id, session_id=session_id)
         if job is None:
             return None
+        lease_token = int(job.get("lease_token") or 0)
+
+        def complete_claim(*, status: str, error: str = "", reason: str = "") -> None:
+            self.complete(
+                job["job_id"],
+                worker_id=worker_id,
+                lease_token=lease_token,
+                status=status,
+                error=error,
+                reason=reason,
+            )
+
         try:
             decision = await projector(job["evidence_text"], job["turn_id"])
             if not isinstance(decision, ProjectionDecision):
@@ -350,8 +390,7 @@ class ProjectionWorker:
                     )
                 )
             if decision.decision == "confirmed_no_change":
-                self.complete(
-                    job["job_id"],
+                complete_claim(
                     status="confirmed_no_change",
                     reason=decision.reason,
                 )
@@ -374,8 +413,9 @@ class ProjectionWorker:
                 source_turn_id=job["turn_id"],
                 evidence_text=job["evidence_text"],
                 expected_parent_version=parent_version,
+                idempotency_key=f"projection:{job['job_id']}",
             )
-            self.complete(job["job_id"], status="succeeded", reason=decision.reason)
+            complete_claim(status="succeeded", reason=decision.reason)
             return {
                 "job_id": job["job_id"],
                 "status": "succeeded",
@@ -403,7 +443,16 @@ class ProjectionWorker:
                 if isinstance(exc, AriadneError)
                 else f"{type(exc).__name__}: {exc}"
             )
-            self.complete(job["job_id"], status=status, error=error_text)
+            try:
+                complete_claim(status=status, error=error_text)
+            except AriadneError as lease_exc:
+                if lease_exc.error.code != "ARIADNE_MEMORY_PROJECTION_LEASE_LOST":
+                    raise
+                return {
+                    "job_id": job["job_id"],
+                    "status": "lease_lost",
+                    "error": lease_exc.error.message,
+                }
             return {"job_id": job["job_id"], "status": status, "error": error_text}
 
     async def drain(self, projector: ProjectorFn, *, max_jobs: int = 20) -> list[dict[str, Any]]:

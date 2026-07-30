@@ -642,7 +642,18 @@ class TurnApplication:
                 verbatim=True,
             )
         )
-        compiled_context = self.context_compiler.compile(context_blocks)
+        request_reserved_chars = max(
+            self.context_compiler.serialized_chars(candidate)
+            for candidate in (
+                exposure.request_tools or [],
+                [SUBMIT_TASK_PLAN_TOOL],
+                [REVISE_TASK_PLAN_TOOL],
+            )
+        )
+        compiled_context = self.context_compiler.compile(
+            context_blocks,
+            reserved_chars=request_reserved_chars,
+        )
         messages = compiled_context.messages
         context_attributions = compiled_context.attributions
 
@@ -669,6 +680,7 @@ class TurnApplication:
                     name=message.get("name"),
                     tool_calls=message.get("tool_calls"),
                 ),
+                reserved_chars=request_reserved_chars,
             )
 
         self.memory.transcript.append(
@@ -712,6 +724,7 @@ class TurnApplication:
         thrash_nudge_sent = False
         model_max_tokens = max(256, int(self.max_tokens or 8192))
         skill_outcomes_recorded = False
+        task_attempt_outcomes: list[dict[str, str]] = []
 
         def record_skill_outcomes(turn_outcome: str) -> None:
             nonlocal skill_outcomes_recorded
@@ -740,12 +753,17 @@ class TurnApplication:
             }
             step_outcome = ""
             task_outcome = ""
+            outcome_task_id = ""
+            outcome_step_id = ""
+            outcome_attempt_id = ""
             if task_state is not None:
                 task_outcome = task_state.status
-                if any(step.status == "verified" for step in task_state.steps):
-                    step_outcome = "verified"
-                elif any(step.status == "failed" for step in task_state.steps):
-                    step_outcome = "failed"
+            if task_attempt_outcomes:
+                latest_outcome = task_attempt_outcomes[-1]
+                outcome_task_id = latest_outcome["task_id"]
+                outcome_step_id = latest_outcome["step_id"]
+                outcome_attempt_id = latest_outcome["attempt_id"]
+                step_outcome = latest_outcome["step_outcome"]
             ledger.record_turn(
                 turn_id=turn_id,
                 session_id=session_id,
@@ -756,6 +774,9 @@ class TurnApplication:
                 turn_outcome=turn_outcome,
                 step_outcome=step_outcome,
                 task_outcome=task_outcome,
+                task_id=outcome_task_id,
+                step_id=outcome_step_id,
+                attempt_id=outcome_attempt_id,
                 user_corrected=bool((metadata or {}).get("user_corrected", False)),
             )
 
@@ -810,6 +831,11 @@ class TurnApplication:
                                 ),
                             }
                         )
+
+                self.context_compiler.ensure_request_fits(
+                    messages=messages,
+                    tools=tools_payload,
+                )
 
                 schema_metrics.append(
                     SchemaMetrics(
@@ -919,6 +945,7 @@ class TurnApplication:
                     task_state = self.task_controller.create_from_plan(
                         session_id=session_id,
                         user_id=user_id,
+                        original_user_goal=prompt,
                         arguments=control_args,
                     )
                     append_required_context(
@@ -1210,7 +1237,14 @@ class TurnApplication:
                         str((call.get("function") or {}).get("name") or "")
                         for call in tool_calls_payload
                     ]
+                    capability_specs = []
                     material_specs = []
+                    task_meta_capabilities = {
+                        "search_skills",
+                        "load_skill",
+                        "adopt_skill",
+                        "tool_search",
+                    }
                     for capability_name, capability_call in zip(
                         capability_names, tool_calls_payload, strict=True
                     ):
@@ -1231,6 +1265,8 @@ class TurnApplication:
                             if spec is not None and isinstance(effect_args, dict)
                             else "unknown"
                         )
+                        if capability_name not in task_meta_capabilities:
+                            capability_specs.append((spec, effect))
                         if effect not in {"none", "read"}:
                             material_specs.append((spec, effect))
                     if len(material_specs) > 1:
@@ -1241,8 +1277,10 @@ class TurnApplication:
                                 names=capability_names,
                             )
                         )
-                    if material_specs:
-                        task_attempt_spec, task_attempt_effect = material_specs[0]
+                    if capability_specs:
+                        task_attempt_spec, task_attempt_effect = (
+                            material_specs[0] if material_specs else capability_specs[0]
+                        )
                         task_state, task_step, task_attempt_id = self.task_controller.start_attempt(
                             task_state
                         )
@@ -1434,6 +1472,14 @@ class TurnApplication:
                         attempt_id=task_attempt_id,
                     )
                     task_state = outcome.state
+                    task_attempt_outcomes.append(
+                        {
+                            "task_id": task_state.task_id,
+                            "step_id": outcome.step.step_id,
+                            "attempt_id": task_attempt_id,
+                            "step_outcome": outcome.step.status,
+                        }
+                    )
                     for check_result in outcome.step.check_results:
                         yield TurnEvent(
                             "task_check_completed",

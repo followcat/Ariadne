@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from ariadne.config import load_settings
-from ariadne.web.app import create_app
+from ariadne.web.app import _persist_turn_tools, create_app
 
 
 def _client(tmp_path: Path) -> httpx.AsyncClient:
@@ -108,6 +108,17 @@ def test_index_served(tmp_path: Path) -> None:
             assert "Ariadne" in r.text
 
     asyncio.run(run())
+
+
+def test_turn_trace_persistence_failure_is_not_silenced(tmp_path: Path) -> None:
+    invalid_sessions_dir = tmp_path / "sessions-as-file"
+    invalid_sessions_dir.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        _persist_turn_tools(
+            sessions_dir=invalid_sessions_dir,
+            session_id="s1",
+            result_payload={"turn_id": "t1", "tool_calls": []},
+        )
 
 
 def test_user_model_and_skill_patch_host_edit_surfaces(tmp_path: Path) -> None:

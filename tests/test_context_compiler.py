@@ -7,7 +7,7 @@ from ariadne.errors import AriadneError
 
 
 def test_context_compiler_preserves_required_and_attributes_optional_choices() -> None:
-    compiler = ContextCompiler(max_chars=260, min_summary_chars=40)
+    compiler = ContextCompiler(max_chars=340, min_summary_chars=40)
     blocks = [
         ContextBlock(
             source="kernel",
@@ -51,7 +51,7 @@ def test_context_compiler_preserves_required_and_attributes_optional_choices() -
     assert by_source["user"].disposition == "included"
     assert by_source["high"].disposition == "included"
     assert by_source["low"].disposition in {"summarized", "dropped"}
-    assert compiled.total_chars <= 260
+    assert compiled.total_chars <= 340
     assert compiled.messages[0]["content"] == "K" * 80
     assert compiled.messages[-1]["content"] == "U" * 40
 
@@ -107,3 +107,46 @@ def test_context_compiler_dynamic_tool_evidence_is_never_truncated() -> None:
             ),
         )
     assert caught.value.error.details["source"] == "tool_result:c1"
+
+
+def test_context_budget_counts_tool_call_arguments_and_tool_schemas() -> None:
+    compiler = ContextCompiler(max_chars=180)
+    with pytest.raises(AriadneError) as message_error:
+        compiler.compile(
+            [
+                ContextBlock(
+                    source="assistant-call",
+                    role="assistant",
+                    content="",
+                    reason="protocol",
+                    required=True,
+                    tool_calls=[
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {
+                                "name": "large_call",
+                                "arguments": "x" * 180,
+                            },
+                        }
+                    ],
+                )
+            ]
+        )
+    assert message_error.value.error.code == "ARIADNE_CONTEXT_BUDGET_EXCEEDED"
+
+    with pytest.raises(AriadneError) as schema_error:
+        compiler.ensure_request_fits(
+            messages=[{"role": "user", "content": "small"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "large_schema",
+                        "description": "d" * 180,
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+    assert schema_error.value.error.details["tool_schema_chars"] > 180

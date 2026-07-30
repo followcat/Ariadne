@@ -141,11 +141,21 @@ def test_projection_claim_respects_session_turn_order(tmp_path: Path) -> None:
     # Lag counts unfinished (leased t1 + pending t2).
     assert worker.pending_lag("s1") == 2
 
-    worker.complete(j1, status="succeeded")
+    worker.complete(
+        j1,
+        worker_id="w1",
+        lease_token=c1["lease_token"],
+        status="succeeded",
+    )
     assert worker.pending_lag("s1") == 1
     c2 = worker.claim(worker_id="w1", session_id="s1")
     assert c2 is not None and c2["job_id"] == j2
-    worker.complete(j2, status="succeeded")
+    worker.complete(
+        j2,
+        worker_id="w1",
+        lease_token=c2["lease_token"],
+        status="succeeded",
+    )
     assert worker.pending_lag("s1") == 0
 
 

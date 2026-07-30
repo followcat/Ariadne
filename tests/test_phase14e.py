@@ -69,6 +69,7 @@ def test_semantic_verifier_is_evidence_quoting_and_completes_task(tmp_path: Path
     state = controller.create_from_plan(
         session_id="s1",
         user_id="u1",
+        original_user_goal="qualitative review",
         arguments={
             "goal": "qualitative review",
             "steps": [
@@ -83,6 +84,15 @@ def test_semantic_verifier_is_evidence_quoting_and_completes_task(tmp_path: Path
                             },
                         }
                     ],
+                }
+            ],
+            "goal_checks": [
+                {
+                    "kind": "llm_semantic",
+                    "spec": {
+                        "criterion": "the review says quality is good",
+                        "oracle_unavailable_reason": "quality is qualitative",
+                    },
                 }
             ],
         },
@@ -120,6 +130,7 @@ def test_semantic_check_rejected_when_deterministic_oracle_is_present(tmp_path: 
         controller.create_from_plan(
             session_id="s1",
             user_id="u1",
+            original_user_goal="mixed oracle",
             arguments={
                 "goal": "mixed oracle",
                 "steps": [
@@ -136,6 +147,9 @@ def test_semantic_check_rejected_when_deterministic_oracle_is_present(tmp_path: 
                             },
                         ],
                     }
+                ],
+                "goal_checks": [
+                    {"kind": "path_exists", "spec": {"path": "done.txt"}}
                 ],
             },
         )
@@ -202,6 +216,49 @@ def test_host_scheduled_goal_claims_checks_and_emits_notifications(tmp_path: Pat
     assert scheduler.get(created["schedule_id"], user_id="alice")["status"] == "completed"
     notifications = scheduler.notifications(user_id="alice")
     assert [item["kind"] for item in notifications] == ["goal_pending", "goal_satisfied"]
+
+
+def test_scheduled_goal_stale_worker_cannot_complete_reclaimed_lease(
+    tmp_path: Path,
+) -> None:
+    scheduler = ScheduledGoalStore(tmp_path / "scheduled.sqlite3")
+    created = scheduler.create(
+        user_id="alice",
+        session_id="s1",
+        goal="observe export",
+        check={"kind": "path_exists", "spec": {"path": "export.csv"}},
+        interval_seconds=60,
+        next_run_at=1000,
+    )
+    (tmp_path / "export.csv").write_text("done", encoding="utf-8")
+
+    class ReclaimingVerifier:
+        def run(self, check, *, traces, attempt_id):
+            reclaimed = scheduler.claim_due(
+                user_id="alice",
+                worker_id="worker-new",
+                now=1031,
+            )
+            assert reclaimed is not None
+            assert reclaimed["lease_token"] == 2
+            return DeterministicVerifier(tmp_path).run(
+                check,
+                traces=traces,
+                attempt_id=attempt_id,
+            )
+
+    with pytest.raises(AriadneError) as caught:
+        scheduler.run_due(
+            user_id="alice",
+            worker_id="worker-old",
+            verifier=ReclaimingVerifier(),  # type: ignore[arg-type]
+            now=1000,
+        )
+    assert caught.value.error.code == "ARIADNE_SCHEDULE_CONFLICT"
+    current = scheduler.get(created["schedule_id"], user_id="alice")
+    assert current["lease_owner"] == "worker-new"
+    assert current["lease_token"] == 2
+    assert scheduler.notifications(user_id="alice") == []
 
 
 def test_controlled_delegation_is_bounded_grounded_and_toolless() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,17 +33,14 @@ def _persist_turn_tools(
     """Write turn tool history to disk (survives restart)."""
     if not session_id or not result_payload:
         return None
-    try:
-        from ..cli.turn_history import append_turn_from_result_payload
+    from ..cli.turn_history import append_turn_from_result_payload
 
-        return append_turn_from_result_payload(
-            sessions_dir,
-            session_id,
-            result_payload,
-            status=status,
-        )
-    except Exception:
-        return None
+    return append_turn_from_result_payload(
+        sessions_dir,
+        session_id,
+        result_payload,
+        status=status,
+    )
 
 
 class RegisterBody(BaseModel):
@@ -795,7 +793,7 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             results = _scheduled_goals(username).run_due(
                 user_id=username,
-                worker_id=f"web-cron:{username}",
+                worker_id=f"web-cron:{username}:{uuid.uuid4().hex[:12]}",
                 verifier=DeterministicVerifier(_workspace_root_for(username)),
             )
         except AriadneError as exc:

@@ -182,6 +182,7 @@ class ConversationStateStore:
         source_turn_id: str,
         evidence_text: str,
         expected_parent_version: int | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         if not operations:
             raise AriadneError(
@@ -252,6 +253,16 @@ class ConversationStateStore:
         result_holder: dict[str, Any] = {}
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
+            scoped_key = (
+                f"{session_id}:{idempotency_key}"
+                if idempotency_key is not None
+                else ""
+            )
+            applied = data.setdefault("idempotency_keys", {})
+            if scoped_key and scoped_key in applied:
+                result_holder.update(dict(applied[scoped_key]))
+                result_holder["idempotent_replay"] = True
+                return data
             docs = data.setdefault("documents", {})
             doc = docs.get(session_id) or {}
             current_version = int(doc.get("version") or 0)
@@ -322,6 +333,13 @@ class ConversationStateStore:
                     "parent_version": current_version,
                 }
             )
+            if scoped_key:
+                applied[scoped_key] = {
+                    "decision": "apply",
+                    "ops": len(operations),
+                    "version": new_version,
+                    "parent_version": current_version,
+                }
             return data
 
         locked_update_json(self.path, mut, default={"documents": {}})

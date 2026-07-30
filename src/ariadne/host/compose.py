@@ -32,6 +32,7 @@ from ..skills.store import SkillStore
 from ..skills.outcomes import SkillOutcomeLedger
 from ..tasks import DeterministicVerifier, SemanticVerifier, SQLiteTaskStore, TaskController
 from ..tools.registry import build_default_registry
+from .approval import make_noninteractive_approval_hook
 
 
 def compose_agent(settings: Settings) -> Agent:
@@ -292,6 +293,7 @@ def compose_agent(settings: Settings) -> Agent:
         sandbox_prestart=settings.sandbox_prestart,
         vision_mode=settings.vision,
         runtime_agent=runtime,
+        approval_hook=make_noninteractive_approval_hook(settings.approval_mode),
         extra_system_prompt=getattr(settings, "extra_system_prompt", "") or "",
         max_tokens=int(getattr(settings, "max_tokens", None) or 8192),
         context_compiler=ContextCompiler(

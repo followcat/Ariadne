@@ -16,6 +16,11 @@ from .models import Check, CheckResult, EvidenceRef
 @dataclass(slots=True)
 class DeterministicVerifier:
     workspace: Path | None
+    max_read_bytes: int = 8 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        if self.max_read_bytes < 1:
+            raise ValueError("max_read_bytes must be positive")
 
     def _workspace_path(self, raw: Any) -> Path:
         if self.workspace is None:
@@ -37,6 +42,14 @@ class DeterministicVerifier:
         if resolved != root and root not in resolved.parents:
             raise ValueError("check path escapes workspace root")
         return resolved
+
+    def _read_bytes(self, path: Path) -> bytes:
+        size = path.stat().st_size
+        if size > self.max_read_bytes:
+            raise ValueError(
+                f"verification file exceeds max_read_bytes={self.max_read_bytes}: {size}"
+            )
+        return path.read_bytes()
 
     @staticmethod
     def _evidence(
@@ -176,7 +189,9 @@ class DeterministicVerifier:
         needle = check.spec.get("text")
         if not isinstance(needle, str) or not needle:
             raise ValueError("file_contains requires non-empty spec.text")
-        content = path.read_text(encoding=str(check.spec.get("encoding") or "utf-8"))
+        content = self._read_bytes(path).decode(
+            str(check.spec.get("encoding") or "utf-8")
+        )
         contains = needle in content
         return CheckResult(
             check_id=check.check_id,
@@ -241,7 +256,7 @@ class DeterministicVerifier:
                 status="fail",
                 observed_value={"exists": path.exists(), "valid_image": False},
             )
-        data = path.read_bytes()
+        data = self._read_bytes(path)
         image_format, width, height = self._image_info(data)
         wanted_format = str(check.spec.get("format") or "").lower().removeprefix("image/")
         if wanted_format == "jpg":

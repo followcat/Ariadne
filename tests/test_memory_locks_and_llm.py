@@ -92,7 +92,12 @@ def test_projection_claim_atomic_across_threads(tmp_path: Path) -> None:
                 return
             with lock:
                 claimed.append(job["job_id"])
-            worker.complete(job["job_id"], status="succeeded")
+            worker.complete(
+                job["job_id"],
+                worker_id=wid,
+                lease_token=job["lease_token"],
+                status="succeeded",
+            )
 
     threads = [threading.Thread(target=claimer, args=(f"w{i}",)) for i in range(3)]
     for t in threads:

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,66 @@ def test_projection_lease_and_complete(tmp_path: Path) -> None:
     text, n = state.render("s1")
     assert n == 1
     assert "doc:foo" in text or "FOO" in text
+
+
+def test_projection_rejects_stale_lease_completion(tmp_path: Path) -> None:
+    state = ConversationStateStore(path=tmp_path / "state.json")
+    worker = ProjectionWorker(
+        path=tmp_path / "jobs.json",
+        state_store=state,
+        lease_seconds=10,
+    )
+    job_id = worker.enqueue(session_id="s1", turn_id="t1", evidence_text="evidence")
+    stale = worker.claim(worker_id="worker-old")
+    assert stale is not None
+    jobs = worker._read()
+    jobs["jobs"][0]["lease_until"] = time.time() - 1
+    worker._write(jobs)
+    current = worker.claim(worker_id="worker-new")
+    assert current is not None
+    assert current["lease_token"] > stale["lease_token"]
+
+    with pytest.raises(AriadneError) as caught:
+        worker.complete(
+            job_id,
+            worker_id="worker-old",
+            lease_token=stale["lease_token"],
+            status="succeeded",
+        )
+    assert caught.value.error.code == "ARIADNE_MEMORY_PROJECTION_LEASE_LOST"
+
+    worker.complete(
+        job_id,
+        worker_id="worker-new",
+        lease_token=current["lease_token"],
+        status="succeeded",
+    )
+    assert worker.list_jobs()[0]["status"] == "succeeded"
+
+
+def test_projection_state_apply_is_idempotent_by_job_key(tmp_path: Path) -> None:
+    state = ConversationStateStore(path=tmp_path / "state.json")
+    kwargs = {
+        "session_id": "s1",
+        "operations": [
+            {
+                "op": "ensure_entity",
+                "entity_id": "doc:one",
+                "type": "file",
+                "evidence_quote": "one.txt",
+            }
+        ],
+        "source_turn_id": "t1",
+        "evidence_text": "created one.txt",
+        "expected_parent_version": 0,
+        "idempotency_key": "projection:job-1",
+    }
+    first = state.apply_ops(**kwargs)
+    replay = state.apply_ops(**kwargs)
+    assert first["version"] == 1
+    assert replay["version"] == 1
+    assert replay["idempotent_replay"] is True
+    assert state.version("s1") == 1
 
 
 def test_projection_requires_explicit_no_change_decision(tmp_path: Path) -> None:

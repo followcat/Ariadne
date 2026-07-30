@@ -83,6 +83,9 @@ class SkillOutcomeLedger:
         turn_outcome: str,
         step_outcome: str = "",
         task_outcome: str = "",
+        task_id: str = "",
+        step_id: str = "",
+        attempt_id: str = "",
         user_corrected: bool = False,
         at: float | None = None,
     ) -> list[str]:
@@ -112,6 +115,9 @@ class SkillOutcomeLedger:
                 "turn_outcome": turn_outcome,
                 "step_outcome": step_outcome,
                 "task_outcome": task_outcome,
+                "task_id": task_id,
+                "step_id": step_id,
+                "attempt_id": attempt_id,
                 "user_corrected": bool(user_corrected),
                 "at": now,
             }

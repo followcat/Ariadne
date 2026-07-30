@@ -232,7 +232,14 @@ Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
 **North star:** after each material action, verify with evidence; update the plan
 from evidence — not from “tool returned success.”
 
-**Status: complete (14a–e shipped).**
+**Status: functional vertical slice complete; production hardening pending.**
+
+The 14a–e checkboxes track 2C kernel functionality, not ToB readiness. Current
+hardening delivered after the vertical slice includes fail-closed Web approval,
+read-only task attempts, immutable goal binding, worker fencing/idempotency,
+attempt-scoped Skill outcomes, complete serialized request char accounting,
+bounded verifier reads, and hash-chained task revision events. The remaining
+gates are listed in the design document's Production-hardening backlog.
 
 #### 14a — Verify + TaskState (P0)
 - [x] `TaskState` persistence (local SQLite, task identity + active session

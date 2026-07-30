@@ -25,7 +25,7 @@ CheckKind = Literal[
     "user_confirm",
 ]
 
-TASK_SCHEMA_VERSION = 1
+TASK_SCHEMA_VERSION = 2
 PHASE_14A_CHECK_KINDS = frozenset(
     {"command_exit", "path_exists", "path_absent", "file_contains"}
 )
@@ -381,6 +381,7 @@ class TaskState:
     task_id: str
     session_id: str
     user_id: str | None
+    original_user_goal: str
     goal: str
     steps: list[Step]
     schema_version: int = TASK_SCHEMA_VERSION
@@ -406,22 +407,33 @@ class TaskState:
         *,
         session_id: str,
         user_id: str | None,
+        original_user_goal: str,
         goal: str,
         steps: list[dict[str, Any]],
         workspace_fingerprint: str,
         goal_checks: list[dict[str, Any]] | None = None,
     ) -> "TaskState":
+        clean_original_goal = str(original_user_goal or "").strip()
         clean_goal = str(goal or "").strip()
+        if not clean_original_goal:
+            raise AriadneError(
+                app_error("ARIADNE_TASK_INVALID", "original user goal is required")
+            )
         if not clean_goal:
             raise AriadneError(app_error("ARIADNE_TASK_INVALID", "task goal is required"))
         if not steps:
             raise AriadneError(app_error("ARIADNE_TASK_INVALID", "task needs at least one step"))
         parsed_steps = [Step.from_plan(v) for v in steps]
         parsed_goal_checks = [Check.from_plan(v) for v in (goal_checks or [])]
+        if not parsed_goal_checks:
+            raise AriadneError(
+                app_error("ARIADNE_TASK_INVALID", "task needs at least one goal check")
+            )
         return cls(
             task_id=_new_id("task"),
             session_id=session_id,
             user_id=user_id,
+            original_user_goal=clean_original_goal,
             goal=clean_goal,
             steps=parsed_steps,
             goal_checks=parsed_goal_checks,
@@ -443,6 +455,7 @@ class TaskState:
             "session_id": self.session_id,
             "user_id": self.user_id,
             "status": self.status,
+            "original_user_goal": self.original_user_goal,
             "goal": self.goal,
             "goal_checks": [asdict(v) for v in self.goal_checks],
             "goal_check_results": [result.to_dict() for result in self.goal_check_results],
@@ -482,6 +495,7 @@ class TaskState:
             task_id=str(value["task_id"]),
             session_id=str(value["session_id"]),
             user_id=(str(value["user_id"]) if value.get("user_id") is not None else None),
+            original_user_goal=str(value.get("original_user_goal") or ""),
             goal=str(value.get("goal") or ""),
             steps=[Step.from_dict(v) for v in value.get("steps", [])],
             schema_version=version,
@@ -511,6 +525,10 @@ class TaskState:
         )
         if not state.steps:
             raise AriadneError(app_error("ARIADNE_TASK_INVALID", "stored task has no steps"))
+        if not state.original_user_goal.strip():
+            raise AriadneError(
+                app_error("ARIADNE_TASK_INVALID", "stored task has no original user goal")
+            )
         if state.current_step_id is not None and state.current_step is None:
             raise AriadneError(
                 app_error(

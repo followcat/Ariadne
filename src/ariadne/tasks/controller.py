@@ -32,7 +32,7 @@ SUBMIT_TASK_PLAN_TOOL: dict[str, Any] = {
         "parameters": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["goal", "steps"],
+            "required": ["goal", "steps", "goal_checks"],
             "properties": {
                 "goal": {"type": "string", "minLength": 1},
                 "steps": {
@@ -65,6 +65,7 @@ SUBMIT_TASK_PLAN_TOOL: dict[str, Any] = {
                 },
                 "goal_checks": {
                     "type": "array",
+                    "minItems": 1,
                     "items": {"$ref": "#/$defs/check"},
                 },
             },
@@ -151,6 +152,7 @@ class TaskController:
         *,
         session_id: str,
         user_id: str | None,
+        original_user_goal: str,
         arguments: dict[str, Any],
     ) -> TaskState:
         if self.store.load_active(session_id) is not None:
@@ -178,10 +180,26 @@ class TaskController:
         if not isinstance(raw_steps, list):
             raise AriadneError(app_error("ARIADNE_TASK_INVALID", "steps must be an array"))
         self._validate_check_policy(arguments)
+        authoritative_goal = str(original_user_goal or "").strip()
+        planned_goal = str(arguments.get("goal") or "").strip()
+        if not authoritative_goal:
+            raise AriadneError(
+                app_error("ARIADNE_TASK_INVALID", "original user goal is required")
+            )
+        if planned_goal != authoritative_goal:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_GOAL_MISMATCH",
+                    "task plan goal must exactly preserve the original user goal",
+                    original_user_goal=authoritative_goal,
+                    planned_goal=planned_goal,
+                )
+            )
         state = TaskState.from_plan(
             session_id=session_id,
             user_id=user_id,
-            goal=str(arguments.get("goal") or ""),
+            original_user_goal=authoritative_goal,
+            goal=planned_goal,
             steps=raw_steps,
             goal_checks=list(arguments.get("goal_checks") or []),
             workspace_fingerprint=workspace_fingerprint(self.workspace),
@@ -707,6 +725,7 @@ class TaskController:
         payload = {
             "task_id": state.task_id,
             "status": state.status,
+            "original_user_goal": state.original_user_goal,
             "goal": state.goal,
             "current_step": (
                 {
@@ -755,6 +774,8 @@ class TaskController:
         return (
             "[TASK_MODE plan_required]\n"
             "Submit a concise executable plan with submit_task_plan before using capabilities. "
+            "Set goal to the user's requested objective exactly as written; the kernel rejects "
+            "weakened or paraphrased goals. Include at least one required goal_check. "
             "Every step needs deterministic done_when checks. Supported checks: "
             "command_exit (references sandbox_exec in the same attempt), path_exists, "
             "path_absent, file_contains, image_file. llm_semantic is optional and only "

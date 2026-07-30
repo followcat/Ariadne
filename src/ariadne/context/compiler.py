@@ -9,10 +9,15 @@ from ..errors import AriadneError, app_error
 Disposition = Literal["included", "summarized", "dropped"]
 
 
-def _content_chars(content: Any) -> int:
-    if isinstance(content, str):
-        return len(content)
-    return len(json.dumps(content, ensure_ascii=False, sort_keys=True))
+def _serialized_chars(value: Any) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
 
 
 @dataclass(slots=True)
@@ -86,21 +91,40 @@ class ContextCompiler:
             message["tool_calls"] = block.tool_calls
         return message
 
-    def compile(self, blocks: list[ContextBlock]) -> CompiledContext:
-        required_chars = sum(_content_chars(block.content) for block in blocks if block.required)
-        if required_chars > self.max_chars:
+    @classmethod
+    def _block_chars(cls, block: ContextBlock, content: Any) -> int:
+        return _serialized_chars(cls._message(block, content))
+
+    @staticmethod
+    def serialized_chars(value: Any) -> int:
+        return _serialized_chars(value)
+
+    def compile(
+        self,
+        blocks: list[ContextBlock],
+        *,
+        reserved_chars: int = 0,
+    ) -> CompiledContext:
+        reserved = max(0, int(reserved_chars))
+        required_chars = sum(
+            self._block_chars(block, block.content)
+            for block in blocks
+            if block.required
+        )
+        if required_chars + reserved > self.max_chars:
             required_sources = [block.source for block in blocks if block.required]
             raise AriadneError(
                 app_error(
                     "ARIADNE_CONTEXT_BUDGET_EXCEEDED",
                     "required context does not fit the configured hard budget",
                     required_chars=required_chars,
+                    reserved_chars=reserved,
                     max_chars=self.max_chars,
                     required_sources=required_sources,
                 )
             )
 
-        remaining = self.max_chars - required_chars
+        remaining = self.max_chars - required_chars - reserved
         selected: dict[int, tuple[Disposition, Any]] = {}
         optional = [
             (index, block)
@@ -108,22 +132,29 @@ class ContextCompiler:
             if not block.required
         ]
         for index, block in sorted(optional, key=lambda item: (-item[1].score, item[0])):
-            size = _content_chars(block.content)
+            size = self._block_chars(block, block.content)
             if size <= remaining:
                 selected[index] = ("included", block.content)
                 remaining -= size
                 continue
             marker = f"\n[ariadne: {block.source} summarized by ContextCompiler]"
+            empty_message_chars = self._block_chars(block, "")
+            available_content_chars = max(0, remaining - empty_message_chars)
             if (
                 isinstance(block.content, str)
                 and not block.verbatim
-                and remaining >= max(self.min_summary_chars, len(marker))
+                and available_content_chars
+                >= max(self.min_summary_chars, len(marker))
             ):
-                prefix_chars = max(0, remaining - len(marker))
+                prefix_chars = max(0, available_content_chars - len(marker))
                 summarized = block.content[:prefix_chars].rstrip() + marker
-                selected[index] = ("summarized", summarized)
-                remaining -= len(summarized)
-                continue
+                while prefix_chars > 0 and self._block_chars(block, summarized) > remaining:
+                    prefix_chars -= 1
+                    summarized = block.content[:prefix_chars].rstrip() + marker
+                if self._block_chars(block, summarized) <= remaining:
+                    selected[index] = ("summarized", summarized)
+                    remaining -= self._block_chars(block, summarized)
+                    continue
             selected[index] = ("dropped", "")
 
         messages: list[dict[str, Any]] = []
@@ -135,7 +166,7 @@ class ContextCompiler:
                 content = block.content
             else:
                 disposition, content = selected[index]
-            chars = 0 if disposition == "dropped" else _content_chars(content)
+            chars = 0 if disposition == "dropped" else self._block_chars(block, content)
             if disposition != "dropped":
                 messages.append(self._message(block, content))
                 total += chars
@@ -160,6 +191,7 @@ class ContextCompiler:
         messages: list[dict[str, Any]],
         attributions: list[ContextAttribution],
         block: ContextBlock,
+        reserved_chars: int = 0,
     ) -> None:
         if not block.required:
             raise AriadneError(
@@ -169,9 +201,10 @@ class ContextCompiler:
                     source=block.source,
                 )
             )
-        current = sum(_content_chars(message.get("content")) for message in messages)
-        added = _content_chars(block.content)
-        if current + added > self.max_chars:
+        current = sum(_serialized_chars(message) for message in messages)
+        added = self._block_chars(block, block.content)
+        reserved = max(0, int(reserved_chars))
+        if current + added + reserved > self.max_chars:
             raise AriadneError(
                 app_error(
                     "ARIADNE_CONTEXT_BUDGET_EXCEEDED",
@@ -179,6 +212,7 @@ class ContextCompiler:
                     source=block.source,
                     current_chars=current,
                     added_chars=added,
+                    reserved_chars=reserved,
                     max_chars=self.max_chars,
                 )
             )
@@ -196,3 +230,22 @@ class ContextCompiler:
                 verbatim=block.verbatim,
             )
         )
+
+    def ensure_request_fits(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> None:
+        message_chars = sum(_serialized_chars(message) for message in messages)
+        tool_chars = _serialized_chars(tools) if tools else 0
+        if message_chars + tool_chars > self.max_chars:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONTEXT_BUDGET_EXCEEDED",
+                    "serialized model request exceeds the configured hard budget",
+                    message_chars=message_chars,
+                    tool_schema_chars=tool_chars,
+                    max_chars=self.max_chars,
+                )
+            )

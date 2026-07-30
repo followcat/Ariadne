@@ -12,6 +12,7 @@ from ariadne.kernel.turn import TurnApplication
 from ariadne.memory.facade import Memory
 from ariadne.model.fake import FakeModel
 from ariadne.sandbox.local import LocalWorkdirSandbox
+from ariadne.skills.outcomes import SkillOutcomeLedger
 from ariadne.skills.store import SkillStore
 from ariadne.tasks import DeterministicVerifier, SQLiteTaskStore, TaskController
 from ariadne.tasks.controller import REVISE_TASK_PLAN_NAME, SUBMIT_TASK_PLAN_NAME
@@ -58,6 +59,7 @@ def test_task_state_sqlite_revision_conflict(tmp_path: Path) -> None:
     state = TaskState.from_plan(
         session_id="s1",
         user_id=None,
+        original_user_goal="write a marker",
         goal="write a marker",
         steps=[
             {
@@ -65,18 +67,33 @@ def test_task_state_sqlite_revision_conflict(tmp_path: Path) -> None:
                 "done_when": [{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
             }
         ],
+        goal_checks=[{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
         workspace_fingerprint="tree-v1:test",
     )
     store.save(state, expected_revision=0)
     left = store.load(state.task_id)
     right = store.load(state.task_id)
     assert left is not None and right is not None
-    left.goal = "updated once"
+    left.workspace_fingerprint = "updated once"
     store.save(left)
-    right.goal = "stale update"
+    history = store.event_history(state.task_id)
+    assert [item["revision"] for item in history] == [1, 2]
+    assert history[1]["previous_digest"] == history[0]["event_digest"]
+    assert store.verify_event_history(state.task_id) is True
+    original = store.load_revision(state.task_id, 1)
+    assert original is not None and original.workspace_fingerprint == "tree-v1:test"
+    right.workspace_fingerprint = "stale update"
     with pytest.raises(AriadneError) as caught:
         store.save(right)
     assert caught.value.error.code == "ARIADNE_TASK_CONFLICT"
+
+    current = store.load(state.task_id)
+    assert current is not None
+    current.original_user_goal = "weakened"
+    current.goal = "weakened"
+    with pytest.raises(AriadneError) as immutable:
+        store.save(current)
+    assert immutable.value.error.code == "ARIADNE_TASK_GOAL_IMMUTABLE"
 
 
 def test_deterministic_verifier_never_executes_command(tmp_path: Path) -> None:
@@ -106,6 +123,26 @@ def test_deterministic_verifier_never_executes_command(tmp_path: Path) -> None:
     assert passed.evidence[0].ref == "call-1"
 
 
+def test_verifier_rejects_unbounded_file_reads(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "large.txt").write_text("x" * 11, encoding="utf-8")
+    verifier = DeterministicVerifier(workspace, max_read_bytes=10)
+    result = verifier.run(
+        Check.from_plan(
+            {
+                "kind": "file_contains",
+                "spec": {"path": "large.txt", "text": "x"},
+            }
+        ),
+        traces=[],
+        attempt_id="bounded-read",
+    )
+    assert result.status == "error"
+    assert result.error is not None
+    assert "max_read_bytes=10" in result.error.message
+
+
 def test_resume_rechecks_current_step_against_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -114,6 +151,7 @@ def test_resume_rechecks_current_step_against_workspace(tmp_path: Path) -> None:
     state = TaskState.from_plan(
         session_id="resume-session",
         user_id=None,
+        original_user_goal="create marker",
         goal="create marker",
         steps=[
             {
@@ -122,6 +160,9 @@ def test_resume_rechecks_current_step_against_workspace(tmp_path: Path) -> None:
                     {"kind": "path_exists", "spec": {"path": "/workspace/marker.txt"}}
                 ],
             }
+        ],
+        goal_checks=[
+            {"kind": "path_exists", "spec": {"path": "/workspace/marker.txt"}}
         ],
         workspace_fingerprint="before",
     )
@@ -144,6 +185,7 @@ def test_failed_precondition_stops_before_attempt(tmp_path: Path) -> None:
     state = TaskState.from_plan(
         session_id="precondition-session",
         user_id=None,
+        original_user_goal="edit an existing file",
         goal="edit an existing file",
         steps=[
             {
@@ -157,6 +199,12 @@ def test_failed_precondition_stops_before_attempt(tmp_path: Path) -> None:
                         "spec": {"path": "/workspace/marker.txt", "text": "updated"},
                     }
                 ],
+            }
+        ],
+        goal_checks=[
+            {
+                "kind": "file_contains",
+                "spec": {"path": "/workspace/marker.txt", "text": "updated"},
             }
         ],
         workspace_fingerprint="before",
@@ -185,7 +233,7 @@ def test_task_mode_plan_act_verify_and_complete(tmp_path: Path) -> None:
                     _tc(
                         SUBMIT_TASK_PLAN_NAME,
                         {
-                            "goal": "create and verify result.txt",
+                            "goal": "create a verified result",
                             "steps": [
                                 {
                                     "intent": "write the result",
@@ -277,6 +325,241 @@ def test_task_mode_plan_act_verify_and_complete(tmp_path: Path) -> None:
     assert result.tool_calls[0].attempt_id.endswith(":1")
 
 
+def test_read_only_task_creates_attempt_and_completes(tmp_path: Path) -> None:
+    step = {"n": 0}
+
+    def script(messages, model_tools):
+        n = step["n"]
+        step["n"] += 1
+        if n == 0:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc(
+                        SUBMIT_TASK_PLAN_NAME,
+                        {
+                            "goal": "inspect the existing report",
+                            "steps": [
+                                {
+                                    "intent": "read the report",
+                                    "done_when": [
+                                        {
+                                            "kind": "file_contains",
+                                            "spec": {
+                                                "path": "/workspace/report.txt",
+                                                "text": "verified evidence",
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                            "goal_checks": [
+                                {
+                                    "kind": "file_contains",
+                                    "spec": {
+                                        "path": "/workspace/report.txt",
+                                        "text": "verified evidence",
+                                    },
+                                }
+                            ],
+                        },
+                        "plan-read",
+                    )
+                ],
+            }
+        if n == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc(
+                        "sandbox_read_file",
+                        {"path": "/workspace/report.txt"},
+                        "read-report",
+                    )
+                ],
+            }
+        assert model_tools is None
+        return {"content": "The report was read and verified."}
+
+    app, workspace, store = _app(tmp_path, script)
+    (workspace / "report.txt").write_text("verified evidence\n", encoding="utf-8")
+    result = asyncio.run(
+        app.run(
+            prompt="inspect the existing report",
+            session_id="read-only-task",
+            metadata={"task_mode": True},
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.tool_calls[0].name == "sandbox_read_file"
+    assert result.tool_calls[0].attempt_id.endswith(":1")
+    assert store.load_active("read-only-task") is None
+
+
+def test_task_plan_binds_original_goal_and_requires_goal_oracle(tmp_path: Path) -> None:
+    controller = TaskController(
+        store=SQLiteTaskStore(tmp_path / "tasks.sqlite3"),
+        verifier=DeterministicVerifier(tmp_path),
+    )
+    base = {
+        "steps": [
+            {
+                "intent": "inspect result",
+                "done_when": [
+                    {"kind": "path_exists", "spec": {"path": "result.txt"}}
+                ],
+            }
+        ],
+        "goal_checks": [
+            {"kind": "path_exists", "spec": {"path": "result.txt"}}
+        ],
+    }
+    with pytest.raises(AriadneError) as weakened:
+        controller.create_from_plan(
+            session_id="goal-mismatch",
+            user_id=None,
+            original_user_goal="analyze every finding in the report",
+            arguments={"goal": "check that result.txt exists", **base},
+        )
+    assert weakened.value.error.code == "ARIADNE_TASK_GOAL_MISMATCH"
+
+    with pytest.raises(AriadneError) as missing_oracle:
+        controller.create_from_plan(
+            session_id="goal-check-missing",
+            user_id=None,
+            original_user_goal="inspect result",
+            arguments={
+                "goal": "inspect result",
+                "steps": base["steps"],
+            },
+        )
+    assert missing_oracle.value.error.code == "ARIADNE_TASK_INVALID"
+
+
+def test_skill_outcome_uses_latest_turn_attempt_not_task_history(tmp_path: Path) -> None:
+    step = {"n": 0}
+
+    def script(messages, model_tools):
+        n = step["n"]
+        step["n"] += 1
+        if n == 0:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc(
+                        SUBMIT_TASK_PLAN_NAME,
+                        {
+                            "goal": "use planner and finish both steps",
+                            "steps": [
+                                {
+                                    "intent": "finish the first step",
+                                    "done_when": [
+                                        {
+                                            "kind": "path_exists",
+                                            "spec": {"path": "/workspace/first.txt"},
+                                        }
+                                    ],
+                                },
+                                {
+                                    "intent": "finish the second step",
+                                    "done_when": [
+                                        {
+                                            "kind": "file_contains",
+                                            "spec": {
+                                                "path": "/workspace/second.txt",
+                                                "text": "expected",
+                                            },
+                                        }
+                                    ],
+                                    "failure_policy": "abort",
+                                },
+                            ],
+                            "goal_checks": [
+                                {
+                                    "kind": "file_contains",
+                                    "spec": {
+                                        "path": "/workspace/second.txt",
+                                        "text": "expected",
+                                    },
+                                }
+                            ],
+                        },
+                        "plan-skill",
+                    )
+                ],
+            }
+        if n == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc("load_skill", {"name": "planner"}, "load-planner")
+                ],
+            }
+        if n == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc(
+                        "adopt_skill",
+                        {"name": "planner", "reason": "follow its checklist"},
+                        "adopt-planner",
+                    )
+                ],
+            }
+        if n == 3:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc(
+                        "sandbox_write_file",
+                        {"path": "/workspace/first.txt", "content": "done\n"},
+                        "write-first",
+                    )
+                ],
+            }
+        if n == 4:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc(
+                        "sandbox_write_file",
+                        {"path": "/workspace/second.txt", "content": "wrong\n"},
+                        "write-second",
+                    )
+                ],
+            }
+        assert model_tools is None
+        return {"content": "The second step failed verification."}
+
+    app, _, store = _app(tmp_path, script)
+    ledger = SkillOutcomeLedger(tmp_path / "skill-outcomes.json", min_samples=1)
+    app.skills.outcome_ledger = ledger
+    app.skills.manage(
+        action="create",
+        name="planner",
+        description="finish steps with verification",
+        body="Follow each step and verify its expected output.",
+        keywords=["planner", "steps"],
+    )
+
+    result = asyncio.run(
+        app.run(
+            prompt="use planner and finish both steps",
+            session_id="skill-attribution",
+            metadata={"task_mode": True},
+        )
+    )
+    assert result.status == "failed"
+    state = store.list_for_session("skill-attribution")[0]
+    assert [item.status for item in state.steps] == ["verified", "failed"]
+    event = ledger.list_events(skill_name="planner")[-1]
+    assert event["step_outcome"] == "failed"
+    assert event["step_id"] == state.steps[1].step_id
+    assert event["attempt_id"].startswith(f"{state.steps[1].step_id}:")
+    assert ledger.adjustment("planner").negative == 1
+
+
 def test_failed_check_replans_from_cited_evidence(tmp_path: Path) -> None:
     step = {"n": 0}
     store_box: dict[str, SQLiteTaskStore] = {}
@@ -306,6 +589,15 @@ def test_failed_check_replans_from_cited_evidence(tmp_path: Path) -> None:
                                         }
                                     ],
                                     "failure_policy": "replan",
+                                }
+                            ],
+                            "goal_checks": [
+                                {
+                                    "kind": "file_contains",
+                                    "spec": {
+                                        "path": "/workspace/value.txt",
+                                        "text": "good",
+                                    },
                                 }
                             ],
                         },
@@ -474,6 +766,7 @@ def test_retry_requires_read_or_explicit_idempotency(tmp_path: Path) -> None:
     state = TaskState.from_plan(
         session_id="retry-session",
         user_id=None,
+        original_user_goal="write marker",
         goal="write marker",
         steps=[
             {
@@ -484,6 +777,9 @@ def test_retry_requires_read_or_explicit_idempotency(tmp_path: Path) -> None:
                 "failure_policy": "retry",
                 "max_retries": 2,
             }
+        ],
+        goal_checks=[
+            {"kind": "path_exists", "spec": {"path": "/workspace/marker.txt"}}
         ],
         workspace_fingerprint="before",
     )
@@ -522,6 +818,7 @@ def test_retry_requires_read_or_explicit_idempotency(tmp_path: Path) -> None:
     safe_state = TaskState.from_plan(
         session_id="safe-retry-session",
         user_id=None,
+        original_user_goal="write safe marker",
         goal="write safe marker",
         steps=[
             {
@@ -534,6 +831,12 @@ def test_retry_requires_read_or_explicit_idempotency(tmp_path: Path) -> None:
                 ],
                 "failure_policy": "retry",
                 "max_retries": 1,
+            }
+        ],
+        goal_checks=[
+            {
+                "kind": "path_exists",
+                "spec": {"path": "/workspace/safe-marker.txt"},
             }
         ],
         workspace_fingerprint="before",
@@ -595,7 +898,7 @@ def test_unverified_task_answer_becomes_needs_input(tmp_path: Path) -> None:
                     _tc(
                         SUBMIT_TASK_PLAN_NAME,
                         {
-                            "goal": "create marker",
+                            "goal": "make a marker",
                             "steps": [
                                 {
                                     "intent": "create marker",
@@ -605,6 +908,12 @@ def test_unverified_task_answer_becomes_needs_input(tmp_path: Path) -> None:
                                             "spec": {"path": "/workspace/marker.txt"},
                                         }
                                     ],
+                                }
+                            ],
+                            "goal_checks": [
+                                {
+                                    "kind": "path_exists",
+                                    "spec": {"path": "/workspace/marker.txt"},
                                 }
                             ],
                         },

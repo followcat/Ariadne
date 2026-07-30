@@ -40,12 +40,22 @@ class ScheduledGoalStore:
                     revision INTEGER NOT NULL,
                     lease_owner TEXT NOT NULL DEFAULT '',
                     lease_until REAL NOT NULL DEFAULT 0,
+                    lease_token INTEGER NOT NULL DEFAULT 0,
                     last_result_json TEXT NOT NULL DEFAULT '{}',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in con.execute("PRAGMA table_info(scheduled_goals)").fetchall()
+            }
+            if "lease_token" not in columns:
+                con.execute(
+                    "ALTER TABLE scheduled_goals "
+                    "ADD COLUMN lease_token INTEGER NOT NULL DEFAULT 0"
+                )
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS goal_notifications (
@@ -80,6 +90,7 @@ class ScheduledGoalStore:
             "revision": int(row["revision"]),
             "lease_owner": str(row["lease_owner"]),
             "lease_until": float(row["lease_until"]),
+            "lease_token": int(row["lease_token"]),
             "last_result": json.loads(str(row["last_result_json"])),
             "created_at": float(row["created_at"]),
             "updated_at": float(row["updated_at"]),
@@ -236,7 +247,8 @@ class ScheduledGoalStore:
             con.execute(
                 """
                 UPDATE scheduled_goals
-                SET lease_owner=?, lease_until=?, revision=revision+1, updated_at=?
+                SET lease_owner=?, lease_until=?, lease_token=lease_token+1,
+                  revision=revision+1, updated_at=?
                 WHERE schedule_id=? AND revision=?
                 """,
                 (
@@ -303,6 +315,7 @@ class ScheduledGoalStore:
                       status=?, next_run_at=?, lease_owner='', lease_until=0,
                       last_result_json=?, revision=revision+1, updated_at=?
                     WHERE schedule_id=? AND lease_owner=?
+                      AND user_id=? AND lease_token=? AND revision=? AND lease_until>?
                     """,
                     (
                         status,
@@ -311,6 +324,10 @@ class ScheduledGoalStore:
                         clock,
                         claimed["schedule_id"],
                         worker_id,
+                        user_id,
+                        claimed["lease_token"],
+                        claimed["revision"],
+                        clock,
                     ),
                 ).rowcount
                 if changed != 1:
@@ -319,6 +336,7 @@ class ScheduledGoalStore:
                             "ARIADNE_SCHEDULE_CONFLICT",
                             "scheduled goal lease was lost before completion",
                             schedule_id=claimed["schedule_id"],
+                            lease_token=claimed["lease_token"],
                         )
                     )
                 con.execute(

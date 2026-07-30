@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
 
 from ariadne.cli.approval import WRITE_TOOLS, make_approval_hook
+from ariadne.config import load_settings
 from ariadne.errors import AriadneError
+from ariadne.host.approval import make_noninteractive_approval_hook
+from ariadne.host.compose import compose_agent
 from ariadne.kernel.turn import TurnApplication
 from ariadne.memory import Memory
 from ariadne.model.fake import FakeModel
@@ -90,6 +94,29 @@ def test_on_request_asks_and_honors_answer() -> None:
 
 def test_auto_mode_has_no_hook() -> None:
     assert make_approval_hook("auto") is None
+
+
+def test_compose_enforces_noninteractive_web_policy(tmp_path: Path) -> None:
+    settings = dataclasses.replace(
+        load_settings(workspace=tmp_path / "workspace"),
+        base_url="https://example.invalid/v1",
+        api_key="test-key",
+        model="test-model",
+        sandbox="local",
+        approval_mode="on-request",
+        data_dir=tmp_path / "data",
+    )
+    agent = compose_agent(settings)
+    hook = agent.turn_app.approval_hook
+    assert hook is not None
+    assert hook("sandbox_read_file", {}, {"side_effect_level": "read"}) is True
+    assert hook("sandbox_write_file", {}, {"side_effect_level": "write"}) is False
+    assert hook("sandbox_delete_file", {}, {"side_effect_level": "destructive"}) is False
+
+    readonly = make_noninteractive_approval_hook("readonly")
+    assert readonly is not None
+    assert readonly("web_fetch", {}, {"side_effect_level": "read"}) is True
+    assert readonly("web_fetch", {}, {"side_effect_level": "unknown"}) is False
 
 
 def test_unknown_mode_fastfails() -> None:

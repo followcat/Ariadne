@@ -1,6 +1,6 @@
 # Design: Closed-Loop Agent Execution (Personal / 2C)
 
-Status: **implemented** (Phases 14a–e shipped)
+Status: **functional vertical slice complete; production hardening pending**
 Audience: implementers  
 Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [turn-lifecycle.md](turn-lifecycle.md),
 [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
@@ -27,6 +27,12 @@ plan from that evidence — not from “the tool returned 200.”
 
 This doc is **personal 2C / single-agent kernel**. It is not a multi-agent mesh,
 not Temporal, and not an enterprise workflow product.
+
+The Phase 14a–e checkmarks below mean that the 2C kernel trajectory exists and
+is covered by offline fixtures. They are not a ToB production-readiness claim.
+In particular, tenant IAM/isolation remains out of scope; lifecycle control,
+trusted high-risk goal oracles, verifier authorization ports, provider-exact
+token budgeting, and operational fault gates remain hardening work.
 
 ---
 
@@ -95,14 +101,15 @@ active / needs-input task. It is not a second chat log.
 
 ```text
 TaskState
-  schema_version: int               # v1; reject unknown future versions
+  schema_version: int               # v2; reject unknown versions
   revision: int                     # optimistic concurrency token
   task_id: str
   session_id: str
   user_id: str | None
   status: active | needs_input | completed | failed | cancelled
-  goal: str                         # user-facing objective
-  goal_checks: list[Check]          # goal-level verification
+  original_user_goal: str           # immutable authoritative request
+  goal: str                         # must exactly preserve original_user_goal
+  goal_checks: list[Check]          # non-empty goal-level verification
   steps: list[Step]
   current_step_id: str | None
   last_observation: Observation | None
@@ -137,7 +144,7 @@ Step
 Check
   check_id: str
   kind: command_exit | path_exists | path_absent | file_contains
-       | git_diff_matches | http_response | json_path | llm_semantic | user_confirm
+       | llm_semantic | image_file
   spec: dict                        # kind-specific
   required: bool
 
@@ -185,6 +192,12 @@ PlanRevision
   at: float
 ```
 
+`git_diff_matches`, `http_response`, `json_path`, and `user_confirm` remain
+reserved contract kinds; they are not exposed by the current plan schema.
+Filesystem verification is workspace-confined and size-bounded, but routing
+all active reads through a dedicated authorized `VerificationPort` is still a
+hardening item.
+
 **Rule:** `status=verified` only when all required `done_when` checks pass.
 Tool invoke success alone never promotes a step to verified.
 
@@ -199,8 +212,15 @@ completed | failed | cancelled → terminal (no mutation except archival metadat
 ```
 
 Store writes use an expected `revision`; a stale writer fails with
-`ARIADNE_TASK_CONFLICT`. New user input never silently replaces an active
-goal. The host must explicitly continue, cancel, or start a new task.
+`ARIADNE_TASK_CONFLICT`. The target lifecycle rule is that new user input never
+silently replaces an active goal and the host explicitly continues, cancels,
+or starts a new task. The current slice preserves the active goal but still
+auto-continues `needs_input`; the explicit lifecycle surface remains in the
+hardening backlog.
+
+Each saved revision is also appended to `task_events` with a payload digest and
+previous-event digest. This provides integrity-checked local replay while the
+`tasks` row remains the current-state projection.
 
 Step transitions are `pending → running → verified|failed`, with `skipped`
 allowed only through an evidence-citing replan. Check ERROR never becomes
@@ -373,7 +393,9 @@ and tool exposure.
 ### 9.2 Outputs
 
 - Ordered prompt blocks for the model  
-- `ContextAttribution[]`: source, reason, score, token_chars, included|summarized|dropped  
+- `ContextAttribution[]`: source, reason, score, `token_chars`,
+  included|summarized|dropped. The historical `token_chars` field currently
+  reports complete serialized-message characters, not provider tokens.
 
 ### 9.3 Principles
 
@@ -384,6 +406,8 @@ and tool exposure.
   curated memory > skills > retrieved memory > external/tool content
 - Required evidence that does not fit the budget fails explicitly; it is never
   silently truncated or dropped
+- Complete message metadata/tool-call arguments and the active tool schemas are
+  included in the serialized request gate before every provider call
 
 ---
 
@@ -489,6 +513,31 @@ authenticated `/api/me/scheduled-goals*` host endpoints.
 - [x] Proactive / scheduled goal push (host cron)
 - [x] Multimodal environment checks
 - [x] Controlled multi-agent (only after single-agent loop is solid)
+
+### Production-hardening backlog
+
+- [x] Composition-root approval policy for every host; non-interactive
+  `on-request` fails closed instead of executing material tools
+- [x] Read-only task exchanges create attempts and run step/goal verification
+- [x] Immutable `original_user_goal`, exact goal preservation, and mandatory
+  goal checks
+- [x] Projection/scheduler lease tokens, stale-owner CAS, unique Web worker IDs,
+  and projection job idempotency keys
+- [x] Skill outcomes bind to the latest turn attempt/step instead of scanning
+  historical verified steps
+- [x] Complete serialized-message/tool-schema char gate, bounded verifier reads,
+  fail-fast Web trace persistence, and hash-chained TaskState revision events
+- [ ] Trusted host/user-approved oracle for high-risk goal completion; planner
+  still proposes the mandatory goal checks
+- [ ] Explicit inspect / continue / cancel / abandon / archive host APIs with
+  authorization and revision CAS; `needs_input` continuation is not yet a full
+  lifecycle surface
+- [ ] Dedicated authorized `VerificationPort` plus implemented diff / JSON path /
+  HTTP / user-confirm checks
+- [ ] Provider tokenizer/model-window accounting (the current gate is complete
+  serialized character accounting, not exact provider tokens)
+- [ ] Retention/query/export policy and fault-injection/crash-recovery CI gates;
+  shared multi-tenant IAM/isolation remains a product non-goal
 
 ---
 
