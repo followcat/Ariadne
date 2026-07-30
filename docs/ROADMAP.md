@@ -169,27 +169,23 @@ hosts and kernel code.
 Design: [design/memory-scopes.md](design/memory-scopes.md),
 [design/memory-search.md](design/memory-search.md) (linked from [MEMORY.md](MEMORY.md)).
 
-**Status: S0–S4 core shipped** (personal scale; no multi-device sync).
+**Status: S0–S2 complete; S3/S4 partial** (personal scale).
 
-- [x] **user / workspace / session** curated partition + stable UUID ids +
-  `source_turn_id` / `source_session_id` (no renumber on delete)
-- [x] CLI user root `~/.ariadne/memory`; workspace/session under data_dir
-- [x] Web per-account bind: `user_id=username` + `user_memory_dir={account}/memory`
-- [x] `user_id` mismatch fastfail (provided id must match facade bind)
-- [x] `memory_search` tool: `scope` + `mode`; grounded hits with `turn_id` +
-  `session_id`
-- [x] `limit` over hard max → validation error
-- [x] Honest L2: projection **off by default**; layer status `disabled` when unset
-- [x] Turn summary input: user + assistant + truncated tool outcomes
-- [x] Skill digest pins (`TurnResult.skill_pins` / `SkillEvent.content_digest`)
-- [x] **User-wide episodic index** (`user_memory_dir/episodic/`); dual-write on
-  turn; `scope=user` hybrid search (curated only with real turn provenance)
-- [x] **Chunk clocks** (`ts`/`seq`); `before_turn_id` → `before_ts` across stores
-- [x] **Embedding default `auto`**: OpenAI-compatible when credentials exist,
-  else hash (tests stay hash)
-- [x] **Deep planner port**: `LocalSplitPlanner` default; `ARIADNE_MEMORY_DEEP_PLANNER=llm`
-  wires small-model decomp/rerank (candidates only); failure → fast + notes
-- [x] Tests: `test_memory_scopes_search` + `test_memory_2c_design_gaps`
+- [x] **user / workspace / session** curated + stable ids + `source_turn_id` /
+  `source_session_id` migration
+- [x] CLI / Web user roots; `user_id` mismatch fastfail
+- [x] `memory_search` tool + validation + grounded turn ids
+- [x] Honest L2 default; summary widen; skill pins
+- [x] Chunk clocks (`ts`/`seq`); as-of via `before_ts` (episodic + curated)
+- [x] User episodic dual-write path; fcntl-locked semantic JSON RMW
+- [x] Embedding default **hash** (offline); `openai` / `auto` opt-in; empty
+  corpus skips query embed; OpenAI embed via `asyncio.to_thread`
+- [x] Deep: local split; LLM adapter reads `ModelExchange.message.content`;
+  **two-phase** decomp → subquery merge → rerank final candidates
+- [~] S3: LLM deep depends on host model quality; not a full multi-hop product
+- [~] S4: no historical backfill of pre-feature turns; no branch lifecycle
+  purge; multi-device sync out of scope
+- [x] Tests: scopes_search + design_gaps (+ contract regressions)
 
 ### Phase 12 — Docker-first hardened sandbox (Codex-aligned)
 - [x] Default `sandbox=docker`; `local`/`null` explicit escape; doctor checks

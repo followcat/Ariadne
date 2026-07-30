@@ -228,7 +228,7 @@ def test_memory_search_never_returns_hits_without_turn_provenance(tmp_path: Path
         assert hit["turn_id"]
         assert not hit["turn_id"].startswith("curated:")
         assert hit["session_id"]
-        assert hit["evidence"]["source"] in {"raw", "summary", "chunk"}
+        assert hit["evidence"]["source"] in {"raw", "summary", "chunk", "curated"}
 
 
 def test_memory_search_limit_over_hard_cap_fastfails(tmp_path: Path) -> None:

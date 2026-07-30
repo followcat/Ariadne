@@ -170,7 +170,12 @@ def test_memory_search_user_scope_curated(tmp_path: Path) -> None:
     assert "Asia/Shanghai" in result["hits"][0]["snippet"]
     assert result["hits"][0]["turn_id"] == "t-pref"
     assert result["hits"][0]["session_id"]
-    assert result["hits"][0]["evidence"]["source"] in {"raw", "summary", "chunk"}
+    assert result["hits"][0]["evidence"]["source"] in {
+        "raw",
+        "summary",
+        "chunk",
+        "curated",
+    }
 
 
 def test_user_scope_hit_without_source_turn_is_dropped(tmp_path: Path) -> None:
