@@ -228,7 +228,11 @@ requires closed Task-verifier checks. A future user-confirmation path must bind
 an exact action and current-turn token. Failed attempts and unverified outcomes
 remain nonterminal. The model-facing `conversation_state` tool accepts neither
 authority nor caller-supplied evidence text; the Host derives authority only
-from current user and tool-observed evidence and denies terminal status writes.
+from current user and tool-observed evidence. It denies every status transition
+for `session:current_goal` and all terminal writes. StateStore independently
+enforces monotonic status authority, and a terminal entity cannot transition
+back to `active` in place; a later objective needs a new Goal identity or a
+future exact confirmation contract.
 
 ### 5.4 Read semantics (choose one mode; document it)
 

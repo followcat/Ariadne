@@ -945,16 +945,26 @@ def build_default_registry(
                 authority = (
                     "user_explicit" if quote in user_evidence else "tool_observed"
                 )
-                if str(op.get("op") or "") == "set_status" and str(
-                    op.get("status") or ""
-                ) in {"done", "cancelled", "archived"}:
-                    raise AriadneError(
-                        app_error(
-                            "ARIADNE_TOOL_DENIED",
-                            "model-facing conversation_state cannot write terminal status",
-                            status=str(op.get("status") or ""),
+                if str(op.get("op") or "") == "set_status":
+                    status = str(op.get("status") or "")
+                    entity_id = str(op.get("entity_id") or "")
+                    if entity_id == "session:current_goal":
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TOOL_DENIED",
+                                "model-facing conversation_state cannot transition current goal status",
+                                entity_id=entity_id,
+                                status=status,
+                            )
                         )
-                    )
+                    if status in {"done", "cancelled", "archived"}:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TOOL_DENIED",
+                                "model-facing conversation_state cannot write terminal status",
+                                status=status,
+                            )
+                        )
                 if str(op.get("op") or "") in {
                     "set_attribute",
                     "expire_attribute",
@@ -986,8 +996,9 @@ def build_default_registry(
                 "set_alias {entity_id, alias}; "
                 "set_attribute {entity_id, key, value, memory_type?}; "
                 "expire_attribute {entity_id, key}; "
-                "set_status {entity_id, status: active}; terminal statuses require "
-                "a host verifier or exact user-confirmation path; "
+                "set_status {entity_id, status: active} for non-goal entities; "
+                "session:current_goal status is Host-owned, and terminal statuses "
+                "require a verifier or exact user-confirmation path; "
                 "set_relation {relation, from, to}; "
                 "remove_relation {relation, from, to}; "
                 "ensure_collection {name}; "

@@ -34,6 +34,8 @@ STATUS_AUTHORITIES = {
 }
 ATTRIBUTE_MEMORY_TYPES = {"fact", "preference", "goal", "hypothesis"}
 ATTRIBUTE_STATUSES = {"active", "superseded", "expired"}
+ENTITY_STATUSES = {"active", "done", "cancelled", "archived"}
+TERMINAL_ENTITY_STATUSES = {"done", "cancelled", "archived"}
 
 MAX_ENTITIES = 256
 MAX_RELATIONS_PER_TYPE = 64
@@ -278,6 +280,15 @@ class ConversationStateStore:
                         app_error(
                             "ARIADNE_INVALID_TOOL_ARGS",
                             f"unknown status authority: {authority}",
+                            op=name,
+                        )
+                    )
+                status = str(op.get("status") or "")
+                if status not in ENTITY_STATUSES:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            f"unknown entity status: {status}",
                             op=name,
                         )
                     )
@@ -545,10 +556,46 @@ class ConversationStateStore:
             ent = entities.setdefault(
                 eid, {"type": "generic", "aliases": [], "attributes": {}, "status": "active"}
             )
-            ent["status"] = str(op.get("status") or "active")
-            ent["status_authority"] = str(
-                op.get("authority") or "model_inferred"
+            proposed_status = str(op.get("status") or "active")
+            proposed_authority = str(op.get("authority") or "model_inferred")
+            current_status = str(ent.get("status") or "active")
+            current_authority = str(
+                ent.get("status_authority") or "model_inferred"
             )
+            if proposed_status == current_status and STATUS_AUTHORITIES[
+                proposed_authority
+            ] <= STATUS_AUTHORITIES.get(current_authority, 0):
+                return
+            if (
+                current_status in TERMINAL_ENTITY_STATUSES
+                and proposed_status == "active"
+            ):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CONFLICT",
+                        "a terminal entity cannot be reactivated in place",
+                        entity_id=eid,
+                        current_status=current_status,
+                        current_authority=current_authority,
+                        proposed_authority=proposed_authority,
+                    )
+                )
+            if STATUS_AUTHORITIES[proposed_authority] < STATUS_AUTHORITIES.get(
+                current_authority, 0
+            ):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CONFLICT",
+                        "lower-authority evidence cannot overwrite entity status",
+                        entity_id=eid,
+                        current_status=current_status,
+                        proposed_status=proposed_status,
+                        current_authority=current_authority,
+                        proposed_authority=proposed_authority,
+                    )
+                )
+            ent["status"] = proposed_status
+            ent["status_authority"] = proposed_authority
             ent["status_source_turn_id"] = source_turn_id
         elif name == "ensure_collection":
             cname = str(op["name"])
