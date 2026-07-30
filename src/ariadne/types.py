@@ -75,6 +75,9 @@ class SkillEvent:
     detail: str = ""
     # sha256 hex prefix of skill body when load happened (audit / replay pins)
     content_digest: str = ""
+    task_id: str = ""
+    step_id: str = ""
+    attempt_id: str = ""
 
 
 @dataclass(slots=True)

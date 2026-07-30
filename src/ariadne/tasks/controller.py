@@ -302,12 +302,15 @@ class TaskController:
                 resume=True,
             )
             step.check_results = results
-            required = {
-                result.check_id: result
-                for result in results
-                if next(c for c in step.done_when if c.check_id == result.check_id).required
+            required_ids = {
+                check.check_id for check in step.done_when if check.required
             }
-            if required and all(result.status == "pass" for result in required.values()):
+            result_by_id = {result.check_id: result for result in results}
+            if (
+                bool(required_ids)
+                and required_ids <= result_by_id.keys()
+                and all(result_by_id[check_id].status == "pass" for check_id in required_ids)
+            ):
                 step.status = "verified"
                 has_more_steps = self._advance(state)
                 if not has_more_steps and not state.goal_checks:
@@ -320,15 +323,19 @@ class TaskController:
                 attempt_id=f"{state.task_id}:goal:resume",
                 resume=True,
             )
-            required_goal_results = [
-                result
-                for result in state.goal_check_results
-                if next(
-                    check for check in state.goal_checks if check.check_id == result.check_id
-                ).required
-            ]
-            if not required_goal_results or all(
-                result.status == "pass" for result in required_goal_results
+            required_goal_ids = {
+                check.check_id for check in state.goal_checks if check.required
+            }
+            goal_result_by_id = {
+                result.check_id: result for result in state.goal_check_results
+            }
+            if (
+                bool(required_goal_ids)
+                and required_goal_ids <= goal_result_by_id.keys()
+                and all(
+                    goal_result_by_id[check_id].status == "pass"
+                    for check_id in required_goal_ids
+                )
             ):
                 state.status = "completed"
             else:
@@ -427,8 +434,19 @@ class TaskController:
         for index, step in enumerate(arguments.get("steps") or []):
             groups.append((f"steps[{index}].preconditions", list(step.get("preconditions") or [])))
             groups.append((f"steps[{index}].done_when", list(step.get("done_when") or [])))
-        groups.append(("goal_checks", list(arguments.get("goal_checks") or [])))
+        if "goal_checks" in arguments:
+            groups.append(("goal_checks", list(arguments.get("goal_checks") or [])))
         for label, checks in groups:
+            if (
+                label == "goal_checks" or label.endswith(".done_when")
+            ) and not any(bool(check.get("required", True)) for check in checks):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TASK_INVALID",
+                        f"{label} needs at least one required check",
+                        field=label,
+                    )
+                )
             semantic = [check for check in checks if check.get("kind") == "llm_semantic"]
             if not semantic:
                 for check in checks:
@@ -602,8 +620,15 @@ class TaskController:
             for result in step.check_results
             if next(check for check in step.done_when if check.check_id == result.check_id).required
         ]
-        all_required = bool(required_results) and all(
-            result.status == "pass" for result in required_results
+        required_step_ids = {check.check_id for check in step.done_when if check.required}
+        step_result_by_id = {result.check_id: result for result in step.check_results}
+        all_required = (
+            bool(required_step_ids)
+            and required_step_ids <= step_result_by_id.keys()
+            and all(
+                step_result_by_id[check_id].status == "pass"
+                for check_id in required_step_ids
+            )
         )
         summary = ", ".join(
             f"{result.check_id}={result.status}" for result in step.check_results
@@ -628,15 +653,19 @@ class TaskController:
                 state.goal_check_results = goal_check_results or self.verifier.run_many(
                     state.goal_checks, traces=trace_list, attempt_id=f"{attempt_id}:goal"
                 )
-                required_goal_results = [
-                    result
-                    for result in state.goal_check_results
-                    if next(
-                        check for check in state.goal_checks if check.check_id == result.check_id
-                    ).required
-                ]
-                goal_verified = not required_goal_results or all(
-                    result.status == "pass" for result in required_goal_results
+                required_goal_ids = {
+                    check.check_id for check in state.goal_checks if check.required
+                }
+                goal_result_by_id = {
+                    result.check_id: result for result in state.goal_check_results
+                }
+                goal_verified = (
+                    bool(required_goal_ids)
+                    and required_goal_ids <= goal_result_by_id.keys()
+                    and all(
+                        goal_result_by_id[check_id].status == "pass"
+                        for check_id in required_goal_ids
+                    )
                 )
                 if goal_verified:
                     state.status = "completed"

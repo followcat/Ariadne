@@ -66,6 +66,144 @@ class SQLiteTaskStore:
             )
             con.execute("PRAGMA user_version = 1")
 
+    @staticmethod
+    def _audit_error(task_id: str, reason: str, **details: object) -> AriadneError:
+        return AriadneError(
+            app_error(
+                "ARIADNE_TASK_AUDIT_MISMATCH",
+                "task snapshot does not match its revision event chain",
+                task_id=task_id,
+                reason=reason,
+                **details,
+            )
+        )
+
+    def _assert_event_history(
+        self,
+        con: sqlite3.Connection,
+        *,
+        task_id: str,
+        current_row: sqlite3.Row,
+    ) -> str:
+        rows = con.execute(
+            """
+            SELECT revision,payload,payload_digest,previous_digest,event_digest
+            FROM task_events WHERE task_id=? ORDER BY revision
+            """,
+            (task_id,),
+        ).fetchall()
+        if not rows:
+            try:
+                snapshot = json.loads(str(current_row["payload"]))
+            except json.JSONDecodeError:
+                snapshot = None
+            if isinstance(snapshot, dict):
+                try:
+                    schema_version = int(snapshot.get("schema_version") or 0)
+                except (TypeError, ValueError):
+                    schema_version = 0
+                if schema_version == 1:
+                    TaskState.from_dict(snapshot)
+            raise self._audit_error(task_id, "event_history_missing")
+
+        previous_digest = ""
+        tail_payload = ""
+        for expected_revision, row in enumerate(rows, start=1):
+            revision = int(row["revision"])
+            if revision != expected_revision:
+                raise self._audit_error(
+                    task_id,
+                    "event_revision_gap",
+                    expected_revision=expected_revision,
+                    actual_revision=revision,
+                )
+            payload = str(row["payload"])
+            payload_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            if payload_digest != str(row["payload_digest"]):
+                raise self._audit_error(
+                    task_id,
+                    "event_payload_digest_mismatch",
+                    revision=revision,
+                )
+            if str(row["previous_digest"]) != previous_digest:
+                raise self._audit_error(
+                    task_id,
+                    "event_previous_digest_mismatch",
+                    revision=revision,
+                )
+            expected_event_digest = hashlib.sha256(
+                (
+                    f"{task_id}\0{revision}\0{previous_digest}\0"
+                    f"{payload_digest}"
+                ).encode("utf-8")
+            ).hexdigest()
+            if expected_event_digest != str(row["event_digest"]):
+                raise self._audit_error(
+                    task_id,
+                    "event_digest_mismatch",
+                    revision=revision,
+                )
+            try:
+                event_payload = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise self._audit_error(
+                    task_id,
+                    "event_payload_invalid_json",
+                    revision=revision,
+                ) from exc
+            if not isinstance(event_payload, dict):
+                raise self._audit_error(
+                    task_id,
+                    "event_payload_not_object",
+                    revision=revision,
+                )
+            if str(event_payload.get("task_id") or "") != task_id:
+                raise self._audit_error(
+                    task_id,
+                    "event_task_id_mismatch",
+                    revision=revision,
+                )
+            try:
+                payload_revision = int(event_payload.get("revision") or 0)
+            except (TypeError, ValueError) as exc:
+                raise self._audit_error(
+                    task_id,
+                    "event_payload_revision_invalid",
+                    revision=revision,
+                ) from exc
+            if payload_revision != revision:
+                raise self._audit_error(
+                    task_id,
+                    "event_payload_revision_mismatch",
+                    revision=revision,
+                )
+            previous_digest = expected_event_digest
+            tail_payload = payload
+
+        current_revision = int(current_row["revision"])
+        tail_revision = int(rows[-1]["revision"])
+        if current_revision != tail_revision:
+            raise self._audit_error(
+                task_id,
+                "snapshot_revision_mismatch",
+                expected_revision=tail_revision,
+                actual_revision=current_revision,
+            )
+        current_payload = str(current_row["payload"])
+        if current_payload != tail_payload:
+            raise self._audit_error(task_id, "snapshot_payload_mismatch")
+        if hashlib.sha256(current_payload.encode("utf-8")).hexdigest() != str(
+            rows[-1]["payload_digest"]
+        ):
+            raise self._audit_error(task_id, "snapshot_payload_digest_mismatch")
+
+        snapshot = json.loads(current_payload)
+        if str(snapshot.get("session_id") or "") != str(current_row["session_id"]):
+            raise self._audit_error(task_id, "snapshot_session_id_mismatch")
+        if str(snapshot.get("status") or "") != str(current_row["status"]):
+            raise self._audit_error(task_id, "snapshot_status_mismatch")
+        return previous_digest
+
     def save(self, state: TaskState, *, expected_revision: int | None = None) -> TaskState:
         if state.goal != state.original_user_goal:
             raise AriadneError(
@@ -79,8 +217,26 @@ class SQLiteTaskStore:
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
-                "SELECT revision,payload FROM tasks WHERE task_id = ?", (state.task_id,)
+                """
+                SELECT task_id,session_id,status,revision,payload
+                FROM tasks WHERE task_id = ?
+                """,
+                (state.task_id,),
             ).fetchone()
+            if row is not None:
+                previous_digest = self._assert_event_history(
+                    con,
+                    task_id=state.task_id,
+                    current_row=row,
+                )
+            else:
+                orphan_event = con.execute(
+                    "SELECT 1 FROM task_events WHERE task_id=? LIMIT 1",
+                    (state.task_id,),
+                ).fetchone()
+                if orphan_event is not None:
+                    raise self._audit_error(state.task_id, "snapshot_missing")
+                previous_digest = ""
             current = int(row["revision"]) if row is not None else 0
             if current != expected:
                 raise AriadneError(
@@ -108,16 +264,6 @@ class SQLiteTaskStore:
             state.updated_at = now
             payload = json.dumps(state.to_dict(), ensure_ascii=False, separators=(",", ":"))
             payload_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            previous_event = con.execute(
-                """
-                SELECT event_digest FROM task_events
-                WHERE task_id=? ORDER BY revision DESC LIMIT 1
-                """,
-                (state.task_id,),
-            ).fetchone()
-            previous_digest = (
-                str(previous_event["event_digest"]) if previous_event is not None else ""
-            )
             event_digest = hashlib.sha256(
                 (
                     f"{state.task_id}\0{state.revision}\0{previous_digest}\0"
@@ -209,42 +355,86 @@ class SQLiteTaskStore:
 
     def load(self, task_id: str) -> TaskState | None:
         with self._connect() as con:
-            row = con.execute("SELECT payload FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-        if row is None:
-            return None
-        return self._decode_payload(str(row["payload"]))
+            con.execute("BEGIN")
+            row = con.execute(
+                """
+                SELECT task_id,session_id,status,revision,payload
+                FROM tasks WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._assert_event_history(con, task_id=task_id, current_row=row)
+            payload = str(row["payload"])
+        return self._decode_payload(payload)
 
     def load_active(self, session_id: str) -> TaskState | None:
         with self._connect() as con:
+            con.execute("BEGIN")
             row = con.execute(
                 """
-                SELECT t.payload FROM active_tasks a
+                SELECT t.task_id,t.session_id,t.status,t.revision,t.payload
+                FROM active_tasks a
                 JOIN tasks t ON t.task_id = a.task_id
                 WHERE a.session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
-        if row is None:
-            return None
-        return self._decode_payload(str(row["payload"]))
+            if row is None:
+                return None
+            task_id = str(row["task_id"])
+            self._assert_event_history(con, task_id=task_id, current_row=row)
+            payload = str(row["payload"])
+        return self._decode_payload(payload)
 
     def list_for_session(self, session_id: str) -> list[TaskState]:
         with self._connect() as con:
+            con.execute("BEGIN")
             rows = con.execute(
-                "SELECT payload FROM tasks WHERE session_id = ? ORDER BY created_at",
+                """
+                SELECT task_id,session_id,status,revision,payload
+                FROM tasks WHERE session_id = ? ORDER BY created_at
+                """,
                 (session_id,),
             ).fetchall()
-        return [self._decode_payload(str(row["payload"])) for row in rows]
+            payloads = []
+            for row in rows:
+                self._assert_event_history(
+                    con,
+                    task_id=str(row["task_id"]),
+                    current_row=row,
+                )
+                payloads.append(str(row["payload"]))
+        return [self._decode_payload(payload) for payload in payloads]
 
     def load_revision(self, task_id: str, revision: int) -> TaskState | None:
         with self._connect() as con:
+            con.execute("BEGIN")
+            current = con.execute(
+                """
+                SELECT task_id,session_id,status,revision,payload
+                FROM tasks WHERE task_id=?
+                """,
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                orphan_event = con.execute(
+                    "SELECT 1 FROM task_events WHERE task_id=? LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if orphan_event is not None:
+                    raise self._audit_error(task_id, "snapshot_missing")
+                return None
+            self._assert_event_history(con, task_id=task_id, current_row=current)
             row = con.execute(
                 "SELECT payload FROM task_events WHERE task_id=? AND revision=?",
                 (task_id, int(revision)),
             ).fetchone()
-        if row is None:
-            return None
-        return self._decode_payload(str(row["payload"]))
+            if row is None:
+                return None
+            payload = str(row["payload"])
+        return self._decode_payload(payload)
 
     def event_history(self, task_id: str) -> list[dict[str, str | int | float]]:
         with self._connect() as con:
@@ -268,28 +458,18 @@ class SQLiteTaskStore:
 
     def verify_event_history(self, task_id: str) -> bool:
         with self._connect() as con:
-            rows = con.execute(
+            con.execute("BEGIN")
+            current = con.execute(
                 """
-                SELECT revision,payload,payload_digest,previous_digest,event_digest
-                FROM task_events WHERE task_id=? ORDER BY revision
+                SELECT task_id,session_id,status,revision,payload
+                FROM tasks WHERE task_id=?
                 """,
                 (task_id,),
-            ).fetchall()
-        previous_digest = ""
-        for row in rows:
-            payload = str(row["payload"])
-            payload_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            if payload_digest != str(row["payload_digest"]):
+            ).fetchone()
+            if current is None:
                 return False
-            if str(row["previous_digest"]) != previous_digest:
+            try:
+                self._assert_event_history(con, task_id=task_id, current_row=current)
+            except AriadneError:
                 return False
-            expected_event_digest = hashlib.sha256(
-                (
-                    f"{task_id}\0{int(row['revision'])}\0{previous_digest}\0"
-                    f"{payload_digest}"
-                ).encode("utf-8")
-            ).hexdigest()
-            if expected_event_digest != str(row["event_digest"]):
-                return False
-            previous_digest = expected_event_digest
-        return bool(rows)
+        return True

@@ -71,6 +71,8 @@ Implemented as an opt-in advanced layer:
 - Strict structured projector decisions: `apply` or `confirmed_no_change`
 - Evidence quotes checked against completed-turn input/output/tool evidence
 - Append-only document versions, CAS parent fencing, and per-field history
+- Coordinator-locked lease validation + state apply + job completion, so a
+  stale local worker cannot commit a projection after a newer claim
 - Authority-aware conflict errors plus `active|superseded|expired` semantics
 - Last-good-plus-raw-delta by default; strict readiness is configurable
 - Disabled, pending, confirmed-no-change, failed, and succeeded remain distinct

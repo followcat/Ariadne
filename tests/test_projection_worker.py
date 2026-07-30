@@ -85,6 +85,86 @@ def test_projection_rejects_stale_lease_completion(tmp_path: Path) -> None:
     assert worker.list_jobs()[0]["status"] == "succeeded"
 
 
+def test_projection_stale_worker_cannot_apply_before_completion_fence(
+    tmp_path: Path,
+) -> None:
+    state = ConversationStateStore(path=tmp_path / "state.json")
+    worker = ProjectionWorker(
+        path=tmp_path / "jobs.json",
+        state_store=state,
+        lease_seconds=10,
+    )
+    worker.enqueue(session_id="s1", turn_id="t1", evidence_text="old new")
+
+    async def run_workers() -> tuple[dict, dict]:
+        old_started = asyncio.Event()
+        new_started = asyncio.Event()
+        release_old = asyncio.Event()
+        release_new = asyncio.Event()
+
+        async def old_projector(evidence: str, turn_id: str) -> ProjectionDecision:
+            old_started.set()
+            await release_old.wait()
+            return ProjectionDecision(
+                decision="apply",
+                reason="stale decision",
+                operations=[
+                    {
+                        "op": "ensure_entity",
+                        "entity_id": "old",
+                        "type": "worker",
+                        "evidence_quote": "old",
+                    }
+                ],
+            )
+
+        async def new_projector(evidence: str, turn_id: str) -> ProjectionDecision:
+            new_started.set()
+            await release_new.wait()
+            return ProjectionDecision(
+                decision="apply",
+                reason="current decision",
+                operations=[
+                    {
+                        "op": "ensure_entity",
+                        "entity_id": "new",
+                        "type": "worker",
+                        "evidence_quote": "new",
+                    }
+                ],
+            )
+
+        old_task = asyncio.create_task(
+            worker.process_one(old_projector, worker_id="worker-old")
+        )
+        await old_started.wait()
+
+        jobs = worker._read()
+        jobs["jobs"][0]["lease_until"] = time.time() - 1
+        worker._write(jobs)
+
+        new_task = asyncio.create_task(
+            worker.process_one(new_projector, worker_id="worker-new")
+        )
+        await new_started.wait()
+
+        release_old.set()
+        old_result = await old_task
+        assert old_result is not None
+        assert old_result["status"] == "lease_lost"
+        assert state.version("s1") == 0
+
+        release_new.set()
+        new_result = await new_task
+        assert new_result is not None
+        return old_result, new_result
+
+    old_result, new_result = asyncio.run(run_workers())
+    assert old_result["status"] == "lease_lost"
+    assert new_result["status"] == "succeeded"
+    assert set(state.get("s1")["entities"]) == {"new"}
+
+
 def test_projection_state_apply_is_idempotent_by_job_key(tmp_path: Path) -> None:
     state = ConversationStateStore(path=tmp_path / "state.json")
     kwargs = {

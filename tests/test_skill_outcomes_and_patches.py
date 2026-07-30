@@ -56,6 +56,36 @@ def test_explicit_adoption_outcomes_adjust_ranking_and_can_be_disabled(tmp_path:
     assert disabled.enabled is False
 
 
+def test_scoped_skill_outcome_does_not_credit_an_unbound_adoption(
+    tmp_path: Path,
+) -> None:
+    ledger = SkillOutcomeLedger(tmp_path / "outcomes.json", min_samples=1)
+    ledger.record_turn(
+        turn_id="t1",
+        session_id="s1",
+        candidates=[("planner", 0.8)],
+        loaded={"planner"},
+        adopted={"planner"},
+        tool_names=["sandbox_write_file"],
+        turn_outcome="completed",
+        step_outcome="verified",
+        task_outcome="completed",
+        task_id="task-global",
+        step_id="step-global",
+        attempt_id="attempt-global",
+        skill_attributions={},
+        at=1_000_000,
+    )
+
+    event = ledger.list_events(skill_name="planner")[0]
+    assert event["attempt_attributed"] is False
+    assert event["tool_names_used"] == []
+    assert event["step_outcome"] == ""
+    assert event["task_outcome"] == ""
+    assert event["task_id"] == ""
+    assert ledger.adjustment("planner", now=1_000_001).negative == 1
+
+
 def test_skill_patch_requires_evidence_and_host_confirmation(tmp_path: Path) -> None:
     user_root = tmp_path / "user"
     user_root.mkdir()

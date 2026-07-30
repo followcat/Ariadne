@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,143 @@ def test_task_state_sqlite_revision_conflict(tmp_path: Path) -> None:
     with pytest.raises(AriadneError) as immutable:
         store.save(current)
     assert immutable.value.error.code == "ARIADNE_TASK_GOAL_IMMUTABLE"
+
+
+@pytest.mark.parametrize("tamper", ["payload", "revision"])
+def test_task_store_rejects_snapshot_that_diverges_from_event_tail(
+    tmp_path: Path, tamper: str
+) -> None:
+    store = SQLiteTaskStore(tmp_path / "tasks.sqlite3")
+    state = TaskState.from_plan(
+        session_id=f"audit-{tamper}",
+        user_id=None,
+        original_user_goal="write a marker",
+        goal="write a marker",
+        steps=[
+            {
+                "intent": "write marker",
+                "done_when": [{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
+            }
+        ],
+        goal_checks=[{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
+        workspace_fingerprint="before",
+    )
+    store.save(state, expected_revision=0)
+
+    with sqlite3.connect(store.path) as con:
+        if tamper == "payload":
+            raw = con.execute(
+                "SELECT payload FROM tasks WHERE task_id=?", (state.task_id,)
+            ).fetchone()[0]
+            payload = json.loads(raw)
+            payload["workspace_fingerprint"] = "tampered"
+            con.execute(
+                "UPDATE tasks SET payload=? WHERE task_id=?",
+                (json.dumps(payload, separators=(",", ":")), state.task_id),
+            )
+        else:
+            con.execute(
+                "UPDATE tasks SET revision=revision+1 WHERE task_id=?",
+                (state.task_id,),
+            )
+
+    assert store.verify_event_history(state.task_id) is False
+    load_calls = [
+        lambda: store.load(state.task_id),
+        lambda: store.load_active(state.session_id),
+        lambda: store.list_for_session(state.session_id),
+        lambda: store.load_revision(state.task_id, 1),
+        lambda: store.save(state),
+    ]
+    for load_call in load_calls:
+        with pytest.raises(AriadneError) as caught:
+            load_call()
+        assert caught.value.error.code == "ARIADNE_TASK_AUDIT_MISMATCH"
+
+
+def test_task_store_rejects_event_revision_gap(tmp_path: Path) -> None:
+    store = SQLiteTaskStore(tmp_path / "tasks.sqlite3")
+    state = TaskState.from_plan(
+        session_id="audit-gap",
+        user_id=None,
+        original_user_goal="write a marker",
+        goal="write a marker",
+        steps=[
+            {
+                "intent": "write marker",
+                "done_when": [{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
+            }
+        ],
+        goal_checks=[{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
+        workspace_fingerprint="before",
+    )
+    store.save(state, expected_revision=0)
+    state.workspace_fingerprint = "after"
+    store.save(state)
+    with sqlite3.connect(store.path) as con:
+        con.execute(
+            "DELETE FROM task_events WHERE task_id=? AND revision=1",
+            (state.task_id,),
+        )
+
+    assert store.verify_event_history(state.task_id) is False
+    with pytest.raises(AriadneError) as caught:
+        store.load(state.task_id)
+    assert caught.value.error.code == "ARIADNE_TASK_AUDIT_MISMATCH"
+
+
+def test_task_state_v1_requires_explicit_incompatible_upgrade_handling(
+    tmp_path: Path,
+) -> None:
+    state = TaskState.from_plan(
+        session_id="legacy-task",
+        user_id=None,
+        original_user_goal="write a marker",
+        goal="write a marker",
+        steps=[
+            {
+                "intent": "write marker",
+                "done_when": [{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
+            }
+        ],
+        goal_checks=[{"kind": "path_exists", "spec": {"path": "marker.txt"}}],
+        workspace_fingerprint="before",
+    )
+    payload = state.to_dict()
+    payload["schema_version"] = 1
+    payload["revision"] = 1
+    payload.pop("original_user_goal")
+
+    with pytest.raises(AriadneError) as caught:
+        TaskState.from_dict(payload)
+    assert caught.value.error.code == "ARIADNE_TASK_SCHEMA_MIGRATION_REQUIRED"
+
+    store = SQLiteTaskStore(tmp_path / "legacy-tasks.sqlite3")
+    with sqlite3.connect(store.path) as con:
+        con.execute(
+            """
+            INSERT INTO tasks(
+                task_id,session_id,status,revision,payload,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                state.task_id,
+                state.session_id,
+                state.status,
+                1,
+                json.dumps(payload, separators=(",", ":")),
+                state.created_at,
+                state.updated_at,
+            ),
+        )
+    with pytest.raises(AriadneError) as stored:
+        store.load(state.task_id)
+    assert stored.value.error.code == "ARIADNE_TASK_SCHEMA_MIGRATION_REQUIRED"
+
+    payload["schema_version"] = 99
+    with pytest.raises(AriadneError) as unknown:
+        TaskState.from_dict(payload)
+    assert unknown.value.error.code == "ARIADNE_TASK_SCHEMA_UNSUPPORTED"
 
 
 def test_deterministic_verifier_never_executes_command(tmp_path: Path) -> None:
@@ -436,8 +574,51 @@ def test_task_plan_binds_original_goal_and_requires_goal_oracle(tmp_path: Path) 
         )
     assert missing_oracle.value.error.code == "ARIADNE_TASK_INVALID"
 
+    with pytest.raises(AriadneError) as optional_oracle:
+        controller.create_from_plan(
+            session_id="goal-check-optional",
+            user_id=None,
+            original_user_goal="inspect result",
+            arguments={
+                "goal": "inspect result",
+                "steps": base["steps"],
+                "goal_checks": [
+                    {
+                        "kind": "path_absent",
+                        "spec": {"path": "result.txt"},
+                        "required": False,
+                    }
+                ],
+            },
+        )
+    assert optional_oracle.value.error.code == "ARIADNE_TASK_INVALID"
 
-def test_skill_outcome_uses_latest_turn_attempt_not_task_history(tmp_path: Path) -> None:
+    with pytest.raises(AriadneError) as optional_step_check:
+        controller.create_from_plan(
+            session_id="step-check-optional",
+            user_id=None,
+            original_user_goal="inspect result",
+            arguments={
+                "goal": "inspect result",
+                "steps": [
+                    {
+                        "intent": "inspect result",
+                        "done_when": [
+                            {
+                                "kind": "path_exists",
+                                "spec": {"path": "result.txt"},
+                                "required": False,
+                            }
+                        ],
+                    }
+                ],
+                "goal_checks": base["goal_checks"],
+            },
+        )
+    assert optional_step_check.value.error.code == "ARIADNE_TASK_INVALID"
+
+
+def test_skill_outcome_is_attributed_to_each_adopted_attempt(tmp_path: Path) -> None:
     step = {"n": 0}
 
     def script(messages, model_tools):
@@ -493,7 +674,7 @@ def test_skill_outcome_uses_latest_turn_attempt_not_task_history(tmp_path: Path)
             return {
                 "content": "",
                 "tool_calls": [
-                    _tc("load_skill", {"name": "planner"}, "load-planner")
+                    _tc("load_skill", {"name": "first-step-guide"}, "load-first-guide")
                 ],
             }
         if n == 2:
@@ -502,8 +683,11 @@ def test_skill_outcome_uses_latest_turn_attempt_not_task_history(tmp_path: Path)
                 "tool_calls": [
                     _tc(
                         "adopt_skill",
-                        {"name": "planner", "reason": "follow its checklist"},
-                        "adopt-planner",
+                        {
+                            "name": "first-step-guide",
+                            "reason": "follow its first-step checklist",
+                        },
+                        "adopt-first-guide",
                     )
                 ],
             }
@@ -522,6 +706,27 @@ def test_skill_outcome_uses_latest_turn_attempt_not_task_history(tmp_path: Path)
             return {
                 "content": "",
                 "tool_calls": [
+                    _tc("load_skill", {"name": "second-step-guide"}, "load-second-guide")
+                ],
+            }
+        if n == 5:
+            return {
+                "content": "",
+                "tool_calls": [
+                    _tc(
+                        "adopt_skill",
+                        {
+                            "name": "second-step-guide",
+                            "reason": "follow its second-step checklist",
+                        },
+                        "adopt-second-guide",
+                    )
+                ],
+            }
+        if n == 6:
+            return {
+                "content": "",
+                "tool_calls": [
                     _tc(
                         "sandbox_write_file",
                         {"path": "/workspace/second.txt", "content": "wrong\n"},
@@ -537,10 +742,17 @@ def test_skill_outcome_uses_latest_turn_attempt_not_task_history(tmp_path: Path)
     app.skills.outcome_ledger = ledger
     app.skills.manage(
         action="create",
-        name="planner",
-        description="finish steps with verification",
-        body="Follow each step and verify its expected output.",
-        keywords=["planner", "steps"],
+        name="first-step-guide",
+        description="finish the first step with verification",
+        body="Create and verify the first-step marker.",
+        keywords=["first", "steps"],
+    )
+    app.skills.manage(
+        action="create",
+        name="second-step-guide",
+        description="finish the second step with verification",
+        body="Create and verify the expected second-step content.",
+        keywords=["second", "steps"],
     )
 
     result = asyncio.run(
@@ -553,11 +765,21 @@ def test_skill_outcome_uses_latest_turn_attempt_not_task_history(tmp_path: Path)
     assert result.status == "failed"
     state = store.list_for_session("skill-attribution")[0]
     assert [item.status for item in state.steps] == ["verified", "failed"]
-    event = ledger.list_events(skill_name="planner")[-1]
-    assert event["step_outcome"] == "failed"
-    assert event["step_id"] == state.steps[1].step_id
-    assert event["attempt_id"].startswith(f"{state.steps[1].step_id}:")
-    assert ledger.adjustment("planner").negative == 1
+    first_event = ledger.list_events(skill_name="first-step-guide")[-1]
+    assert first_event["step_outcome"] == "verified"
+    assert first_event["task_outcome"] == "active"
+    assert first_event["step_id"] == state.steps[0].step_id
+    assert first_event["attempt_id"].startswith(f"{state.steps[0].step_id}:")
+    assert first_event["tool_names_used"] == ["sandbox_write_file"]
+    assert ledger.adjustment("first-step-guide").positive == 1
+
+    second_event = ledger.list_events(skill_name="second-step-guide")[-1]
+    assert second_event["step_outcome"] == "failed"
+    assert second_event["task_outcome"] == "failed"
+    assert second_event["step_id"] == state.steps[1].step_id
+    assert second_event["attempt_id"].startswith(f"{state.steps[1].step_id}:")
+    assert second_event["tool_names_used"] == ["sandbox_write_file"]
+    assert ledger.adjustment("second-step-guide").negative == 1
 
 
 def test_failed_check_replans_from_cited_evidence(tmp_path: Path) -> None:

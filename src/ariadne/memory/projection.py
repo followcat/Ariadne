@@ -12,7 +12,12 @@ from jsonschema.exceptions import ValidationError
 
 from ..errors import AriadneError, app_error
 from ..model.base import ModelPort
-from .json_file import locked_read_json, locked_update_json, locked_write_json
+from .json_file import (
+    exclusive_file_lock,
+    locked_read_json,
+    locked_update_json,
+    locked_write_json,
+)
 from .state import ConversationStateStore
 
 
@@ -198,9 +203,13 @@ class ProjectionWorker:
         self.state_store = state_store
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
+        self.transaction_lock_path = self.path.with_name(
+            self.path.name + ".transaction.lock"
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._write({"jobs": []})
+        with exclusive_file_lock(self.transaction_lock_path):
+            if not self.path.exists():
+                self._write({"jobs": []})
 
     def _read(self) -> dict[str, Any]:
         data = locked_read_json(self.path, default={"jobs": []})
@@ -232,7 +241,8 @@ class ProjectionWorker:
             )
             return data
 
-        locked_update_json(self.path, mut, default={"jobs": []})
+        with exclusive_file_lock(self.transaction_lock_path):
+            locked_update_json(self.path, mut, default={"jobs": []})
         return job_id
 
     def claim(self, *, worker_id: str, session_id: str | None = None) -> dict[str, Any] | None:
@@ -283,7 +293,8 @@ class ProjectionWorker:
             data["jobs"] = jobs
             return data
 
-        locked_update_json(self.path, mut, default={"jobs": []})
+        with exclusive_file_lock(self.transaction_lock_path):
+            locked_update_json(self.path, mut, default={"jobs": []})
         return claimed
 
     def pending_lag(self, session_id: str) -> int:
@@ -298,7 +309,32 @@ class ProjectionWorker:
                 n += 1
         return n
 
-    def complete(
+    @staticmethod
+    def _assert_current_lease(
+        job: dict[str, Any],
+        *,
+        job_id: str,
+        worker_id: str,
+        lease_token: int,
+        clock: float,
+    ) -> None:
+        if (
+            job.get("status") != "leased"
+            or str(job.get("lease_owner") or "") != worker_id
+            or int(job.get("lease_token") or 0) != int(lease_token)
+            or float(job.get("lease_until") or 0) <= clock
+        ):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_PROJECTION_LEASE_LOST",
+                    "projection lease is no longer valid",
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    lease_token=lease_token,
+                )
+            )
+
+    def _complete_unlocked(
         self,
         job_id: str,
         *,
@@ -307,27 +343,20 @@ class ProjectionWorker:
         status: str,
         error: str = "",
         reason: str = "",
+        lease_clock: float | None = None,
     ) -> None:
-        clock = time.time()
+        clock = time.time() if lease_clock is None else lease_clock
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             for job in data.get("jobs") or []:
                 if job.get("job_id") == job_id:
-                    if (
-                        job.get("status") != "leased"
-                        or str(job.get("lease_owner") or "") != worker_id
-                        or int(job.get("lease_token") or 0) != int(lease_token)
-                        or float(job.get("lease_until") or 0) <= clock
-                    ):
-                        raise AriadneError(
-                            app_error(
-                                "ARIADNE_MEMORY_PROJECTION_LEASE_LOST",
-                                "projection lease is no longer valid",
-                                job_id=job_id,
-                                worker_id=worker_id,
-                                lease_token=lease_token,
-                            )
-                        )
+                    self._assert_current_lease(
+                        job,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        lease_token=lease_token,
+                        clock=clock,
+                    )
                     job["status"] = status
                     job["error"] = error
                     job["reason"] = reason
@@ -343,6 +372,80 @@ class ProjectionWorker:
             )
 
         locked_update_json(self.path, mut, default={"jobs": []})
+
+    def complete(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        lease_token: int,
+        status: str,
+        error: str = "",
+        reason: str = "",
+    ) -> None:
+        with exclusive_file_lock(self.transaction_lock_path):
+            self._complete_unlocked(
+                job_id,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                status=status,
+                error=error,
+                reason=reason,
+            )
+
+    def _apply_and_complete(
+        self,
+        job: dict[str, Any],
+        *,
+        worker_id: str,
+        lease_token: int,
+        decision: ProjectionDecision,
+    ) -> dict[str, Any]:
+        """Fence lease validation, state mutation, and completion as one unit."""
+
+        with exclusive_file_lock(self.transaction_lock_path):
+            current = next(
+                (
+                    candidate
+                    for candidate in self._read().get("jobs") or []
+                    if candidate.get("job_id") == job["job_id"]
+                ),
+                None,
+            )
+            if current is None:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_PROJECTION_JOB_NOT_FOUND",
+                        "projection job was not found",
+                        job_id=job["job_id"],
+                    )
+                )
+            lease_clock = time.time()
+            self._assert_current_lease(
+                current,
+                job_id=job["job_id"],
+                worker_id=worker_id,
+                lease_token=lease_token,
+                clock=lease_clock,
+            )
+            parent_version = self.state_store.version(job["session_id"])
+            result = self.state_store.apply_ops(
+                session_id=job["session_id"],
+                operations=decision.operations,
+                source_turn_id=job["turn_id"],
+                evidence_text=job["evidence_text"],
+                expected_parent_version=parent_version,
+                idempotency_key=f"projection:{job['job_id']}",
+            )
+            self._complete_unlocked(
+                job["job_id"],
+                worker_id=worker_id,
+                lease_token=lease_token,
+                status="succeeded",
+                reason=decision.reason,
+                lease_clock=lease_clock,
+            )
+            return result
 
     def list_jobs(self, *, session_id: str | None = None) -> list[dict[str, Any]]:
         data = self._read()
@@ -406,16 +509,12 @@ class ProjectionWorker:
                         "decision=apply requires at least one operation",
                     )
                 )
-            parent_version = self.state_store.version(job["session_id"])
-            result = self.state_store.apply_ops(
-                session_id=job["session_id"],
-                operations=decision.operations,
-                source_turn_id=job["turn_id"],
-                evidence_text=job["evidence_text"],
-                expected_parent_version=parent_version,
-                idempotency_key=f"projection:{job['job_id']}",
+            result = self._apply_and_complete(
+                job,
+                worker_id=worker_id,
+                lease_token=lease_token,
+                decision=decision,
             )
-            complete_claim(status="succeeded", reason=decision.reason)
             return {
                 "job_id": job["job_id"],
                 "status": "succeeded",

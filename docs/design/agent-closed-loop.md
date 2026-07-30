@@ -101,7 +101,7 @@ active / needs-input task. It is not a second chat log.
 
 ```text
 TaskState
-  schema_version: int               # v2; reject unknown versions
+  schema_version: int               # v2; v1 requires explicit operator handling
   revision: int                     # optimistic concurrency token
   task_id: str
   session_id: str
@@ -109,7 +109,7 @@ TaskState
   status: active | needs_input | completed | failed | cancelled
   original_user_goal: str           # immutable authoritative request
   goal: str                         # must exactly preserve original_user_goal
-  goal_checks: list[Check]          # non-empty goal-level verification
+  goal_checks: list[Check]          # non-empty; at least one required oracle
   steps: list[Step]
   current_step_id: str | None
   last_observation: Observation | None
@@ -129,7 +129,7 @@ Step
   intent: str
   status: pending | running | verified | failed | skipped
   preconditions: list[Check]
-  done_when: list[Check]            # required for verified
+  done_when: list[Check]            # non-empty; at least one required oracle
   tools_hint: list[str]             # optional, not a second registry
   max_retries: int
   failure_policy: retry | replan | ask_user | abort
@@ -137,6 +137,18 @@ Step
   attempt: int
   check_results: list[CheckResult]
 ```
+
+TaskState v1 is a known incompatible predecessor: it did not preserve an
+authoritative original user goal or a mandatory goal oracle, so the kernel must
+not invent those fields during migration. Loading v1 fails with
+`ARIADNE_TASK_SCHEMA_MIGRATION_REQUIRED`; the operator must explicitly abandon
+or export the legacy task. Unknown versions fail with
+`ARIADNE_TASK_SCHEMA_UNSUPPORTED`.
+
+Every saved revision also appends a hash-chained event. Task loads and updates
+verify continuous revisions, every event digest, and exact equality between
+the chain tail and the current SQLite snapshot. A mismatch fails closed with
+`ARIADNE_TASK_AUDIT_MISMATCH`; replay history is not merely advisory.
 
 ### 4.2 Check / Evidence
 
@@ -351,16 +363,28 @@ User-visible “why remembered / why updated” is a host UI concern; kernel sto
 While a task is active, TaskState is authoritative for its goal and progress;
 L2 is a derived projection and must not overwrite it.
 
+For the personal local JSON backend, one coordinator file lock serializes the
+final lease-token check, ConversationState CAS mutation, and projection job
+completion. A worker that lost its lease therefore cannot mutate L2 before its
+completion is rejected. This is a local transaction boundary, not a claim that
+the two JSON documents are a general distributed transaction store.
+
 ---
 
 ## 8. Skills: outcome feedback (not auto-rewrite)
 
-Record per turn (extends `SkillEvent` / side log):
+Record per turn (extends `SkillEvent` / side log), with adopted skills bound to
+the concrete capability attempt they influence:
 
 ```text
 skill_name, candidate_score, loaded, adopted,
-tool_names_used, step_verified | task_failed, user_corrected
+task_id, step_id, attempt_id, tool_names_used,
+step_verified | step_failed, task_outcome, user_corrected
 ```
+
+One turn may adopt multiple skills for different steps. Each adopted skill
+receives only its bound attempt outcome; an adoption with no bound capability
+attempt cannot inherit the turn's latest step/task success.
 
 **Allowed learning:** adjust selection ranking / demote noisy skills.  
 **Disallowed by default:** agent silently edits skill body.
@@ -519,14 +543,15 @@ authenticated `/api/me/scheduled-goals*` host endpoints.
 - [x] Composition-root approval policy for every host; non-interactive
   `on-request` fails closed instead of executing material tools
 - [x] Read-only task exchanges create attempts and run step/goal verification
-- [x] Immutable `original_user_goal`, exact goal preservation, and mandatory
-  goal checks
+- [x] Immutable `original_user_goal`, exact goal preservation, and at least one
+  required check for every step and goal oracle
 - [x] Projection/scheduler lease tokens, stale-owner CAS, unique Web worker IDs,
-  and projection job idempotency keys
-- [x] Skill outcomes bind to the latest turn attempt/step instead of scanning
-  historical verified steps
+  projection job idempotency keys, and coordinator-locked projection apply
+- [x] Skill outcomes bind each adopted Skill to its own capability attempt and
+  step instead of scanning task history or sharing the turn's latest attempt
 - [x] Complete serialized-message/tool-schema char gate, bounded verifier reads,
-  fail-fast Web trace persistence, and hash-chained TaskState revision events
+  fail-fast Web trace persistence, and load-gating hash-chained TaskState
+  revision events with an explicit incompatible-v1 policy
 - [ ] Trusted host/user-approved oracle for high-risk goal completion; planner
   still proposes the mandatory goal checks
 - [ ] Explicit inspect / continue / cancel / abandon / archive host APIs with

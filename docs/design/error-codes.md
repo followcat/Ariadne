@@ -30,6 +30,9 @@ Stable enough for hosts to branch on.
 | `ARIADNE_PLUGIN_ERROR` | plugins | plugin config/call failure |
 | `ARIADNE_CONFIG_INVALID` | bootstrap | bad construction config |
 | `ARIADNE_MULTIMODAL_UNSUPPORTED` | model/host | images attached but model/vision policy rejects multimodal |
+| `ARIADNE_TASK_SCHEMA_MIGRATION_REQUIRED` | tasks | known legacy TaskState needs explicit operator handling |
+| `ARIADNE_TASK_SCHEMA_UNSUPPORTED` | tasks | TaskState schema version is unknown |
+| `ARIADNE_TASK_AUDIT_MISMATCH` | tasks | current snapshot and revision event chain disagree |
 
 ## Rules
 

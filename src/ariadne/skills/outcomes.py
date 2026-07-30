@@ -86,6 +86,7 @@ class SkillOutcomeLedger:
         task_id: str = "",
         step_id: str = "",
         attempt_id: str = "",
+        skill_attributions: dict[str, dict[str, Any]] | None = None,
         user_corrected: bool = False,
         at: float | None = None,
     ) -> list[str]:
@@ -101,28 +102,60 @@ class SkillOutcomeLedger:
         score_by_name = {str(name): float(score) for name, score in candidates}
         names = list(dict.fromkeys([*score_by_name, *sorted(loaded)]))
         now = time.time() if at is None else float(at)
-        rows = [
-            {
-                "event_id": uuid.uuid4().hex[:16],
-                "kind": "turn_outcome",
-                "turn_id": turn_id,
-                "session_id": session_id,
-                "skill_name": name,
-                "candidate_score": score_by_name.get(name, 0.0),
-                "loaded": name in loaded,
-                "adopted": name in adopted,
-                "tool_names_used": list(dict.fromkeys(tool_names)),
-                "turn_outcome": turn_outcome,
-                "step_outcome": step_outcome,
-                "task_outcome": task_outcome,
-                "task_id": task_id,
-                "step_id": step_id,
-                "attempt_id": attempt_id,
-                "user_corrected": bool(user_corrected),
-                "at": now,
-            }
-            for name in names
-        ]
+        scoped_attribution = skill_attributions is not None
+        attributions = skill_attributions if skill_attributions is not None else {}
+        rows: list[dict[str, Any]] = []
+        for name in names:
+            attribution = attributions.get(name)
+            rows.append(
+                {
+                    "event_id": uuid.uuid4().hex[:16],
+                    "kind": "turn_outcome",
+                    "turn_id": turn_id,
+                    "session_id": session_id,
+                    "skill_name": name,
+                    "candidate_score": score_by_name.get(name, 0.0),
+                    "loaded": name in loaded,
+                    "adopted": name in adopted,
+                    "attribution_scoped": scoped_attribution,
+                    "attempt_attributed": attribution is not None,
+                    "tool_names_used": list(
+                        dict.fromkeys(
+                            list(attribution.get("tool_names") or [])
+                            if attribution is not None
+                            else ([] if scoped_attribution else tool_names)
+                        )
+                    ),
+                    "turn_outcome": turn_outcome,
+                    "step_outcome": (
+                        str(attribution.get("step_outcome") or "")
+                        if attribution is not None
+                        else ("" if scoped_attribution else step_outcome)
+                    ),
+                    "task_outcome": (
+                        str(attribution.get("task_outcome") or "")
+                        if attribution is not None
+                        else ("" if scoped_attribution else task_outcome)
+                    ),
+                    "task_id": (
+                        str(attribution.get("task_id") or "")
+                        if attribution is not None
+                        else ("" if scoped_attribution else task_id)
+                    ),
+                    "step_id": (
+                        str(attribution.get("step_id") or "")
+                        if attribution is not None
+                        else ("" if scoped_attribution else step_id)
+                    ),
+                    "attempt_id": (
+                        str(attribution.get("attempt_id") or "")
+                        if attribution is not None
+                        else ("" if scoped_attribution else attempt_id)
+                    ),
+                    "user_corrected": bool(user_corrected),
+                    "at": now,
+                }
+            )
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             events = data.setdefault("events", [])
@@ -230,7 +263,10 @@ class SkillOutcomeLedger:
                 signal = -1.0
                 negative += 1
             elif row.get("adopted"):
-                success = (
+                success = bool(
+                    not row.get("attribution_scoped")
+                    or row.get("attempt_attributed")
+                ) and (
                     row.get("step_outcome") == "verified"
                     or row.get("task_outcome") == "completed"
                     or (

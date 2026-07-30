@@ -91,7 +91,10 @@ Legacy “inject into system forever this session” mode is discouraged.
 
 `loaded` is exposure, not causality. A skill receives adoption credit only after
 an explicit `adopt_skill` event. The local outcome ledger also records candidate
-score, tools used, step/task result, and user corrections. Ranking adjustments:
+score, tools used, step/task result, and user corrections. In task mode, each
+adopted Skill is bound to the next concrete capability attempt it influences;
+different Skills in one turn do not share the latest attempt outcome, and an
+unbound adoption cannot inherit global task success. Ranking adjustments:
 
 - require a minimum sample count;
 - decay old evidence;

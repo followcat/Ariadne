@@ -237,9 +237,12 @@ from evidence — not from “tool returned success.”
 The 14a–e checkboxes track 2C kernel functionality, not ToB readiness. Current
 hardening delivered after the vertical slice includes fail-closed Web approval,
 read-only task attempts, immutable goal binding, worker fencing/idempotency,
-attempt-scoped Skill outcomes, complete serialized request char accounting,
-bounded verifier reads, and hash-chained task revision events. The remaining
-gates are listed in the design document's Production-hardening backlog.
+per-Skill attempt attribution, complete serialized request char accounting,
+bounded verifier reads, required step/goal oracles, coordinator-locked
+projection apply, and load-gating hash-chained task revision events. TaskState
+v1 is an explicit incompatible upgrade because it lacks an authoritative user
+goal/oracle. The remaining gates are listed in the design document's
+Production-hardening backlog.
 
 #### 14a — Verify + TaskState (P0)
 - [x] `TaskState` persistence (local SQLite, task identity + active session

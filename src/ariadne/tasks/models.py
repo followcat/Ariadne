@@ -328,11 +328,19 @@ class Step:
             raise AriadneError(
                 app_error("ARIADNE_TASK_INVALID", "step.tools_hint must be an array of strings")
             )
+        done_when = [Check.from_plan(v) for v in done_raw]
+        if not any(check.required for check in done_when):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_INVALID",
+                    "every step needs at least one required done_when check",
+                )
+            )
         return cls(
             step_id=_new_id("step"),
             intent=intent,
             preconditions=[Check.from_plan(v) for v in pre_raw],
-            done_when=[Check.from_plan(v) for v in done_raw],
+            done_when=done_when,
             tools_hint=[str(v) for v in hints],
             max_retries=retries,
             failure_policy=cast(FailurePolicy, policy),
@@ -429,6 +437,13 @@ class TaskState:
             raise AriadneError(
                 app_error("ARIADNE_TASK_INVALID", "task needs at least one goal check")
             )
+        if not any(check.required for check in parsed_goal_checks):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_INVALID",
+                    "task needs at least one required goal check",
+                )
+            )
         return cls(
             task_id=_new_id("task"),
             session_id=session_id,
@@ -476,6 +491,17 @@ class TaskState:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "TaskState":
         version = int(value.get("schema_version") or 0)
+        if version == 1:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_SCHEMA_MIGRATION_REQUIRED",
+                    "TaskState v1 cannot be safely upgraded because it has no "
+                    "authoritative original user goal or required goal oracle; "
+                    "explicitly abandon or export the legacy task before continuing",
+                    expected=TASK_SCHEMA_VERSION,
+                    actual=version,
+                )
+            )
         if version != TASK_SCHEMA_VERSION:
             raise AriadneError(
                 app_error(
@@ -525,6 +551,23 @@ class TaskState:
         )
         if not state.steps:
             raise AriadneError(app_error("ARIADNE_TASK_INVALID", "stored task has no steps"))
+        if not state.goal_checks or not any(check.required for check in state.goal_checks):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_INVALID",
+                    "stored task has no required goal check",
+                )
+            )
+        if any(
+            not step.done_when or not any(check.required for check in step.done_when)
+            for step in state.steps
+        ):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_INVALID",
+                    "stored task step has no required done_when check",
+                )
+            )
         if not state.original_user_goal.strip():
             raise AriadneError(
                 app_error("ARIADNE_TASK_INVALID", "stored task has no original user goal")

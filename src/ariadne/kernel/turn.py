@@ -724,7 +724,33 @@ class TurnApplication:
         thrash_nudge_sent = False
         model_max_tokens = max(256, int(self.max_tokens or 8192))
         skill_outcomes_recorded = False
-        task_attempt_outcomes: list[dict[str, str]] = []
+        task_attempt_outcomes: list[dict[str, Any]] = []
+        pending_skill_adoptions: dict[str, SkillEvent] = {}
+        attempt_skill_events: dict[str, dict[str, SkillEvent]] = {}
+
+        def bind_skill_event(
+            event: SkillEvent,
+            *,
+            task_id: str,
+            step_id: str,
+            attempt_id: str,
+        ) -> None:
+            event.task_id = task_id
+            event.step_id = step_id
+            event.attempt_id = attempt_id
+            attempt_skill_events.setdefault(attempt_id, {})[event.skill_name] = event
+
+        def bind_pending_skills(
+            *, task_id: str, step_id: str, attempt_id: str
+        ) -> None:
+            for event in list(pending_skill_adoptions.values()):
+                bind_skill_event(
+                    event,
+                    task_id=task_id,
+                    step_id=step_id,
+                    attempt_id=attempt_id,
+                )
+            pending_skill_adoptions.clear()
 
         def record_skill_outcomes(turn_outcome: str) -> None:
             nonlocal skill_outcomes_recorded
@@ -764,6 +790,17 @@ class TurnApplication:
                 outcome_step_id = latest_outcome["step_id"]
                 outcome_attempt_id = latest_outcome["attempt_id"]
                 step_outcome = latest_outcome["step_outcome"]
+            skill_attributions: dict[str, dict[str, Any]] = {}
+            for attempt_outcome in task_attempt_outcomes:
+                for skill_name in attempt_outcome.get("skills") or []:
+                    skill_attributions[str(skill_name)] = {
+                        "task_id": attempt_outcome["task_id"],
+                        "step_id": attempt_outcome["step_id"],
+                        "attempt_id": attempt_outcome["attempt_id"],
+                        "step_outcome": attempt_outcome["step_outcome"],
+                        "task_outcome": attempt_outcome["task_outcome"],
+                        "tool_names": attempt_outcome.get("tool_names") or [],
+                    }
             ledger.record_turn(
                 turn_id=turn_id,
                 session_id=session_id,
@@ -777,6 +814,7 @@ class TurnApplication:
                 task_id=outcome_task_id,
                 step_id=outcome_step_id,
                 attempt_id=outcome_attempt_id,
+                skill_attributions=skill_attributions,
                 user_corrected=bool((metadata or {}).get("user_corrected", False)),
             )
 
@@ -1284,6 +1322,11 @@ class TurnApplication:
                         task_state, task_step, task_attempt_id = self.task_controller.start_attempt(
                             task_state
                         )
+                        bind_pending_skills(
+                            task_id=task_state.task_id,
+                            step_id=task_step.step_id,
+                            attempt_id=task_attempt_id,
+                        )
                         yield TurnEvent(
                             "task_step_started",
                             {
@@ -1362,6 +1405,27 @@ class TurnApplication:
                             },
                         )
                         if name in {"search_skills", "load_skill", "adopt_skill"} and skill_events:
+                            if name == "adopt_skill":
+                                adopted_name = str(args.get("name") or "")
+                                adopted_event = next(
+                                    (
+                                        event
+                                        for event in reversed(skill_events)
+                                        if event.kind == "adopt"
+                                        and event.skill_name == adopted_name
+                                    ),
+                                    None,
+                                )
+                                if adopted_event is not None and not adopted_event.attempt_id:
+                                    if task_attempt_id and task_state is not None:
+                                        bind_skill_event(
+                                            adopted_event,
+                                            task_id=task_state.task_id,
+                                            step_id=task_state.current_step_id or "",
+                                            attempt_id=task_attempt_id,
+                                        )
+                                    else:
+                                        pending_skill_adoptions[adopted_name] = adopted_event
                             yield TurnEvent(
                                 "skill_event",
                                 {
@@ -1478,6 +1542,13 @@ class TurnApplication:
                             "step_id": outcome.step.step_id,
                             "attempt_id": task_attempt_id,
                             "step_outcome": outcome.step.status,
+                            "task_outcome": task_state.status,
+                            "skills": sorted(
+                                attempt_skill_events.get(task_attempt_id, {}).keys()
+                            ),
+                            "tool_names": [
+                                trace.name for trace in exchange_traces if trace.name
+                            ],
                         }
                     )
                     for check_result in outcome.step.check_results:
