@@ -203,12 +203,31 @@ The model may call twice if it needs user + workspace.
 | L1 turn summaries | **session** |
 | L2 conversation state | **session** |
 | L3 curated durable | **user** and/or **workspace** (explicit) |
-| L4 semantic index | **session** (and optionally workspace-wide index later — not required) |
+| L4 semantic index | **workspace data_dir** (all sessions in that index); **user episodic** under `user_memory_dir/episodic/` (cross-workspace, same operator) |
 | `memory_search` | caller-chosen: `session` \| `workspace` \| `user` |
 
 `build_context` each turn loads high-signal layers for the **active** session
 and applicable curated scopes (user + workspace), within budgets. Deep episodic
 recall is **not** dumped every turn — see [memory-search.md](memory-search.md).
+
+### 6.1 User episodic layout (implemented)
+
+```text
+CLI:  ~/.ariadne/memory/
+        curated.json              # user-scope L3
+        episodic/semantic.json    # user-wide L4 chunks (dual-written on turn)
+
+Web:  {serve}/web/users/<account>/memory/
+        curated.json
+        episodic/semantic.json
+```
+
+On turn complete the host indexes the same turn into the **workspace** semantic
+index and, when configured, the **user episodic** index. Branch atelier
+sessions still share the account user root (same person); they must not write
+another account’s tree.
+
+Shared curated and semantic JSON files use **fcntl-locked** read-modify-write.
 
 ---
 

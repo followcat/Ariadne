@@ -55,7 +55,14 @@ MemoryContext
 - **Cross-session episodic recall** is not automatic L0: use explicit graded
   **`memory_search`** (`scope=session|workspace|user`, `mode=auto|fast|deep`).
   Hits must carry real `turn_id` (+ `session_id`); never LLM-fabricated history.
-  See [design/memory-search.md](design/memory-search.md) (Retrieval modes).
+- **Scopes (personal 2C):** session / workspace indexes under the active data
+  dir; **user** scope uses a per-operator episodic index
+  (`user_memory_dir/episodic/`, dual-written on turn complete) plus L3 curated
+  with real provenance. Web binds `user_id` + `user_memory_dir` per account.
+- **As-of:** `before_turn_id` filters episodic by chunk clock and curated by
+  source-turn clock **and** entry `updated_at` (no post-cutoff curated leak).
+- See [design/memory-search.md](design/memory-search.md) (Retrieval modes) and
+  [design/memory-scopes.md](design/memory-scopes.md).
 
 ### 3.5 Conversation state projection (advanced)
 
@@ -192,7 +199,8 @@ Kernel does not require a hosted multi-tenant DB.
 | Doc | Topic |
 | --- | --- |
 | [design/memory-v1.md](design/memory-v1.md) | Layered architecture (L0–L5), conversation state, phased delivery |
-| [design/memory-scopes.md](design/memory-scopes.md) | Personal **user / workspace / session** scopes, host layout, `user_id`, boundary with atelier `KNOWLEDGE.md` |
-| [design/memory-search.md](design/memory-search.md) | **Graded retrieval** — Retrieval modes, `memory_search` contract, auto/fast/deep (hard long-context recall without per-turn pre-classifier) |
+| [design/memory-scopes.md](design/memory-scopes.md) | Personal **user / workspace / session** scopes, host layout, `user_id`, user episodic root, KNOWLEDGE boundary |
+| [design/memory-search.md](design/memory-search.md) | **Graded retrieval** — Retrieval modes, tool contract, as-of clocks, deep two-phase planner, config knobs |
+| [ROADMAP.md](ROADMAP.md) Phase 11b | Living checklist (S0–S2 done; S3/S4 partial) |
 
 Normative product contract stays in this file; implementers follow the design notes above for scopes and search.

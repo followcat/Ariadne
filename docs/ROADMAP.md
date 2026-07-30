@@ -169,23 +169,44 @@ hosts and kernel code.
 Design: [design/memory-scopes.md](design/memory-scopes.md),
 [design/memory-search.md](design/memory-search.md) (linked from [MEMORY.md](MEMORY.md)).
 
-**Status: S0–S2 complete; S3/S4 partial** (personal scale).
+**Status: S0–S2 complete; S3/S4 partial** (personal / single-host scale).
 
-- [x] **user / workspace / session** curated + stable ids + `source_turn_id` /
-  `source_session_id` migration
-- [x] CLI / Web user roots; `user_id` mismatch fastfail
-- [x] `memory_search` tool + validation + grounded turn ids
-- [x] Honest L2 default; summary widen; skill pins
-- [x] Chunk clocks (`ts`/`seq`); as-of via `before_ts` (episodic + curated)
-- [x] User episodic dual-write path; fcntl-locked semantic JSON RMW
-- [x] Embedding default **hash** (offline); `openai` / `auto` opt-in; empty
-  corpus skips query embed; OpenAI embed via `asyncio.to_thread`
-- [x] Deep: local split; LLM adapter reads `ModelExchange.message.content`;
-  **two-phase** decomp → subquery merge → rerank final candidates
-- [~] S3: LLM deep depends on host model quality; not a full multi-hop product
-- [~] S4: no historical backfill of pre-feature turns; no branch lifecycle
-  purge; multi-device sync out of scope
-- [x] Tests: scopes_search + design_gaps (+ contract regressions)
+Shipped:
+
+- [x] Scopes **user / workspace / session** for curated; stable UUID ids;
+  `source_turn_id` + `source_session_id` (migration fills empty fields)
+- [x] Host layout: CLI `~/.ariadne/memory`; Web
+  `{account}/memory` via `user_id` + `user_memory_dir` (no cross-account share)
+- [x] `user_id` mismatch **fastfail** (provided id must match facade bind)
+- [x] `memory_search` tool (`scope`, `mode`, `limit`, `before_turn_id`);
+  hard `limit` cap validation; grounded `turn_id` + `session_id`
+- [x] Honest L2: projection off by default; summary input widen; skill pins
+- [x] Chunk clocks `ts`/`seq`; as-of via `before_ts` on episodic indexes
+- [x] Curated as-of: `source_turn` clock **and** entry `updated_at` strictly
+  before cutoff (post-cutoff edits on old source turns do not leak)
+- [x] User episodic index (`user_memory_dir/episodic/`); dual-write on turn
+  complete; `scope=user` hybrid + provenance-bearing curated
+- [x] Shared JSON stores: fcntl-locked RMW for **semantic** and **curated**
+- [x] Embeddings: default **hash**; `openai` / `auto` opt-in only; unknown
+  provider fastfail; empty corpus skips query embed; OpenAI via
+  `asyncio.to_thread`; writeback keyed by text+seq (no stale vector on reindex)
+- [x] Deep: `LocalSplitPlanner` + optional `ARIADNE_MEMORY_DEEP_PLANNER=llm`;
+  two-phase **plan → subquery merge → rerank(final candidates)**; also
+  **rerank-only** when decomp is empty; `mode_used=deep` only when candidates
+  or order actually change; failures demote to fast + notes
+- [x] Hit evidence: `source` ∈ `raw|summary|chunk|curated`; curated keeps
+  `entry_id` + scope
+- [x] Tests: `test_memory_scopes_search`, `test_memory_2c_design_gaps`,
+  `test_memory_2c_regressions`
+
+Still open / partial:
+
+- [~] **S3 quality:** multi-hop recall depends on host LLM planner quality;
+  no separate small-model SKU
+- [~] **S4 completeness:** no historical backfill of turns before dual-write;
+  no curated version history (as-of sees *current* entry or drop, not past
+  content); no atelier branch lifecycle purge of user episodic; no multi-device
+  sync
 
 ### Phase 12 — Docker-first hardened sandbox (Codex-aligned)
 - [x] Default `sandbox=docker`; `local`/`null` explicit escape; doctor checks

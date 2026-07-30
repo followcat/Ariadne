@@ -92,7 +92,22 @@ live in `tool_schema.description`.
 | `scope` | yes | Exactly one of `session`, `workspace`, `user` — see [memory-scopes.md](memory-scopes.md) |
 | `mode` | no | Default from config (`ARIADNE_MEMORY_SEARCH_MODE`, usually `auto`) |
 | `limit` | no | Default 8; hard cap (e.g. 32); over cap → validation error |
-| `before_turn_id` | no | Only turns **strictly before** this id (as-of search for eval / “what did we know then”) |
+| `before_turn_id` | no | Only material **strictly before** this cutoff (as-of search for eval / “what did we know then”) |
+
+**As-of semantics (normative):**
+
+1. Resolve cutoff turn → `before_ts` from indexed chunk clocks (`ts`/`seq`),
+   preferring the active session then broader indexes.
+2. **Episodic hits:** keep chunks with `ts < before_ts`. Missing clock under a
+   filter → exclude (honest).
+3. **Curated hits (when merged into user search):** require
+   `source_turn_id` + `source_session_id`; exclude if `source_turn_id` equals
+   the cutoff id; exclude if source-turn clock `≥ before_ts`; exclude if entry
+   `updated_at ≥ before_ts` (post-cutoff create/update must not leak, even when
+   the source turn itself is older). No curated version history in v1: as-of
+   either returns the *current* entry (if both clocks pass) or drops it.
+4. If cutoff clock cannot be resolved, fall back to transcript order where
+   available; otherwise stay conservative (empty / notes).
 
 Host/kernel may inject active `session_id` / `user_id` from the turn; the model
 does not pick another user’s store.
@@ -123,11 +138,13 @@ does not pick another user’s store.
 
 | Field | Rules |
 | --- | --- |
-| `mode_used` | Actual pipeline that produced hits (`auto` is never reported as used — expand to `fast` or `deep`) |
-| `hits[].turn_id` | **Required** on every hit |
+| `mode_used` | Actual pipeline that produced hits (`auto` is never reported as used — expand to `fast` or `deep`). Claim **`deep` only when** decomp and/or rerank changed the candidate set or order vs plain fast; pure no-ops stay `fast` with notes |
+| `hits[].turn_id` | **Required** on every hit (never empty; never synthetic `curated:<id>` without a real turn) |
 | `hits[].session_id` | Required when the store is multi-session for that scope; for pure session scope, still set to active session |
-| `hits[].snippet` | Substring or stored summary text **from the store** — not model prose |
+| `hits[].snippet` | Substring or stored summary / curated text **from the store** — not model prose |
 | `hits[].score` | Comparable within one call; type (similarity / BM25) recorded in traces |
+| `hits[].evidence.source` | `raw` \| `summary` \| `chunk` \| `curated` — honest layer, not faked as summary |
+| `hits[].evidence.entry_id` | When `source=curated`, the L3 entry id for audit |
 | `notes` | Human/debug string; empty ok |
 
 Empty hits: `{ "mode_used": "…", "hits": [], "notes": "…" }` — success with zero
@@ -197,12 +214,22 @@ Allowed small-model jobs (normative target):
 **Implementation status:**
 
 - Default planner = **local multi-query split** (`LocalSplitPlanner`).
-- Host may set `ARIADNE_MEMORY_DEEP_PLANNER=llm` to use a chat model for
-  subqueries / alias_extra / rerank_order over **existing** candidate keys only
-  (`make_llm_deep_planner`). Failure → `mode_used=fast` + notes.
-- Single-clause local deep with no decomp: `mode_used=fast` +
-  `deep:unavailable_local_noop` (must not claim deep).
-- User scope uses **user episodic index** + provenance-bearing curated only.
+- Host may set `ARIADNE_MEMORY_DEEP_PLANNER=llm` → `make_llm_deep_planner`
+  (reads `ModelExchange.message.content`).
+- **Two-phase deep:**
+  1. `plan()` → `subqueries` + `alias_extra` (optional seed `rerank_order` ignored
+     for final order if a post-merge phase exists)
+  2. Run each subquery via fast; merge candidates
+  3. `rerank(final candidates)` → order over **merged** keys only (or a second
+     `plan()` for planners that only implement one method)
+  4. **Rerank-only:** if `plan()` returns no subqueries but deep was requested
+     and the planner can rerank seed hits, still run step 3
+- Failure / parse error → `mode_used=fast` + notes; never invent hits.
+- Single-clause local deep with no decomp and no rerank change:
+  `mode_used=fast` + `deep:unavailable_local_noop` / `deep:noop_unchanged`.
+- User scope: **user episodic index** + L3 curated with real provenance
+  (`source_turn_id`, `source_session_id`); curated evidence uses
+  `source=curated` + `entry_id` (not faked as L1 summary).
 
 Forbidden:
 
@@ -217,9 +244,11 @@ Forbidden:
 
 Snippet sources, in order of preference for evidence honesty:
 
-1. Raw turn excerpt (user / assistant / truncated tool outcome)
-2. Ready L1 summary text for that `turn_id`
-3. Indexed chunk text that maps 1:1 to stored bytes
+1. Raw turn excerpt (user / assistant / truncated tool outcome) → `source=raw`
+2. Ready L1 summary text for that `turn_id` → `source=summary`
+3. Indexed chunk text that maps 1:1 to stored bytes → `source=chunk`
+4. L3 curated entry body (when search merges curated) → `source=curated` +
+   `entry_id`
 
 If a turn exists but body was purged: return hit with `snippet` empty or
 placeholder + `notes`, or omit hit — never invent body.
@@ -277,12 +306,13 @@ it — do not invent.*
 | Knob | Env / setting | Default (suggested) | Meaning |
 | --- | --- | --- | --- |
 | Default mode | `ARIADNE_MEMORY_SEARCH_MODE` | `auto` | Default when tool omits `mode` |
-| Fast only | mode forced `fast` | — | Disable deep entirely |
-| Deep model | host model id / small local model | host-defined | Used only for decomp / aliases / rerank |
-| Hit limit default / max | settings | `8` / `32` | Cap noise |
+| Deep planner | `ARIADNE_MEMORY_DEEP_PLANNER` | `off` | `off` \| `local` \| `llm` — LLM needs host chat model |
+| Embedding provider | `ARIADNE_EMBEDDING_PROVIDER` | `hash` | `hash` (offline) \| `openai` (opt-in) \| `auto` (openai when api_key+base_url). **Unknown values fastfail** |
+| Embedding model | `ARIADNE_EMBEDDING_MODEL` | `text-embedding-3-small` | Used when provider is openai/auto→openai |
+| L2 projection queue | `ARIADNE_ENABLE_MEMORY_PROJECTION` | off | Opt-in; default honest disabled L2 queue |
+| User memory root | Settings `user_memory_dir` | CLI `~/.ariadne/memory`; Web account `…/memory` | User curated + episodic |
+| Hit limit default / max | settings / tool | `8` / `32` | Over max → validation error |
 | Score threshold (auto upgrade) | settings | implementation-defined | Fast “too weak” bar |
-| Embeddings | on/off + model path | off until L4 enabled | Fast path second channel |
-| Lexical backend | FTS/sqlite/etc. | personal default | Fast path first channel |
 | L2 demotion | on when L2 present | on | Stale hit demotion |
 
 Traces should record: `mode_requested`, `mode_used`, upgrade reason, backend
@@ -343,15 +373,16 @@ Infra ERROR ≠ product FAIL ([memory-v1.md](memory-v1.md) §10).
 
 ## 11. Phased delivery (search track)
 
-| Phase | Deliverable |
-| --- | --- |
-| S0 | Tool contract + `scope` + lexical fast over session transcript |
-| S1 | Embeddings (L4) merged into fast; demotion hooks for L2 |
-| S2 | `mode=auto` upgrade signals |
-| S3 | Deep: decomp + rerank; optional alias from L2 |
-| S4 | Workspace/user scope indices + eval suite |
+| Phase | Deliverable | Status (personal 2C) |
+| --- | --- | --- |
+| S0 | Tool contract + `scope` + lexical fast + validation | **done** |
+| S1 | Embeddings in fast; L2 demotion; empty-corpus skip; locked index | **done** (default embedder = hash; openai opt-in) |
+| S2 | `mode=auto` upgrade signals | **done** (basic heuristics) |
+| S3 | Deep decomp + rerank (local + optional LLM); honest `mode_used` | **partial** (two-phase planner; quality host-dependent) |
+| S4 | Workspace + user episodic indexes; as-of clocks; eval | **partial** (dual-write user episodic + as-of; no backfill / multi-device) |
 
 S0 is enough to stop “model invents the past”; later phases raise recall quality.
+See [../ROADMAP.md](../ROADMAP.md) Phase 11b for the living checklist.
 
 ---
 
@@ -364,7 +395,11 @@ S0 is enough to stop “model invents the past”; later phases raise recall qua
 | Default mode | `auto` | Fast path common; deep on signal |
 | Hit identity | `turn_id` + `session_id` | Auditable; no free-form memory myths |
 | Deep model role | Decomp / aliases / rerank only | Never invent history |
+| Deep pipeline | Two-phase plan then post-merge rerank | Subquery hits participate in rerank |
+| Default embeddings | `hash` offline; `openai`/`auto` opt-in | Avoid surprise network on every turn |
+| Shared store safety | fcntl lock on semantic + curated JSON | Multi-session / multi-workspace writers |
 | Scopes | session \| workspace \| user | Aligns with [memory-scopes.md](memory-scopes.md) |
+| User episodic | Dual-write to `user_memory_dir/episodic/` | Cross-workspace recall without L3 dump |
 | Packaging | Personal local backends first | No enterprise mesh |
 
 ---
