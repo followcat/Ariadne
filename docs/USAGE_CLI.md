@@ -140,6 +140,10 @@ Global flags work both before and after the subcommand
 --no-stream                   disable streaming in chat (chat streams by default)
 --sandbox-prestart            start sandbox in parallel with memory build
 --approval-mode MODE          auto | on-request | readonly tool approval
+--task                        force closed-loop task mode for this run
+                              (metadata task_mode=true; overrides policy default)
+--task-mode-policy MODE       off | on | auto (default auto)
+                              env: ARIADNE_TASK_MODE_POLICY
 -c / --continue               resume the most recent session (interactive or run)
 --no-welcome                  suppress interactive banner
 --no-stream                   disable streaming in interactive mode
@@ -147,6 +151,36 @@ Global flags work both before and after the subcommand
 --json                        print TurnResult JSON (includes schema_metrics);
                               with --stream, NDJSON events then final result
 ```
+
+### Closed-loop task mode (Phase 14)
+
+Plan → act → verify → replan. Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
+
+```bash
+# Force task mode this run (model must submit_task_plan with done_when checks)
+ariadne --task run "add a smoke test and make it pass"
+
+# Policy (default auto): resume an active task without re-passing --task
+export ARIADNE_TASK_MODE_POLICY=auto   # off | on | auto
+ariadne --task-mode-policy auto run "continue"
+```
+
+| Policy | Behavior |
+| --- | --- |
+| `auto` (default) | Direct tool loop unless `--task` / API `task_mode=true`, **or** this session already has an **active** task (auto-resume) |
+| `on` | Always task mode |
+| `off` | Never, unless this turn forces `task_mode=true` |
+
+Every turn emits event **`task_mode_resolved`** `{enabled, reason, policy}`.  
+Stretch features stay **off** unless opted in:
+
+| Env | Default |
+| --- | --- |
+| `ARIADNE_ENABLE_SEMANTIC_VERIFIER` | off |
+| `ARIADNE_ENABLE_CONTROLLED_DELEGATION` | off |
+| `ARIADNE_ENABLE_MEMORY_PROJECTION` | off |
+
+Web: `POST /api/turns` body field `task_mode: true` (same metadata).
 
 ## Session titles (topic summary)
 
@@ -298,11 +332,13 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
 ```text
 your prompt
   → Agent / TurnApplication
-  → memory layers + skill index
+  → task_mode_resolved (auto / --task / active task)
+  → memory layers + skill index + ContextCompiler
   → model (OpenAI-compatible tools; optional stream)
   → sandbox tools on /workspace and /session
-  → projection job enqueue + semantic index
-  → final answer in terminal or web SSE
+  → [task mode] verify step done_when → replan / needs_input / complete
+  → optional projection enqueue + semantic index
+  → final answer in terminal or web SSE (TurnResult.task when task mode)
 ```
 
 See [design/cli-shell-agent.md](design/cli-shell-agent.md) for the full CLI design,  

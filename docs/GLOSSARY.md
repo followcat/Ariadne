@@ -20,4 +20,7 @@
 | **Host** | CLI/HTTP/app that calls the kernel |
 | **Fastfail** | Clear structured failure; no silent downgrade |
 | **Company Pack** | Explicitly **out of scope** enterprise extension bundle |
+| **Task mode** | Closed-loop plan → act → verify → replan (`--task` / `task_mode_policy`) |
+| **TaskState** | Persisted multi-step goal + steps with `done_when` checks |
+| **Context Compiler** | Budgets prompt blocks and records attribution traces |
 | **Connector** | Chat platform adapter; host-side, not Ariadne core |

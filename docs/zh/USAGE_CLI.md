@@ -127,6 +127,9 @@ ariadne plugin enable gitlab --workspace-scope --url ... --token ...
 --eager-tools                 发送全部 schema（关闭 deferred）
 --stream                      流式模型 delta + turn 事件
 --no-stream                   chat 中关闭流式（chat 默认开流式）
+--task                        本轮强制闭环 task 模式（plan/verify）
+--task-mode-policy MODE       off | on | auto（默认 auto）
+                              环境变量：ARIADNE_TASK_MODE_POLICY
 --sandbox-prestart            与 memory build 并行预热沙箱
 --approval-mode MODE          auto | on-request | readonly 工具审批
 -c / --continue               续最近一次会话（交互或 run）
@@ -136,6 +139,37 @@ ariadne plugin enable gitlab --workspace-scope --url ... --token ...
 --json                        输出 TurnResult JSON（含 schema_metrics）；
                               配合 --stream 时先 NDJSON 事件再最终结果
 ```
+
+### 闭环 task 模式（Phase 14）
+
+计划 → 执行 → 验证 → 重规划。设计见 [design/agent-closed-loop.md](../design/agent-closed-loop.md)。
+
+```bash
+# 本轮强制 task 模式（模型需 submit_task_plan，且步骤带 done_when）
+ariadne --task run "补一个冒烟测试并跑通"
+
+# 策略（默认 auto）：有进行中的 task 时自动恢复，不必每轮再写 --task
+export ARIADNE_TASK_MODE_POLICY=auto   # off | on | auto
+ariadne --task-mode-policy auto run "继续"
+```
+
+| 策略 | 行为 |
+| --- | --- |
+| `auto`（默认） | 普通 tool loop；除非 `--task` / API `task_mode=true`，或本会话已有 **active task**（自动恢复） |
+| `on` | 始终 task 模式 |
+| `off` | 除非本轮强制 `task_mode=true`，否则不用 task 模式 |
+
+每轮会发事件 **`task_mode_resolved`**：`{enabled, reason, policy}`。  
+以下能力默认 **关闭**（需显式环境变量打开）：
+
+| 环境变量 | 默认 |
+| --- | --- |
+| `ARIADNE_ENABLE_SEMANTIC_VERIFIER` | off |
+| `ARIADNE_ENABLE_CONTROLLED_DELEGATION` | off |
+| `ARIADNE_ENABLE_MEMORY_PROJECTION` | off |
+
+Web：`POST /api/turns` 请求体字段 `task_mode: true`。
+
 ## 会话标题（主题总结）
 
 每个会话可有 **标题**（短主题总结），存在 `data_dir/sessions/meta/<id>.json`。
@@ -281,11 +315,13 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
 ```text
 你的提示
   → Agent / TurnApplication
-  → 记忆层 + 技能索引
+  → task_mode_resolved（auto / --task / 进行中的 task）
+  → 记忆层 + 技能索引 + ContextCompiler
   → 模型（OpenAI 兼容 tools；可选 stream）
   → /workspace 与 /session 上的沙箱工具
-  → 投递 projection 任务 + 语义索引
-  → 终端最终回答或 Web SSE
+  → [task 模式] 校验步骤 done_when → 重规划 / needs_input / 完成
+  → 可选 projection 投递 + 语义索引
+  → 终端最终回答或 Web SSE（task 模式时含 TurnResult.task）
 ```
 
 完整 CLI 设计见 [design/cli-shell-agent.md](../design/cli-shell-agent.md)（英文），  

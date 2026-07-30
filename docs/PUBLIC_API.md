@@ -61,6 +61,9 @@ class RunTurnCommand:
     stream: bool = False
     tool_loop_limit: int = 32
     metadata: dict[str, object] = field(default_factory=dict)
+    # metadata["task_mode"]=True forces closed-loop task mode for this turn.
+    # Host Settings.task_mode_policy: off | on | auto (default auto resumes
+    # an active task without re-setting the flag). See design/agent-closed-loop.md.
 ```
 
 ### 3.3 TurnResult
@@ -77,7 +80,14 @@ class TurnResult:
     memory: MemoryContextSummary
     usage: Usage
     error: AppError | None = None
+    task: TaskSummary | None = None          # set when task mode ran
+    context_attributions: list[...] = ...    # ContextCompiler decisions
+    skill_pins: dict[str, str] = ...         # loaded skill digests
 ```
+
+Task-related stream events include `task_mode_resolved`, `task_started`,
+`task_resumed`, `task_step_started`, `task_check_completed`, `task_replanned`,
+`task_needs_input`, `task_completed`, `task_failed`.
 
 ### 3.4 ToolCallTrace
 

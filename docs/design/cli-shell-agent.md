@@ -98,6 +98,8 @@ Global flags:
 --verbose / -v        show tool traces and layer reports
 --tool-loop-limit N
 --approval-mode auto|on-request|readonly   tool approval policy
+--task                                     force closed-loop task mode this run
+--task-mode-policy off|on|auto             default auto (resume active task)
 -c / --continue       resume most recent session
 --stream / --no-stream (interactive streams by default)
 --no-welcome          suppress REPL banner
