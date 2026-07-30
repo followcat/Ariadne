@@ -1,6 +1,7 @@
 # Design: Memory Intelligence Vertical Slice
 
-Status: **functional personal-kernel vertical slice**
+Status: **functional vertical slice; reviewed correctness hardening complete;
+production hardening pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -15,6 +16,7 @@ path and one evidence-bound read path:
 completed turn
   -> deterministic extraction
   -> optional LLM extraction for ambiguous evidence only
+  -> recoverable capture journal
   -> typed current-memory update
   -> episode/event append
   -> reflection candidate update
@@ -23,7 +25,8 @@ completed turn
 memory_search
   -> turn chunks + episodes
   -> constrained entity/relation/timeline traversal
-  -> grounded evidence expansion
+  -> bounded event window + stable event ids
+  -> explicit paged evidence expansion
   -> real turn citations
 ```
 
@@ -42,9 +45,21 @@ summary, and semantic writes. Extraction is tiered:
 3. Model output is a proposal over the supplied evidence. Every event and
    state change must quote text present in the current turn/tool evidence.
 
+The model protocol is strict: a legitimate empty result is `{"events":[]}`.
+Invalid JSON, wrong shapes, unknown fields, and over-limit arrays raise
+`ARIADNE_MEMORY_CAPTURE_PROTOCOL`; they are not converted into an empty result.
+An unknown capture status is likewise reported as a failed memory layer.
+
 Explicit user preferences may update the typed user model automatically.
 Temporary discussion and inferred patterns do not. Capture failure is reported
 as a failed memory layer and never changes an otherwise completed task result.
+
+Automatic capture is recoverable across the independently locked stores. A
+turn-scoped journal records `user_model`, `state`, `episode`, `reflection`, and
+`prospective` stage completion. Every target Store accepts a capture-scoped
+idempotency key. Only after all stages are durable does the journal write its
+completion marker. This is recoverable consistency, not a claim that multiple
+JSON files form one ACID transaction.
 
 ## 2. Episode and causal memory
 
@@ -52,7 +67,7 @@ as a failed memory layer and never changes an otherwise completed task result.
 use a small, closed vocabulary:
 
 - `problem`, `goal`, `hypothesis`
-- `attempt`, `observation`
+- `attempt`, `observation`, `error`
 - `decision`, `outcome`
 - `preference_change`, `workflow_signal`, `entity_change`
 
@@ -60,6 +75,19 @@ Each event contains real `session_id`/`turn_id` evidence references and optional
 entities, relations, reason, previous value, and tool-call id. An episode keeps
 the goal, attempts, observations, decisions, outcomes, related turns, and
 workspace/session identity. `(session_id, turn_id)` is idempotent.
+
+Outcome metadata distinguishes nonterminal failure, verified completion,
+abandonment, and cancellation. A failed tool call is an `error`, not a terminal
+outcome. Only terminal evidence with authority `user_explicit`,
+`tool_observed`, or `verified_check` closes an Episode. Assistant completion
+language is retained as episodic `model_assertion` and cannot set the
+authoritative current goal to `done`.
+
+Tool arguments and outputs cross an independent Memory redaction boundary.
+Sensitive structured keys are removed, and Episodes retain an allowlisted
+status summary, payload digest, tool-call evidence reference, and no full raw
+payload. Disabling trace redaction never authorizes secret persistence in
+Memory.
 
 The causal chain is represented by event order and explicit `reason` /
 `because` / `rejected_alternative` fields; it is not an unconstrained knowledge
@@ -93,8 +121,12 @@ Deep planners may request only these traversal operations:
 
 The host executes the operations against stored episodes. A planner cannot
 provide facts, event ids, or turn ids. Episode hits expose a representative real
-turn, related turn ids, ordered event chain, and citations. Normal semantic turn
-search remains available and is merged with episode hits.
+turn, related turn ids, stable event ids, a matched-event window (at most three
+events on each side), and citations for that window. The full response has a
+64,000-byte UTF-8 hard cap. `memory_expand_evidence` pages stored events by
+`episode_id` and `after_event_id`, with at most 16 events and 16,000 bytes per
+page. Normal semantic turn search remains available and is merged with Episode
+hits.
 
 ## 5. Reflection
 
@@ -108,9 +140,12 @@ pending -> accepted | rejected
 
 Pending candidates are rendered into memory context so the assistant can ask
 the user. Only explicit `accept` promotes a model-inferred candidate into the
-typed user model. The model-facing decision tool additionally requires consent
-language in the current user message; assistant-authored evidence cannot
-confirm its own inference.
+typed user model. Free-text substring consent is invalid. The model-facing tool
+returns separate action-bound confirmation contracts containing candidate id,
+action, a session-bound token, and the exact command the user must send. The
+command must be the complete current user message; the decision records the
+current turn. Negative language and a token for another action or session cannot
+authorize acceptance.
 
 ## 6. Prospective memory
 
@@ -129,6 +164,7 @@ webhooks, and external polling remain host responsibilities.
 The personal default uses locked JSON stores under the memory root:
 
 - `episodes.json`
+- `capture_journal.json`
 - `reflection.json`
 - `prospective.json`
 - existing `user_model.json`
@@ -149,8 +185,10 @@ Personal defaults are configurable without changing the kernel contract:
 
 ## 8. Scope and remaining work
 
-This slice is deliberately local and auditable. It does not claim production
-hardening for very large histories, background scheduling, multi-device sync,
+This slice is deliberately local and auditable. Reviewed correctness hardening
+covers consent binding, authority, secret persistence, capture replay, Episode
+lifecycle, strict extractor protocol, and evidence response budgets. It does
+not claim production hardening for background scheduling, multi-device sync,
 learned ranking, ontology induction, or multi-tenant governance. Ranking and
 episode boundary quality should be improved from real usage traces after the
 write/read path is exercised.

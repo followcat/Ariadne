@@ -310,8 +310,8 @@ Production-hardening backlog.
 
 Design: [design/memory-intelligence.md](design/memory-intelligence.md).
 
-**Status: functional personal-kernel vertical slice; ranking and background
-hardening remain usage-driven work.**
+**Status: functional personal-kernel vertical slice; reviewed correctness
+hardening complete; production/ranking hardening remains usage-driven work.**
 
 - [x] Deterministic-first automatic turn projector with ambiguity-only optional LLM
 - [x] Typed preference supersession with temporal validity and evidence
@@ -321,6 +321,12 @@ hardening remain usage-driven work.**
 - [x] Cross-session Reflection candidates; explicit accept/reject gate
 - [x] Structured Prospective memory triggers; host owns external scheduling
 - [x] Turn-level observability and grounded end-to-end tests
+- [x] Action-bound Reflection confirmation contracts; negative text cannot accept
+- [x] Goal/Episode terminal authority; Assistant assertions remain non-authoritative
+- [x] Independent structured-secret redaction at the long-lived Memory boundary
+- [x] Recoverable capture journal plus capture-scoped Store idempotency
+- [x] Nonterminal failure/retry Episode lifecycle and strict LLM capture protocol
+- [x] Windowed Episode hits, stable event ids, paged evidence, and total byte caps
 
 ## Explicitly deferred forever (unless product changes)
 

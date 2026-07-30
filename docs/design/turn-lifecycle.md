@@ -21,7 +21,8 @@ Host
              break
       -> persist traces / schedule memory writes
       -> automatic memory capture (deterministic, optional ambiguity-only LLM)
-      -> append episode events / reflection signals / prospective matches
+      -> resume capture journal stages (user model/state/episode/reflection/prospective)
+      -> write capture completion marker
   <- TurnResult
 ```
 
@@ -35,6 +36,10 @@ Host
 6. Automatic memory records cite the completed turn/tool evidence.
 7. Optional capture failure is visible as a failed memory layer and does not
    rewrite the already determined task result.
+8. Unknown extractor shapes or capture statuses are failures, never silent
+   `skipped` results.
+9. A completed task contributes `verified_check` goal evidence; Assistant text
+   alone cannot complete authoritative Memory state.
 
 ## Closed-loop extension
 
@@ -54,5 +59,6 @@ See [agent-closed-loop.md](agent-closed-loop.md) and ROADMAP Phase 14.
 | Unknown tool | tool error result or turn fail per policy; default allow one recovery |
 | Loop limit | `ARIADNE_TOOL_LOOP_LIMIT` |
 | Memory required layer not ready | `ARIADNE_MEMORY_NOT_READY` if configured strict |
+| Automatic capture protocol violation | failed `auto_capture` LayerReport with `ARIADNE_MEMORY_CAPTURE_PROTOCOL`; turn result unchanged |
 | Required prompt evidence over budget | `ARIADNE_CONTEXT_BUDGET_EXCEEDED` |
 | Sandbox missing | `ARIADNE_SANDBOX_DISABLED` |

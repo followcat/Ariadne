@@ -122,15 +122,28 @@ the old current value.
 Completed turns are automatically inspected for explicit state changes and
 high-value episode events. Deterministic extraction handles simple statements;
 an optional LLM is reserved for ambiguous references and may only propose
-evidence-quoted records. Explicit user statements can update typed memory;
-cross-session inferences remain pending reflection candidates until confirmed.
+evidence-quoted records under a strict JSON protocol. Explicit user statements
+can update typed memory; cross-session inferences remain pending reflection
+candidates until the user sends the exact candidate/action confirmation
+contract. Free-text keyword matching does not authorize promotion.
 
-Episode search adds problem/attempt/observation/decision/outcome chains above
-the existing turn index. Deep search can traverse stored entities, relations,
-timelines, decisions, and outcomes, but always returns real turn citations.
+Episode search adds problem/attempt/observation/error/decision/outcome chains
+above the existing turn index. Failed attempts are nonterminal. Assistant
+self-reports remain `model_assertion`; only user-explicit, tool-observed, or
+verified-check terminal evidence may close an Episode or authoritative goal.
+Deep search can traverse stored entities, relations, timelines, decisions, and
+outcomes, but always returns real turn citations. Search returns a bounded event
+window and stable event ids; `memory_expand_evidence` pages full stored events
+under a separate byte cap.
 Structured prospective memories allow the host to reactivate a reminder when
 workspace, query, file, tool, or event triggers match. See
 [design/memory-intelligence.md](design/memory-intelligence.md).
+
+Automatic capture uses `capture_journal.json` to resume per-Store stages after
+failure. Store writes are turn-idempotent and completion is recorded only after
+all stages finish. Tool payloads are independently redacted at the Memory
+boundary; Episode records keep allowlisted status, digests, and evidence refs,
+not full arguments or outputs.
 
 ## 5. Write API
 

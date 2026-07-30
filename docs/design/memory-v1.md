@@ -174,7 +174,8 @@ This is the highest-leverage improvement over "vector chat memory."
           "authority": "user_explicit|assistant_confirmed|inferred"
         }
       },
-      "status": "active|done|cancelled|archived"
+      "status": "active|done|cancelled|archived",
+      "status_authority": "model_inferred|tool_observed|user_explicit|verified_check"
     }
   },
   "relations": {},
@@ -218,6 +219,12 @@ Rules:
 3. `uncertain` / low confidence -> explicit `failed` or host review; retry only
    transient failures. Never auto-convert failure to no-change.
 4. Processing order strictly by turn id.
+
+For automatic cognitive projection, Assistant-authored success language is
+episodic `model_assertion`, not goal authority. Setting an authoritative goal
+to `done` requires a terminal event sourced from explicit user confirmation,
+a closed tool observation, or Task verifier checks. Failed attempts and
+unverified outcomes remain nonterminal.
 
 ### 5.4 Read semantics (choose one mode; document it)
 
@@ -287,7 +294,8 @@ Not required for kernel MVP; if added, must create new versions, not silent over
 The implemented memory-intelligence slice refines this rule: explicit user
 changes may update a typed logical key automatically, while cross-session
 patterns create a pending, evidence-bearing Reflection candidate. Promotion of
-an inferred pattern requires user acceptance. See
+an inferred pattern requires an exact candidate/action/session confirmation
+contract; free-text substring consent is insufficient. See
 [memory-intelligence.md](memory-intelligence.md).
 
 ---
@@ -443,3 +451,5 @@ Eval harness must distinguish:
 | Episode unit | evidence-bound high-value events | Recovers a complete experience and its reasons |
 | Inferred patterns | pending Reflection candidate | User controls durable learning |
 | Future reminders | structured triggers in kernel; scheduling in host | Prospective memory without platform creep |
+| Automatic capture consistency | per-turn stage journal + Store idempotency | Recover from partial multi-Store writes without claiming multi-file ACID |
+| Episode evidence output | bounded match window + stable ids + paged expansion | Preserve causality without overflowing model context |

@@ -24,10 +24,18 @@ Stable enough for hosts to branch on.
 | `ARIADNE_SKILL_INVALID` | skills | pack failed validation |
 | `ARIADNE_MEMORY_NOT_READY` | memory | required layer/projection incomplete |
 | `ARIADNE_MEMORY_WRITE_FAILED` | memory | durable write failed |
+| `ARIADNE_MEMORY_CAPTURE_PROTOCOL` | memory | automatic extractor/status violated its closed protocol |
+| `ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID` | memory | capture journal schema, stage, or reference is invalid |
+| `ARIADNE_MEMORY_CAPTURE_CONFLICT` | memory | one turn id was replayed with different capturable evidence |
+| `ARIADNE_MEMORY_CAPTURE_CAPACITY` | memory | capture journal hard cap exceeded |
+| `ARIADNE_MEMORY_EVIDENCE_BUDGET` | memory | one evidence unit cannot fit its serialized-byte hard cap |
 | `ARIADNE_EPISODE_INVALID` | memory | episode schema/event/evidence is invalid |
 | `ARIADNE_EPISODE_CAPACITY` | memory | episode or event hard cap exceeded |
+| `ARIADNE_EPISODE_NOT_FOUND` | memory | requested Episode is absent or outside the active scope |
+| `ARIADNE_EPISODE_EVENT_NOT_FOUND` | memory | evidence cursor does not name a visible event |
 | `ARIADNE_REFLECTION_INVALID` | memory | reflection threshold/action/schema is invalid |
 | `ARIADNE_REFLECTION_NOT_FOUND` | memory | requested reflection candidate does not exist |
+| `ARIADNE_REFLECTION_CONFIRMATION_REQUIRED` | memory | candidate/action/session confirmation contract is missing or mismatched |
 | `ARIADNE_PROSPECTIVE_INVALID` | memory | prospective trigger/action/schema is invalid |
 | `ARIADNE_PROSPECTIVE_NOT_FOUND` | memory | requested prospective reminder does not exist |
 | `ARIADNE_PROSPECTIVE_CAPACITY` | memory | prospective reminder hard cap exceeded |

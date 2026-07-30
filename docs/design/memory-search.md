@@ -127,7 +127,7 @@ does not pick another user’s store.
       "score": 0.0,
       "snippet": "grounded excerpt from store",
       "evidence": {
-        "source": "raw | summary | chunk | curated",
+        "source": "raw | summary | chunk | curated | episode",
         "chunk_id": "optional",
         "entry_id": "optional — required when source=curated",
         "scope": "optional — curated scope when source=curated",
@@ -135,7 +135,13 @@ does not pick another user’s store.
       }
     }
   ],
-  "notes": "upgrade reason | demotions | index lag | empty reason"
+  "notes": "upgrade reason | demotions | index lag | empty reason",
+  "budget": {
+    "max_bytes": 64000,
+    "returned_bytes": 1234,
+    "truncated": false,
+    "omitted_hits": 0
+  }
 }
 ```
 
@@ -146,12 +152,33 @@ does not pick another user’s store.
 | `hits[].session_id` | Required when the store is multi-session for that scope; for pure session scope, still set to active session |
 | `hits[].snippet` | Substring or stored summary / curated text **from the store** — not model prose |
 | `hits[].score` | Comparable within one call; type (similarity / BM25) recorded in traces |
-| `hits[].evidence.source` | `raw` \| `summary` \| `chunk` \| `curated` — honest layer, not faked as summary |
+| `hits[].evidence.source` | `raw` \| `summary` \| `chunk` \| `curated` \| `episode` — honest layer, not faked as summary |
 | `hits[].evidence.entry_id` | When `source=curated`, the L3 entry id for audit |
 | `notes` | Human/debug string; empty ok |
+| `budget` | UTF-8 serialized response budget. The whole result is capped at 64,000 bytes; omitted hits are explicit |
 
 Empty hits: `{ "mode_used": "…", "hits": [], "notes": "…" }` — success with zero
 results, not a fake hit.
+
+Episode hits return only a bounded matched-event window: at most the anchor plus
+three events on either side. `event_ids` contains stable ids for the visible
+Episode and `matched_event_ids` identifies the search anchors. Full events are
+read explicitly with `memory_expand_evidence`:
+
+```json
+{
+  "episode_id": "ep-…",
+  "scope": "session",
+  "after_event_id": "ep-…:e7",
+  "limit": 8,
+  "before_turn_id": null
+}
+```
+
+The response contains `events`, `has_more`, and `next_after_event_id`. A page is
+limited to 16 events and 16,000 serialized UTF-8 bytes. Pagination and the main
+search response both enforce total evidence bytes; limiting hit count alone is
+not sufficient.
 
 ### 2.3 Errors (fastfail)
 
@@ -317,6 +344,7 @@ it — do not invent.*
 | L2 projection queue | `ARIADNE_ENABLE_MEMORY_PROJECTION` | off | Opt-in; default honest disabled L2 queue |
 | User memory root | Settings `user_memory_dir` | CLI `~/.ariadne/memory`; Web account `…/memory` | User curated + episodic |
 | Hit limit default / max | settings / tool | `8` / `32` | Over max → validation error |
+| Serialized search / evidence page cap | kernel constant | `64,000` / `16,000` UTF-8 bytes | Explicit truncation or structured over-budget error |
 | Score threshold (auto upgrade) | settings | implementation-defined | Fast “too weak” bar |
 | L2 demotion | on when L2 present | on | Stale hit demotion |
 
@@ -408,7 +436,7 @@ See [../ROADMAP.md](../ROADMAP.md) Phase 11b for the living checklist.
 | Packaging | Personal local backends first | No enterprise mesh |
 | Episode retrieval | Merge with turn hits | Adds event structure without replacing L4 |
 | Multi-hop plan | Closed traversal operation set | Planner chooses work but cannot invent history |
-| Evidence expansion | Stored event references only | Every synthesis can cite real turns |
+| Evidence expansion | Windowed hits + explicit `memory_expand_evidence` pages | Stable ids preserve causality without overflowing ContextCompiler |
 
 ---
 
