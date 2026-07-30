@@ -709,6 +709,53 @@ class TurnApplication:
         recent_tool_names: list[str] = []
         thrash_nudge_sent = False
         model_max_tokens = max(256, int(self.max_tokens or 8192))
+        skill_outcomes_recorded = False
+
+        def record_skill_outcomes(turn_outcome: str) -> None:
+            nonlocal skill_outcomes_recorded
+            ledger = getattr(self.skills, "outcome_ledger", None)
+            if ledger is None or skill_outcomes_recorded:
+                return
+            skill_outcomes_recorded = True
+            candidates = [
+                (skill.name, float(score))
+                for skill, score in [
+                    *skill_plan.get("auto_load", []),
+                    *skill_plan.get("recommended", []),
+                ]
+            ]
+            loaded = {
+                event.skill_name
+                for event in skill_events
+                if event.kind == "load"
+                and event.skill_name
+                and "skipped" not in event.detail
+            }
+            adopted = {
+                event.skill_name
+                for event in skill_events
+                if event.kind == "adopt" and event.skill_name
+            }
+            step_outcome = ""
+            task_outcome = ""
+            if task_state is not None:
+                task_outcome = task_state.status
+                if any(step.status == "verified" for step in task_state.steps):
+                    step_outcome = "verified"
+                elif any(step.status == "failed" for step in task_state.steps):
+                    step_outcome = "failed"
+            ledger.record_turn(
+                turn_id=turn_id,
+                session_id=session_id,
+                candidates=candidates,
+                loaded=loaded,
+                adopted=adopted,
+                tool_names=[call.name for call in tool_calls if call.name],
+                turn_outcome=turn_outcome,
+                step_outcome=step_outcome,
+                task_outcome=task_outcome,
+                user_corrected=bool((metadata or {}).get("user_corrected", False)),
+            )
 
         try:
             for loop_i in range(loop_limit):
@@ -1121,6 +1168,7 @@ class TurnApplication:
                             and getattr(ev, "content_digest", "")
                         ):
                             skill_pins[str(ev.skill_name)] = str(ev.content_digest)
+                    record_skill_outcomes(turn_status)
                     await guard.release()
                     result = TurnResult(
                         turn_id=turn_id,
@@ -1271,7 +1319,7 @@ class TurnApplication:
                                 "output": output,
                             },
                         )
-                        if name in {"search_skills", "load_skill"} and skill_events:
+                        if name in {"search_skills", "load_skill", "adopt_skill"} and skill_events:
                             yield TurnEvent(
                                 "skill_event",
                                 {
@@ -1455,6 +1503,7 @@ class TurnApplication:
                     "session_id": session_id,
                 }
             )
+            record_skill_outcomes("failed")
             result = TurnResult(
                 turn_id=turn_id,
                 status="failed",
@@ -1474,6 +1523,7 @@ class TurnApplication:
             yield TurnEvent("turn_failed", {"result": result})
         except AriadneError as exc:
             await guard.release()
+            record_skill_outcomes("failed")
             needs_input = bool(task_state is not None and task_state.status == "needs_input")
             if needs_input:
                 yield TurnEvent(
@@ -1507,6 +1557,7 @@ class TurnApplication:
             yield TurnEvent("turn_completed" if needs_input else "turn_failed", {"result": result})
         except Exception as exc:  # noqa: BLE001
             await guard.release()
+            record_skill_outcomes("failed")
             result = TurnResult(
                 turn_id=turn_id,
                 status="failed",

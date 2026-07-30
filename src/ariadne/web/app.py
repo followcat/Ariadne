@@ -119,6 +119,43 @@ class PluginBody(BaseModel):
     config: dict[str, str]
 
 
+class UserModelBody(BaseModel):
+    type: str
+    key: str
+    value: Any
+    confidence: float = 1.0
+    scope: str = "user"
+    workspace_key: str = ""
+    session_id: str = ""
+    expected_revision: int | None = None
+
+
+class UserModelExpireBody(BaseModel):
+    expected_revision: int
+
+
+class SkillPatchProposalBody(BaseModel):
+    description: str
+    body: str
+    keywords: list[str] = []
+    evidence: list[str]
+    expected_version: str
+
+
+class SkillPatchRejectBody(BaseModel):
+    reason: str
+
+
+class SkillCorrectionBody(BaseModel):
+    turn_id: str
+    skill_name: str
+    reason: str
+
+
+class SkillRankingBody(BaseModel):
+    enabled: bool
+
+
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="Ariadne Web")
     users = UserStore(settings.resolved_data_dir / "web" / "users.json")
@@ -138,6 +175,28 @@ def create_app(settings: Settings) -> FastAPI:
 
     def _user_data_dir(username: str) -> Path:
         return settings.resolved_data_dir / "web" / "users" / username
+
+    def _user_model_store(username: str) -> Any:
+        from ..memory.user_model import UserModelStore
+
+        return UserModelStore(_user_data_dir(username) / "memory" / "user_model.json")
+
+    def _user_skill_store(username: str) -> Any:
+        from ..skills.store import SkillStore
+
+        root = _user_data_dir(username) / "skills" / "user"
+        root.mkdir(parents=True, exist_ok=True)
+        return SkillStore.from_dir(
+            root,
+            strict=False,
+            user_root=root,
+            namespace="user",
+        )
+
+    def _skill_outcome_ledger(username: str) -> Any:
+        from ..skills.outcomes import SkillOutcomeLedger
+
+        return SkillOutcomeLedger(_user_data_dir(username) / "skills" / "outcomes.json")
 
     def _workspace_root_for(
         username: str,
@@ -509,6 +568,182 @@ def create_app(settings: Settings) -> FastAPI:
         except AriadneError as exc:
             raise HTTPException(status_code=400, detail=exc.error.message) from exc
         return {"status": "ok"}
+
+    @app.get("/api/me/user-model")
+    def get_user_model(
+        session_id: str = Query(default=""),
+        include_expired: bool = Query(default=False),
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            entries = _user_model_store(username).list(
+                workspace_key=str(_workspace_root_for(username).resolve()),
+                session_id=session_id,
+                include_expired=include_expired,
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {"entries": entries}
+
+    @app.post("/api/me/user-model")
+    def create_user_model_entry(
+        body: UserModelBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        workspace_key = body.workspace_key
+        if body.scope == "workspace" and not workspace_key:
+            workspace_key = str(_workspace_root_for(username).resolve())
+        try:
+            return _user_model_store(username).upsert(
+                entry_type=body.type,
+                key=body.key,
+                value=body.value,
+                source="user_explicit",
+                confidence=body.confidence,
+                scope=body.scope,
+                workspace_key=workspace_key,
+                session_id=body.session_id,
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+
+    @app.put("/api/me/user-model/{entry_id}")
+    def update_user_model_entry(
+        entry_id: str,
+        body: UserModelBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        if body.expected_revision is None:
+            raise HTTPException(status_code=400, detail="expected_revision is required")
+        workspace_key = body.workspace_key
+        if body.scope == "workspace" and not workspace_key:
+            workspace_key = str(_workspace_root_for(username).resolve())
+        try:
+            return _user_model_store(username).upsert(
+                entry_id=entry_id,
+                expected_revision=body.expected_revision,
+                entry_type=body.type,
+                key=body.key,
+                value=body.value,
+                source="user_explicit",
+                confidence=body.confidence,
+                scope=body.scope,
+                workspace_key=workspace_key,
+                session_id=body.session_id,
+            )
+        except AriadneError as exc:
+            status = 409 if exc.error.code == "ARIADNE_USER_MODEL_CONFLICT" else 400
+            raise HTTPException(status_code=status, detail=exc.error.message) from exc
+
+    @app.delete("/api/me/user-model/{entry_id}")
+    def expire_user_model_entry(
+        entry_id: str,
+        body: UserModelExpireBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return _user_model_store(username).expire(
+                entry_id=entry_id,
+                expected_revision=body.expected_revision,
+                source="user_explicit",
+            )
+        except AriadneError as exc:
+            status = 409 if exc.error.code == "ARIADNE_USER_MODEL_CONFLICT" else 400
+            raise HTTPException(status_code=status, detail=exc.error.message) from exc
+
+    @app.get("/api/me/skill-patches")
+    def list_skill_patches(
+        status: str | None = Query(default=None),
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return {"proposals": _user_skill_store(username).patches().list(status=status)}
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+
+    @app.post("/api/me/skills/{name}/patch-proposals")
+    def propose_skill_patch(
+        name: str,
+        body: SkillPatchProposalBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return _user_skill_store(username).patches().propose(
+                name=name,
+                description=body.description,
+                body=body.body,
+                keywords=body.keywords,
+                evidence=body.evidence,
+                expected_version=body.expected_version,
+            )
+        except AriadneError as exc:
+            status = 409 if exc.error.code == "ARIADNE_SKILL_PATCH_CONFLICT" else 400
+            raise HTTPException(status_code=status, detail=exc.error.message) from exc
+
+    @app.post("/api/me/skill-patches/{proposal_id}/confirm")
+    def confirm_skill_patch(
+        proposal_id: str,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return _user_skill_store(username).patches().confirm(
+                proposal_id=proposal_id,
+                confirmed_by=username,
+            )
+        except AriadneError as exc:
+            status = 409 if exc.error.code == "ARIADNE_SKILL_PATCH_CONFLICT" else 400
+            raise HTTPException(status_code=status, detail=exc.error.message) from exc
+
+    @app.post("/api/me/skill-patches/{proposal_id}/reject")
+    def reject_skill_patch(
+        proposal_id: str,
+        body: SkillPatchRejectBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return _user_skill_store(username).patches().reject(
+                proposal_id=proposal_id,
+                rejected_by=username,
+                reason=body.reason,
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+
+    @app.get("/api/me/skill-outcomes")
+    def get_skill_outcomes(
+        skill_name: str | None = Query(default=None),
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        ledger = _skill_outcome_ledger(username)
+        return {
+            "ranking_enabled": ledger.ranking_enabled(),
+            "events": ledger.list_events(skill_name=skill_name),
+            "adjustment": (
+                dataclasses.asdict(ledger.adjustment(skill_name)) if skill_name else None
+            ),
+        }
+
+    @app.post("/api/me/skill-outcomes/corrections")
+    def correct_skill_outcome(
+        body: SkillCorrectionBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            event_id = _skill_outcome_ledger(username).record_user_correction(
+                turn_id=body.turn_id,
+                skill_name=body.skill_name,
+                reason=body.reason,
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+        return {"event_id": event_id, "status": "recorded"}
+
+    @app.put("/api/me/skill-outcomes/ranking")
+    def put_skill_outcome_ranking(
+        body: SkillRankingBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        return _skill_outcome_ledger(username).set_ranking_enabled(body.enabled)
 
     def _parse_images(parts: list[ImagePart] | None) -> list[Any]:
         from ..multimodal import image_from_base64

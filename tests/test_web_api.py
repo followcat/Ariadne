@@ -110,6 +110,116 @@ def test_index_served(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_user_model_and_skill_patch_host_edit_surfaces(tmp_path: Path) -> None:
+    async def run() -> None:
+        async with _client(tmp_path) as client:
+            registered = await client.post(
+                "/api/auth/register",
+                json={"username": "modeler", "password": "password123"},
+            )
+            token = registered.json()["token"]
+            headers = {"Authorization": f"Bearer {token}"}
+
+            created = await client.post(
+                "/api/me/user-model",
+                headers=headers,
+                json={
+                    "type": "preference",
+                    "key": "answer_style",
+                    "value": "concise",
+                    "confidence": 1.0,
+                    "scope": "user",
+                },
+            )
+            assert created.status_code == 200, created.text
+            entry = created.json()
+            listed = await client.get("/api/me/user-model", headers=headers)
+            assert listed.json()["entries"][0]["value"] == "concise"
+
+            changed = await client.put(
+                f"/api/me/user-model/{entry['entry_id']}",
+                headers=headers,
+                json={
+                    "type": "preference",
+                    "key": "answer_style",
+                    "value": "detailed",
+                    "confidence": 1.0,
+                    "scope": "user",
+                    "expected_revision": 1,
+                },
+            )
+            assert changed.status_code == 200
+            stale = await client.put(
+                f"/api/me/user-model/{entry['entry_id']}",
+                headers=headers,
+                json={
+                    "type": "preference",
+                    "key": "answer_style",
+                    "value": "brief",
+                    "confidence": 1.0,
+                    "scope": "user",
+                    "expected_revision": 1,
+                },
+            )
+            assert stale.status_code == 409
+
+            skill_dir = (
+                tmp_path
+                / "data"
+                / "web"
+                / "users"
+                / "modeler"
+                / "skills"
+                / "user"
+                / "planner"
+            )
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: planner\ndescription: plan\nversion: \"1\"\n---\n\nold\n",
+                encoding="utf-8",
+            )
+            proposed = await client.post(
+                "/api/me/skills/planner/patch-proposals",
+                headers=headers,
+                json={
+                    "description": "plan verified steps",
+                    "body": "new",
+                    "keywords": ["verify"],
+                    "evidence": ["user corrected turn t1"],
+                    "expected_version": "1",
+                },
+            )
+            assert proposed.status_code == 200, proposed.text
+            proposal_id = proposed.json()["proposal_id"]
+            assert "old" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+            confirmed = await client.post(
+                f"/api/me/skill-patches/{proposal_id}/confirm",
+                headers=headers,
+            )
+            assert confirmed.status_code == 200, confirmed.text
+            assert confirmed.json()["version"] == "2"
+            assert "new" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+            correction = await client.post(
+                "/api/me/skill-outcomes/corrections",
+                headers=headers,
+                json={
+                    "turn_id": "t1",
+                    "skill_name": "planner",
+                    "reason": "the recommendation was wrong",
+                },
+            )
+            assert correction.status_code == 200
+            disabled = await client.put(
+                "/api/me/skill-outcomes/ranking",
+                headers=headers,
+                json={"enabled": False},
+            )
+            assert disabled.json()["ranking_enabled"] is False
+
+    asyncio.run(run())
+
+
 def test_users_file_permissions(tmp_path: Path) -> None:
     async def run() -> None:
         async with _client(tmp_path) as client:

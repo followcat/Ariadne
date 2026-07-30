@@ -1,6 +1,6 @@
 # Design: Closed-Loop Agent Execution (Personal / 2C)
 
-Status: **active delivery** (Phases 14a–c implemented; later phases pending)
+Status: **active delivery** (Phases 14a–d implemented; Phase 14e pending)
 Audience: implementers  
 Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [turn-lifecycle.md](turn-lifecycle.md),
 [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
@@ -453,9 +453,9 @@ Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 
 ### Phase 14d — Skill feedback + user model (P1)
 
-- [ ] Skill outcome ledger → ranking  
-- [ ] Skill patch proposal + user confirm + version  
-- [ ] Typed user model fields + host edit API  
+- [x] Skill outcome ledger → ranking
+- [x] Skill patch proposal + user confirm + version
+- [x] Typed user model fields + host edit API
 
 ### Phase 14e — Stretch (P2)
 

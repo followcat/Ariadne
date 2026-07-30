@@ -39,19 +39,20 @@ ariadne/
     types.py              # commands, events, errors
     policy.py             # core agent policy text assembly hooks
   skills/
-    models.py
     store.py              # load/validate skill packs
-    selector.py           # index / search / load plan
-    runtime_tools.py      # search_skills, load_skill, skill_manage handlers
+    outcomes.py           # decayed, explainable use→outcome ledger
+    patches.py            # propose / confirm / versioned write
   tools/
     models.py             # CapabilitySpec
     registry.py           # CapabilityRegistry + ToolExposureState
     runtime.py            # dispatch authorized invocations
     builtin/              # memory, progress, sandbox.exec, ...
   memory/
-    context.py            # MemoryContext assembly
-    layers/               # raw, summary, curated, semantic, state
-    ports.py
+    facade.py             # layered MemoryContext assembly
+    state.py              # evidence-bound conversation state
+    user_model.py         # typed editable personalization
+  context/
+    compiler.py           # prompt budget + attribution
   sandbox/
     port.py               # SandboxPort protocol
     null.py               # no-op / disabled

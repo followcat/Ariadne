@@ -16,6 +16,7 @@ from .semantic import SemanticIndex
 from .state import ConversationStateStore
 from .summary import TurnSummaryStore
 from .transcript import TranscriptStore
+from .user_model import UserModelStore
 
 STATE_DELTA_MAX_MESSAGES = 6
 STATE_DELTA_CHAR_CAP = 2000
@@ -54,6 +55,7 @@ class MemoryFacade:
     search_mode_default: str = "auto"
     # Optional workspace key stamped on user-episodic chunks
     workspace_key: str = ""
+    user_model: UserModelStore | None = None
     # per-layer char budgets (config, not vibes); truncation is always marked
     layer_budgets: dict[str, int] = field(
         default_factory=lambda: {
@@ -61,6 +63,7 @@ class MemoryFacade:
             "curated": 1500,
             "turn_summary": 2000,
             "semantic": 1500,
+            "user_model": 2000,
         }
     )
 
@@ -927,6 +930,36 @@ class MemoryFacade:
                 )
             )
 
+        user_model_text, user_model_count = (
+            self.user_model.render(
+                workspace_key=self.workspace_key,
+                session_id=session_id,
+            )
+            if self.user_model is not None
+            else ("", 0)
+        )
+        user_model_text, user_model_note = self._apply_budget(
+            "user_model", user_model_text
+        )
+        if user_model_text:
+            blocks.append(user_model_text)
+            layers.append(
+                LayerReport(
+                    name="user_model",
+                    status="used",
+                    token_chars=len(user_model_text),
+                    item_ids=[f"count:{user_model_count}"],
+                    notes=user_model_note,
+                )
+            )
+        else:
+            layers.append(
+                LayerReport(
+                    name="user_model",
+                    status="disabled" if self.user_model is None else "skipped",
+                )
+            )
+
         curated_text, curated_count = self._curated_snapshot(session_id)
         curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
@@ -1079,6 +1112,36 @@ class MemoryFacade:
                 )
             )
 
+        user_model_text, user_model_count = (
+            self.user_model.render(
+                workspace_key=self.workspace_key,
+                session_id=session_id,
+            )
+            if self.user_model is not None
+            else ("", 0)
+        )
+        user_model_text, user_model_note = self._apply_budget(
+            "user_model", user_model_text
+        )
+        if user_model_text:
+            blocks.append(user_model_text)
+            layers.append(
+                LayerReport(
+                    name="user_model",
+                    status="used",
+                    token_chars=len(user_model_text),
+                    item_ids=[f"count:{user_model_count}"],
+                    notes=user_model_note,
+                )
+            )
+        else:
+            layers.append(
+                LayerReport(
+                    name="user_model",
+                    status="disabled" if self.user_model is None else "skipped",
+                )
+            )
+
         curated_text, curated_count = self._curated_snapshot(session_id)
         curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
@@ -1220,6 +1283,7 @@ class Memory(MemoryFacade):
             user_id=user_id,
             user_curated=user_curated,
             user_episodic=user_episodic,
+            user_model=UserModelStore(path=root / "user_model.json"),
             deep_planner=deep_planner,
             search_mode_default=search_mode_default,
         )

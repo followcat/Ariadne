@@ -15,6 +15,7 @@ from ..memory.semantic import SemanticIndex
 from ..memory.state import ConversationStateStore
 from ..memory.summary import TurnSummaryStore
 from ..memory.transcript import TranscriptStore
+from ..memory.user_model import UserModelStore
 from ..model.openai_chat import OpenAIChatModel
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.docker import DockerSandbox
@@ -28,6 +29,7 @@ from ..sandbox.profiles import resolve_image
 from ..sandbox.runtime_agent import RuntimeAgent
 from ..sandbox.toolbox import get_profile as get_toolbox_profile
 from ..skills.store import SkillStore
+from ..skills.outcomes import SkillOutcomeLedger
 from ..tasks import DeterministicVerifier, SQLiteTaskStore, TaskController
 from ..tools.registry import build_default_registry
 
@@ -202,6 +204,7 @@ def compose_agent(settings: Settings) -> Agent:
         deep_planner=deep_planner,
         search_mode_default=getattr(settings, "memory_search_mode", None) or "auto",
         workspace_key=str(settings.workspace.resolve()) if settings.workspace else "",
+        user_model=UserModelStore(path=user_memory_dir / "user_model.json"),
     )
 
     skill_dirs: list[Path] = []
@@ -226,6 +229,7 @@ def compose_agent(settings: Settings) -> Agent:
         embedder=embedder,
         namespaces=skill_namespaces,
         budgets=settings.skill_plan_budgets(),
+        outcome_ledger=SkillOutcomeLedger(data_dir / "skills" / "outcomes.json"),
     )
 
     tools = build_default_registry(memory=memory, skills=skills)

@@ -101,6 +101,15 @@ TurnApplication must use this façade, not ad-hoc store reads.
 - layer status (`used` / `skipped` / `failed` / `disabled`)
 - identifiers for traces (entry ids, version ids)
 
+### 4.1 Typed user model
+
+Long-lived personalization is stored separately from free-form curated notes as
+typed `preference | goal | capability | constraint | relation` entries. Every
+entry carries source, confidence, scope (`user | workspace | session`), status,
+timestamps, revision, and superseded history. Active in-scope entries render as
+the `user_model` memory layer. Authenticated host endpoints allow the user to
+create, edit with revision CAS, list, and expire entries.
+
 ## 5. Write API
 
 Minimum personal v1:

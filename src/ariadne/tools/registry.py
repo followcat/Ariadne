@@ -927,6 +927,68 @@ def build_default_registry(
         )
     )
 
+    async def adopt_skill(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if ctx.skills is None or ctx.skill_events is None:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "skill trace is unavailable"))
+        name = str(args.get("name") or "").strip()
+        if ctx.skills.get(name) is None:
+            raise AriadneError(
+                app_error("ARIADNE_SKILL_NOT_FOUND", f"skill not found: {name}", name=name)
+            )
+        loaded = any(
+            event.kind == "load" and event.skill_name == name
+            and "skipped" not in event.detail
+            for event in ctx.skill_events
+        )
+        if not loaded:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_SKILL_ADOPTION_INVALID",
+                    "load the skill before explicitly adopting its guidance",
+                    name=name,
+                )
+            )
+        from ..types import SkillEvent
+
+        if not any(
+            event.kind == "adopt" and event.skill_name == name
+            for event in ctx.skill_events
+        ):
+            ctx.skill_events.append(
+                SkillEvent(
+                    kind="adopt",
+                    skill_name=name,
+                    detail=str(args.get("reason") or "explicit model adoption").strip(),
+                )
+            )
+        return {"name": name, "adopted": True}
+
+    registry.register(
+        ToolSpec(
+            name="adopt_skill",
+            catalog_description="declare use of loaded skill guidance",
+            description=(
+                "Explicitly declare that this turn is following a previously loaded skill. "
+                "Loading alone is not adoption and receives no success credit."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["name", "reason"],
+                "additionalProperties": False,
+            },
+            handler=adopt_skill,
+            title="Adopt skill",
+            kind="tool",
+            side_effect_level="none",
+            network_access="none",
+            idempotent=True,
+        )
+    )
+
     async def skill_manage(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         if ctx.skills is None:
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "skill store not configured"))
@@ -935,6 +997,26 @@ def build_default_registry(
         keywords = args.get("keywords") or []
         if not isinstance(keywords, list):
             keywords = [str(keywords)]
+        if action == "propose_update":
+            evidence = args.get("evidence") or []
+            if not isinstance(evidence, list):
+                raise AriadneError(
+                    app_error("ARIADNE_INVALID_TOOL_ARGS", "evidence must be a list")
+                )
+            return ctx.skills.patches().propose(
+                name=name,
+                description=str(args.get("description") or ""),
+                body=str(args.get("body") or ""),
+                keywords=[str(x) for x in keywords],
+                evidence=[str(x) for x in evidence],
+                expected_version=str(args.get("expected_version") or ""),
+            )
+        if action == "list_proposals":
+            return {
+                "proposals": ctx.skills.patches().list(
+                    status=str(args.get("status") or "") or None
+                )
+            }
         return ctx.skills.manage(
             action=action,
             name=name,
@@ -947,17 +1029,27 @@ def build_default_registry(
         ToolSpec(
             name="skill_manage",
             catalog_description="create/update user skills",
-            description="Create, update, or delete versioned user skills under the user skills root.",
+            description=(
+                "Create/delete user skills, or propose an evidence-backed update. "
+                "Updates return a diff and remain pending until the host user confirms them; "
+                "the model cannot confirm its own proposal."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["create", "update", "delete"]},
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "delete", "propose_update", "list_proposals"],
+                    },
                     "name": {"type": "string"},
                     "description": {"type": "string"},
                     "body": {"type": "string"},
                     "keywords": {"type": "array", "items": {"type": "string"}},
+                    "evidence": {"type": "array", "items": {"type": "string"}},
+                    "expected_version": {"type": "string"},
+                    "status": {"type": "string", "enum": ["pending", "applied", "rejected"]},
                 },
-                "required": ["action", "name"],
+                "required": ["action"],
                 "additionalProperties": False,
             },
             handler=skill_manage,
@@ -965,7 +1057,13 @@ def build_default_registry(
             title="Skill manage",
             side_effect_level="write",
             side_effect_resolver=lambda args: (
-                "destructive" if str(args.get("action") or "") == "delete" else "write"
+                "destructive"
+                if str(args.get("action") or "") == "delete"
+                else (
+                    "read"
+                    if str(args.get("action") or "") == "list_proposals"
+                    else "write"
+                )
             ),
             network_access="none",
             idempotent=False,

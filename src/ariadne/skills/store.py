@@ -8,6 +8,8 @@ from typing import Any
 
 from ..errors import AriadneError, app_error
 from ..memory.embeddings import EmbeddingProvider, HashEmbeddingProvider, cosine
+from .outcomes import SkillOutcomeLedger
+from .patches import SkillPatchStore
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -176,12 +178,28 @@ class SkillStore:
         user_root: Path | None = None,
         embedder: EmbeddingProvider | None = None,
         budgets: SkillPlanBudgets | None = None,
+        outcome_ledger: SkillOutcomeLedger | None = None,
     ) -> None:
         self._skills = dict(skills or {})
         self.user_root = user_root
         self.embedder = embedder or HashEmbeddingProvider(dims=32)
         self._emb_cache: dict[str, list[float]] = {}
         self.budgets = budgets or SkillPlanBudgets()
+        self.outcome_ledger = outcome_ledger
+        self._last_outcome_adjustments: dict[str, dict[str, Any]] = {}
+        self._patch_store: SkillPatchStore | None = None
+
+    def patches(self) -> SkillPatchStore:
+        if self.user_root is None:
+            raise AriadneError(
+                app_error("ARIADNE_CONFIG_INVALID", "user skills root not configured")
+            )
+        if self._patch_store is None:
+            self._patch_store = SkillPatchStore(
+                skill_store=self,
+                path=self.user_root / ".patch_proposals.json",
+            )
+        return self._patch_store
 
     def is_writable(self, name: str) -> bool:
         """User namespace skills (or unknown names under user_root) may be managed."""
@@ -213,12 +231,19 @@ class SkillStore:
         embedder: EmbeddingProvider | None = None,
         namespace: str | None = None,
         budgets: SkillPlanBudgets | None = None,
+        outcome_ledger: SkillOutcomeLedger | None = None,
     ) -> "SkillStore":
         root = root.resolve()
         if not root.is_dir():
             if strict:
                 raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"skills dir missing: {root}"))
-            return cls({}, user_root=user_root, embedder=embedder, budgets=budgets)
+            return cls(
+                {},
+                user_root=user_root,
+                embedder=embedder,
+                budgets=budgets,
+                outcome_ledger=outcome_ledger,
+            )
         ns = namespace or infer_namespace(root, user_root=user_root)
         skills: dict[str, Skill] = {}
         for path in sorted(root.iterdir()):
@@ -235,7 +260,13 @@ class SkillStore:
                     ) from exc
                 continue
             skills[skill.name] = skill
-        return cls(skills, user_root=user_root, embedder=embedder, budgets=budgets)
+        return cls(
+            skills,
+            user_root=user_root,
+            embedder=embedder,
+            budgets=budgets,
+            outcome_ledger=outcome_ledger,
+        )
 
     @classmethod
     def from_dirs(
@@ -247,6 +278,7 @@ class SkillStore:
         embedder: EmbeddingProvider | None = None,
         namespaces: list[str] | None = None,
         budgets: SkillPlanBudgets | None = None,
+        outcome_ledger: SkillOutcomeLedger | None = None,
     ) -> "SkillStore":
         """Load multiple roots. Later roots override same names (user last wins).
 
@@ -272,9 +304,16 @@ class SkillStore:
                 embedder=embedder,
                 namespace=ns,
                 budgets=budgets,
+                outcome_ledger=outcome_ledger,
             )
             merged.update(part._skills)
-        return cls(merged, user_root=user_root, embedder=embedder, budgets=budgets)
+        return cls(
+            merged,
+            user_root=user_root,
+            embedder=embedder,
+            budgets=budgets,
+            outcome_ledger=outcome_ledger,
+        )
 
     @staticmethod
     def _load_one(path: Path, *, namespace: str | None = None) -> Skill:
@@ -513,6 +552,8 @@ class SkillStore:
             {"auto_load": auto, "recommended": recommended, "other": other, "report": {}},
         )
         report["plan_chars"] = len(plan_text_est)
+        if self._last_outcome_adjustments:
+            report["outcome_adjustments"] = dict(self._last_outcome_adjustments)
         return {
             "auto_load": auto,
             "recommended": recommended,
@@ -566,6 +607,7 @@ class SkillStore:
             return []
         q_emb = (await self.embedder.embed([query]))[0]
         scored: list[tuple[float, Skill]] = []
+        self._last_outcome_adjustments = {}
         for i, skill in enumerate(lexical):
             key = skill.name + ":" + skill.version
             if key not in self._emb_cache:
@@ -573,7 +615,20 @@ class SkillStore:
                 self._emb_cache[key] = emb
             emb_score = cosine(q_emb, self._emb_cache[key])
             lex_score = 1.0 / (1 + i)
-            scored.append((0.4 * lex_score + 0.6 * emb_score, skill))
+            base_score = 0.4 * lex_score + 0.6 * emb_score
+            if self.outcome_ledger is not None:
+                evidence = self.outcome_ledger.adjustment(skill.name)
+                base_score += evidence.adjustment
+                self._last_outcome_adjustments[skill.name] = {
+                    "adjustment": round(evidence.adjustment, 6),
+                    "sample_count": evidence.sample_count,
+                    "positive": evidence.positive,
+                    "negative": evidence.negative,
+                    "false_loads": evidence.false_loads,
+                    "enabled": evidence.enabled,
+                    "reason": evidence.reason,
+                }
+            scored.append((base_score, skill))
         scored.sort(key=lambda item: -item[0])
         return scored[:limit]
 
@@ -598,6 +653,14 @@ class SkillStore:
             raise AriadneError(app_error("ARIADNE_SKILL_INVALID", f"invalid skill name {name!r}"))
         # Builtin / workspace / local packs are read-only via skill_manage.
         self._guard_manage(name, action=action)
+        if action == "update":
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_SKILL_CONFIRMATION_REQUIRED",
+                    "skill updates require propose_update followed by host user confirmation",
+                    name=name,
+                )
+            )
         self.user_root.mkdir(parents=True, exist_ok=True)
         skill_dir = self.user_root / name
         if action == "delete":

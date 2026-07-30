@@ -89,7 +89,18 @@ def test_tags_targeted_refs_version_bump_requires(tmp_path: Path) -> None:
     # version bump on user skill update
     store.manage(action="create", name="mine", description="d", body="b1")
     assert store.get("mine").version == "1"
-    store.manage(action="update", name="mine", description="d2", body="b2")
+    proposal = store.patches().propose(
+        name="mine",
+        description="d2",
+        body="b2",
+        keywords=[],
+        evidence=["user asked to update the skill"],
+        expected_version="1",
+    )
+    assert store.get("mine").version == "1"
+    store.patches().confirm(
+        proposal_id=proposal["proposal_id"], confirmed_by="test-user"
+    )
     assert store.get("mine").version == "2"
 
 

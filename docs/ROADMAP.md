@@ -232,7 +232,7 @@ Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
 **North star:** after each material action, verify with evidence; update the plan
 from evidence — not from “tool returned success.”
 
-**Status: 14a–c shipped; 14d–e pending.**
+**Status: 14a–d shipped; 14e pending.**
 
 #### 14a — Verify + TaskState (P0)
 - [x] `TaskState` persistence (local SQLite, task identity + active session
@@ -267,9 +267,13 @@ from evidence — not from “tool returned success.”
   fails rather than truncates
 
 #### 14d — Skill feedback + user model (P1)
-- [ ] Skill outcome ledger → selection ranking (not auto body rewrite)
-- [ ] Skill patch proposal + user confirm + versioned user skills
-- [ ] Typed user model (preferences / goals / constraints) + host edit surface
+- [x] Skill outcome ledger records candidate/load/explicit-adoption/tool/outcome/
+  correction signals; selection adjustment has a minimum-sample gate, decay,
+  explanation, bounded effect, and host disable switch
+- [x] Evidence-backed skill patch proposal + generated diff + authenticated user
+  confirm/reject + expected-version CAS + version snapshot (no model self-confirm)
+- [x] Typed user model (preference / goal / capability / constraint / relation),
+  scoped and revisioned, included in memory context with authenticated host edit API
 
 #### 14e — Stretch (P2)
 - [ ] Optional semantic verifier model (only when no deterministic oracle)

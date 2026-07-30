@@ -72,7 +72,8 @@ These are normal tools in the **one** capability registry:
 | --- | --- |
 | `search_skills` | semantic or lexical search over installed skills |
 | `load_skill` / `load_body` | load full skill body + selected references |
-| `skill_manage` (optional later) | create/update **user** skills with versioning |
+| `adopt_skill` | explicitly mark that loaded guidance is being followed |
+| `skill_manage` | create user skills; propose/list evidence-backed updates |
 
 Builtin catalog skills are read-only in personal v1 unless explicitly configured otherwise.
 
@@ -85,6 +86,23 @@ Prefer **turn-scoped** load:
 - next turn re-selects/reloads as needed
 
 Legacy “inject into system forever this session” mode is discouraged.
+
+### 4.2 Outcome and patch discipline
+
+`loaded` is exposure, not causality. A skill receives adoption credit only after
+an explicit `adopt_skill` event. The local outcome ledger also records candidate
+score, tools used, step/task result, and user corrections. Ranking adjustments:
+
+- require a minimum sample count;
+- decay old evidence;
+- are bounded and explainable;
+- can be disabled without deleting evidence.
+
+An agent cannot apply its own skill update. `propose_update` stores evidence and
+a generated unified diff. The authenticated host user confirms or rejects it;
+confirmation rechecks the expected version, snapshots the old pack, then writes
+the bumped version. Merely loading a skill and later succeeding is never treated
+as proof that the skill caused success.
 
 ## 5. Skill selection plan
 
@@ -154,7 +172,8 @@ No company namespace system, no multi-tenant pack install protocol.
 - Connector-owned skills that execute platform side effects without tools
 - Background company skill learning pipelines as a required component
 
-Background “skill learning” may appear later as an optional module; it must still write versioned skill data, not mutate kernel code.
+There is no unsupervised skill-rewrite worker. Outcome evidence may influence
+bounded ranking, while content changes always use proposal and user confirmation.
 
 ## 10. Implementation phases
 

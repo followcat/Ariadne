@@ -70,7 +70,7 @@ class MemoryContext:
 
 @dataclass(slots=True)
 class SkillEvent:
-    kind: Literal["search", "load", "index"]
+    kind: Literal["search", "load", "adopt", "index"]
     skill_name: str = ""
     detail: str = ""
     # sha256 hex prefix of skill body when load happened (audit / replay pins)
