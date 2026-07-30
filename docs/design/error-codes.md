@@ -30,6 +30,7 @@ Stable enough for hosts to branch on.
 | `ARIADNE_MEMORY_CAPTURE_CONFLICT` | memory | one turn id was replayed with different capturable evidence |
 | `ARIADNE_MEMORY_CAPTURE_CAPACITY` | memory | capture journal hard cap exceeded |
 | `ARIADNE_MEMORY_CAPTURE_AFFINITY` | memory | pending capture workspace or StateStore identity does not match the active projector |
+| `ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED` | memory | legacy pending capture lacks enough affinity evidence for safe replay and was quarantined |
 | `ARIADNE_MEMORY_CAPTURE_RESUME_FAILED` | memory | a pending capture stage raised outside a structured Ariadne error during bounded recovery |
 | `ARIADNE_MEMORY_EVIDENCE_BUDGET` | memory | one evidence unit cannot fit its serialized-byte hard cap |
 | `ARIADNE_EPISODE_INVALID` | memory | episode schema/event/evidence is invalid |

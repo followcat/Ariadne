@@ -1214,6 +1214,7 @@ class TurnApplication:
                                     "prospective_entry_ids",
                                     "triggered_prospective_ids",
                                     "recovered_capture_ids",
+                                    "migration_required_capture_ids",
                                 )
                                 for item in (
                                     capture_report.get(key)
@@ -1234,7 +1235,8 @@ class TurnApplication:
                                 f"llm_used={bool(capture_report.get('llm_used'))}; "
                                 f"llm_rejected={int(capture_report.get('llm_rejected') or 0)}; "
                                 f"recovered={len(capture_report.get('recovered_capture_ids') or [])}; "
-                                f"recovery_failed={len(recovery_failures)}"
+                                f"recovery_failed={len(recovery_failures)}; "
+                                f"migration_required={len(capture_report.get('migration_required_capture_ids') or [])}"
                             )
                             if recovery_codes:
                                 capture_notes += "; recovery_codes=" + ",".join(

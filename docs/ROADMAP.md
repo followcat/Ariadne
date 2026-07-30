@@ -310,9 +310,8 @@ Production-hardening backlog.
 
 Design: [design/memory-intelligence.md](design/memory-intelligence.md).
 
-**Status: functional personal-kernel vertical slice; affinity, terminal
-authority, Goal identity, and secret-boundary hardening landed, while journal
-migration remains pending.**
+**Status: functional personal-kernel vertical slice; reviewed correctness
+hardening complete; production/ranking hardening remains usage-driven work.**
 
 - [x] Deterministic-first automatic turn projector with ambiguity-only optional LLM
 - [x] Typed preference supersession with temporal validity and evidence
@@ -326,6 +325,7 @@ migration remains pending.**
 - [x] Host-owned Goal/Episode transitions, monotonic status authority, and no in-place terminal reactivation
 - [x] Independent structured-secret redaction, including camelCase keys/scalar assignments and digest-only nested allowlist values
 - [x] Recoverable capture journal, workspace/StateStore affinity fencing, Store idempotency, and bounded/fair next-turn recovery
+- [x] Capture journal v2 migration; unrecoverable legacy pending rows are terminal `migration_required` quarantine records
 - [x] Nonterminal failure/retry Episode lifecycle and strict LLM capture protocol
 - [x] Windowed Episode hits, stable event ids, paged evidence, and total byte caps
 

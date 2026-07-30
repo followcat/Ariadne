@@ -1134,6 +1134,14 @@ class AutomaticMemoryProjector:
         return {
             "recovered_capture_ids": recovered,
             "recovery_failures": failures,
+            "migration_required_capture_ids": [
+                str(row.get("capture_id") or "")
+                for row in self.journal.list_quarantined(
+                    workspace_key=workspace_key,
+                    limit=self.resume_batch_size,
+                )
+                if row.get("capture_id")
+            ],
         }
 
     @staticmethod
@@ -1147,6 +1155,9 @@ class AutomaticMemoryProjector:
             recovery.get("recovered_capture_ids") or []
         )
         result["recovery_failures"] = list(recovery.get("recovery_failures") or [])
+        result["migration_required_capture_ids"] = list(
+            recovery.get("migration_required_capture_ids") or []
+        )
         if result["recovery_failures"]:
             result["status"] = "failed"
         return result

@@ -159,6 +159,10 @@ Episode records keep bounded scalar status fields, digests, and evidence refs;
 nested or oversized values are digest-only and full arguments/outputs are never
 stored.
 
+`capture_journal.json` schema v2 quarantines legacy pending rows that lack a
+StateStore identity. Such rows become terminal `migration_required` records;
+they are observable but never retried as transient failures.
+
 ## 5. Write API
 
 Minimum personal v1:

@@ -1,8 +1,7 @@
 # Design: Memory Intelligence Vertical Slice
 
-Status: **functional vertical slice complete; affinity, terminal authority,
-Goal identity, and secret-boundary hardening landed, while journal migration
-remains pending**
+Status: **functional vertical slice; reviewed correctness hardening complete;
+production/ranking hardening pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -67,6 +66,15 @@ so a shared user journal cannot replay L2 state into a different workspace
 store. Affinity mismatches and other failures are persisted with attempt
 metadata and rotate behind other pending records. They mark the Memory layer
 failed without blocking capture of the current turn.
+
+Capture journal schema v2 requires StateStore affinity. During the v1-to-v2
+migration, completed records and pending records that already carry an identity
+remain active. A legacy pending row without identity cannot be recovered safely:
+it moves atomically to `quarantined_records` with terminal status
+`migration_required` and error code
+`ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED`. It is excluded from recovery and
+therefore cannot create an infinite transient-failure loop. Bounded quarantine
+ids remain visible in `auto_capture` observability.
 
 ## 2. Episode and causal memory
 

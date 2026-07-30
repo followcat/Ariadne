@@ -18,6 +18,8 @@ CAPTURE_STAGES = (
     "prospective",
 )
 CAPTURE_RESUME_LIMIT_MAX = 32
+CAPTURE_QUARANTINE_LIMIT_MAX = 512
+CAPTURE_JOURNAL_SCHEMA_VERSION = 2
 
 
 @dataclass(slots=True)
@@ -38,10 +40,111 @@ class CaptureJournalStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             locked_write_json(self.path, self._empty())
+        else:
+            self._migrate_schema()
 
     @staticmethod
     def _empty() -> dict[str, Any]:
-        return {"schema_version": 1, "records": {}}
+        return {
+            "schema_version": CAPTURE_JOURNAL_SCHEMA_VERSION,
+            "records": {},
+            "quarantined_records": {},
+        }
+
+    def _migrate_schema(self) -> None:
+        """Upgrade v1 without guessing affinity for unrecoverable pending rows."""
+
+        def mut(data: Any) -> dict[str, Any]:
+            if not isinstance(data, dict):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                        "automatic-capture journal root must be an object",
+                    )
+                )
+            version = int(data.get("schema_version") or 0)
+            if version == CAPTURE_JOURNAL_SCHEMA_VERSION:
+                if not isinstance(data.get("records"), dict) or not isinstance(
+                    data.get("quarantined_records"), dict
+                ):
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                            "automatic-capture journal containers are invalid",
+                        )
+                    )
+                return data
+            if version != 1:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                        "unknown automatic-capture journal schema",
+                        schema_version=version,
+                    )
+                )
+            records = data.get("records") or {}
+            if not isinstance(records, dict):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                        "legacy automatic-capture records must be an object",
+                    )
+                )
+            active: dict[str, Any] = {}
+            quarantined: dict[str, Any] = {}
+            now = time.time()
+            for key, value in records.items():
+                capture_id = str(key)
+                if not isinstance(value, dict):
+                    quarantined[capture_id] = {
+                        "capture_id": capture_id,
+                        "status": "migration_required",
+                        "legacy_status": "invalid",
+                        "migration_error_code": "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED",
+                        "migration_reason": "legacy record is not an object",
+                        "source_schema_version": 1,
+                        "quarantined_at": now,
+                    }
+                    continue
+                row = copy.deepcopy(value)
+                status = str(row.get("status") or "")
+                if status == "in_progress" and not str(
+                    row.get("state_store_identity") or ""
+                ).strip():
+                    row["legacy_status"] = status
+                    row["status"] = "migration_required"
+                    row["migration_error_code"] = (
+                        "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED"
+                    )
+                    row["migration_reason"] = (
+                        "legacy pending capture has no state-store identity"
+                    )
+                    row["source_schema_version"] = 1
+                    row["quarantined_at"] = now
+                    quarantined[capture_id] = row
+                    continue
+                if status not in {"in_progress", "completed"}:
+                    row["legacy_status"] = status or "missing"
+                    row["status"] = "migration_required"
+                    row["migration_error_code"] = (
+                        "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED"
+                    )
+                    row["migration_reason"] = "legacy record status is unrecoverable"
+                    row["source_schema_version"] = 1
+                    row["quarantined_at"] = now
+                    quarantined[capture_id] = row
+                    continue
+                row["source_schema_version"] = 1
+                active[capture_id] = row
+            return {
+                "schema_version": CAPTURE_JOURNAL_SCHEMA_VERSION,
+                "records": active,
+                "quarantined_records": quarantined,
+                "migrated_from_schema_version": 1,
+                "migrated_at": now,
+            }
+
+        locked_update_json(self.path, mut, default=self._empty())
 
     @staticmethod
     def capture_id(*, workspace_key: str, session_id: str, turn_id: str) -> str:
@@ -54,7 +157,13 @@ class CaptureJournalStore:
 
     def _read(self) -> dict[str, Any]:
         data = locked_read_json(self.path, default=self._empty())
-        if not isinstance(data, dict) or int(data.get("schema_version") or 0) != 1:
+        if (
+            not isinstance(data, dict)
+            or int(data.get("schema_version") or 0)
+            != CAPTURE_JOURNAL_SCHEMA_VERSION
+            or not isinstance(data.get("records"), dict)
+            or not isinstance(data.get("quarantined_records"), dict)
+        ):
             raise AriadneError(
                 app_error(
                     "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
@@ -62,6 +171,38 @@ class CaptureJournalStore:
                 )
             )
         return data
+
+    def list_quarantined(
+        self,
+        *,
+        workspace_key: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if limit < 1 or limit > CAPTURE_QUARANTINE_LIMIT_MAX:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                    "capture quarantine limit is outside the supported range",
+                    limit=limit,
+                    maximum=CAPTURE_QUARANTINE_LIMIT_MAX,
+                )
+            )
+        rows = [
+            copy.deepcopy(row)
+            for row in (self._read().get("quarantined_records") or {}).values()
+            if isinstance(row, dict)
+            and (
+                workspace_key is None
+                or str(row.get("workspace_key") or "") == workspace_key
+            )
+        ]
+        rows.sort(
+            key=lambda row: (
+                float(row.get("quarantined_at") or 0.0),
+                str(row.get("capture_id") or ""),
+            )
+        )
+        return rows[:limit]
 
     def get(
         self, *, workspace_key: str, session_id: str, turn_id: str
