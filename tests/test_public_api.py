@@ -42,7 +42,7 @@ def test_run_turn_command_roundtrip(tmp_path: Path) -> None:
         command = RunTurnCommand(
             session_id="pub",
             input="hello kernel",
-            user_id="u1",
+            user_id=None,  # single-operator default; must match facade user_id
             tool_loop_limit=4,
             metadata={"source": "test"},
         )
