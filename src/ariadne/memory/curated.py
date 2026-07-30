@@ -20,7 +20,11 @@ from .json_file import locked_read_json, locked_update_json
 ENTRY_LIMIT = 24
 ENTRY_CHAR_LIMIT = 600
 SCOPES = frozenset({"user", "workspace", "session"})
-_EMPTY = {"user": [], "workspace": [], "session": {}}
+
+
+def _empty_store() -> dict[str, Any]:
+    """Fresh empty document (no shared nested mutables)."""
+    return {"user": [], "workspace": [], "session": {}}
 
 
 @dataclass
@@ -32,14 +36,14 @@ class CuratedStore:
     def __post_init__(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
-            locked_update_json(self.path, lambda d: d, default=dict(_EMPTY))
+            locked_update_json(self.path, lambda d: d, default=_empty_store())
         else:
             self._migrate_if_needed()
 
     def _migrate_if_needed(self) -> None:
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(data, dict):
-                data = dict(_EMPTY)
+                data = _empty_store()
             if "workspace" not in data:
                 data["workspace"] = []
             for scope_key in ("user", "workspace"):
@@ -52,7 +56,7 @@ class CuratedStore:
                 sessions[sid] = new_items
             return data
 
-        locked_update_json(self.path, mut, default=dict(_EMPTY))
+        locked_update_json(self.path, mut, default=_empty_store())
 
     @staticmethod
     def _stabilize_entries(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
@@ -77,9 +81,9 @@ class CuratedStore:
         return out, changed
 
     def _read(self) -> dict[str, Any]:
-        data = locked_read_json(self.path, default=dict(_EMPTY))
+        data = locked_read_json(self.path, default=_empty_store())
         if not isinstance(data, dict):
-            return dict(_EMPTY)
+            return _empty_store()
         data.setdefault("user", [])
         data.setdefault("workspace", [])
         data.setdefault("session", {})
@@ -190,7 +194,7 @@ class CuratedStore:
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             nonlocal result
             if not isinstance(data, dict):
-                data = dict(_EMPTY)
+                data = _empty_store()
             data.setdefault("user", [])
             data.setdefault("workspace", [])
             data.setdefault("session", {})
@@ -249,7 +253,7 @@ class CuratedStore:
             }
             return data
 
-        locked_update_json(self.path, mut, default=dict(_EMPTY))
+        locked_update_json(self.path, mut, default=_empty_store())
         return result
 
     def _resolve_ref(self, entries: list[dict[str, Any]], ref: str) -> int:
