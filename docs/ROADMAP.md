@@ -306,6 +306,22 @@ Production-hardening backlog.
 - [x] Opt-in controlled 2–3-way advisory delegation through the one registry;
   delegates have zero capabilities and must quote parent evidence
 
+### Phase 15 — Memory intelligence (personal vertical slice)
+
+Design: [design/memory-intelligence.md](design/memory-intelligence.md).
+
+**Status: functional personal-kernel vertical slice; ranking and background
+hardening remain usage-driven work.**
+
+- [x] Deterministic-first automatic turn projector with ambiguity-only optional LLM
+- [x] Typed preference supersession with temporal validity and evidence
+- [x] Evidence-bound Episode events and decision/causal chains
+- [x] Full-operation L2 replay for relation/status/collection as-of reads
+- [x] Episode-aware search and constrained entity/relation/timeline traversal
+- [x] Cross-session Reflection candidates; explicit accept/reject gate
+- [x] Structured Prospective memory triggers; host owns external scheduling
+- [x] Turn-level observability and grounded end-to-end tests
+
 ## Explicitly deferred forever (unless product changes)
 
 - Company Pack system (superseded by official optional plugins)

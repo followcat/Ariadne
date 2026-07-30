@@ -24,6 +24,13 @@ Stable enough for hosts to branch on.
 | `ARIADNE_SKILL_INVALID` | skills | pack failed validation |
 | `ARIADNE_MEMORY_NOT_READY` | memory | required layer/projection incomplete |
 | `ARIADNE_MEMORY_WRITE_FAILED` | memory | durable write failed |
+| `ARIADNE_EPISODE_INVALID` | memory | episode schema/event/evidence is invalid |
+| `ARIADNE_EPISODE_CAPACITY` | memory | episode or event hard cap exceeded |
+| `ARIADNE_REFLECTION_INVALID` | memory | reflection threshold/action/schema is invalid |
+| `ARIADNE_REFLECTION_NOT_FOUND` | memory | requested reflection candidate does not exist |
+| `ARIADNE_PROSPECTIVE_INVALID` | memory | prospective trigger/action/schema is invalid |
+| `ARIADNE_PROSPECTIVE_NOT_FOUND` | memory | requested prospective reminder does not exist |
+| `ARIADNE_PROSPECTIVE_CAPACITY` | memory | prospective reminder hard cap exceeded |
 | `ARIADNE_SANDBOX_DISABLED` | sandbox | exec without backend |
 | `ARIADNE_SANDBOX_EXEC_FAILED` | sandbox | backend exec failure |
 | `ARIADNE_MODEL_ERROR` | model | provider/API failure |

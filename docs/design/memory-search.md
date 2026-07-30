@@ -19,6 +19,7 @@ Goals:
 3. Search hits are **pointers to real turns**, never LLM-invented history.
 4. Personal / local-first: lexical + local embeddings first; small model only
    for deep mode.
+5. Recover complete episodes and verified outcomes, not only similar chunks.
 
 ---
 
@@ -405,6 +406,9 @@ See [../ROADMAP.md](../ROADMAP.md) Phase 11b for the living checklist.
 | Scopes | session \| workspace \| user | Aligns with [memory-scopes.md](memory-scopes.md) |
 | User episodic | Dual-write to `user_memory_dir/episodic/` | Cross-workspace recall without L3 dump |
 | Packaging | Personal local backends first | No enterprise mesh |
+| Episode retrieval | Merge with turn hits | Adds event structure without replacing L4 |
+| Multi-hop plan | Closed traversal operation set | Planner chooses work but cannot invent history |
+| Evidence expansion | Stored event references only | Every synthesis can cite real turns |
 
 ---
 
@@ -415,3 +419,4 @@ See [../ROADMAP.md](../ROADMAP.md) Phase 11b for the living checklist.
 - [memory-scopes.md](memory-scopes.md) — user / workspace / session layout
 - [memory-sandbox-synthesis.md](memory-sandbox-synthesis.md) — mind vs hand
 - [prompt-assembly.md](prompt-assembly.md) — where memory sits in the prompt
+- [memory-intelligence.md](memory-intelligence.md) — episode schema and constrained traversal

@@ -20,6 +20,8 @@ Host
            else:
              break
       -> persist traces / schedule memory writes
+      -> automatic memory capture (deterministic, optional ambiguity-only LLM)
+      -> append episode events / reflection signals / prospective matches
   <- TurnResult
 ```
 
@@ -30,6 +32,9 @@ Host
 3. Tool names not in callable set never execute.
 4. Loop limit always enforced.
 5. Every model exchange and tool call is traceable.
+6. Automatic memory records cite the completed turn/tool evidence.
+7. Optional capture failure is visible as a failed memory layer and does not
+   rewrite the already determined task result.
 
 ## Closed-loop extension
 

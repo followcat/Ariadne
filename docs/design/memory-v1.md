@@ -284,6 +284,12 @@ Teach the model:
 Optional later: mine recall failures or repeated facts into curated suggestions.  
 Not required for kernel MVP; if added, must create new versions, not silent overwrites.
 
+The implemented memory-intelligence slice refines this rule: explicit user
+changes may update a typed logical key automatically, while cross-session
+patterns create a pending, evidence-bearing Reflection candidate. Promotion of
+an inferred pattern requires user acceptance. See
+[memory-intelligence.md](memory-intelligence.md).
+
 ---
 
 ## 7. L4 Semantic index (retrieval only)
@@ -433,3 +439,7 @@ Eval harness must distinguish:
 | Curated | explicit small store | Works for prefs; keep separate |
 | Semantic | optional retrieval | Helpful, never boss |
 | Personal packaging | SQLite + local worker | No company infra required |
+| Automatic capture | deterministic first, LLM only on ambiguity | Better recall without a per-turn model tax |
+| Episode unit | evidence-bound high-value events | Recovers a complete experience and its reasons |
+| Inferred patterns | pending Reflection candidate | User controls durable learning |
+| Future reminders | structured triggers in kernel; scheduling in host | Prospective memory without platform creep |

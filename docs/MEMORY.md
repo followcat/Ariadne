@@ -112,6 +112,26 @@ timestamps, revision, and superseded history. Active in-scope entries render as
 the `user_model` memory layer. Authenticated host endpoints allow the user to
 create, edit with revision CAS, list, and expire entries.
 
+Typed entries also preserve temporal validity (`valid_from`, `valid_until`),
+the previous value/change reason, and evidence. Automatic projection uses one
+active logical key, so a preference update supersedes rather than duplicates
+the old current value.
+
+### 4.2 Memory intelligence
+
+Completed turns are automatically inspected for explicit state changes and
+high-value episode events. Deterministic extraction handles simple statements;
+an optional LLM is reserved for ambiguous references and may only propose
+evidence-quoted records. Explicit user statements can update typed memory;
+cross-session inferences remain pending reflection candidates until confirmed.
+
+Episode search adds problem/attempt/observation/decision/outcome chains above
+the existing turn index. Deep search can traverse stored entities, relations,
+timelines, decisions, and outcomes, but always returns real turn citations.
+Structured prospective memories allow the host to reactivate a reminder when
+workspace, query, file, tool, or event triggers match. See
+[design/memory-intelligence.md](design/memory-intelligence.md).
+
 ## 5. Write API
 
 Minimum personal v1:
@@ -129,7 +149,10 @@ Advanced later:
 await memory.project_conversation_state(turn_id=...)
 ```
 
-Writes must be explicit. Models should not “save memory” by free-text side channels only; prefer the `memory` tool.
+Durable writes must be attributable. Explicit model/tool writes use the
+`memory` tool; the automatic projector may write only deterministic or
+evidence-validated typed changes. Cross-session model inferences require user
+confirmation.
 
 ## 6. Prompt assembly guidance
 
@@ -214,6 +237,7 @@ Kernel does not require a hosted multi-tenant DB.
 | [design/memory-v1.md](design/memory-v1.md) | Layered architecture (L0–L5), conversation state, phased delivery |
 | [design/memory-scopes.md](design/memory-scopes.md) | Personal **user / workspace / session** scopes, host layout, `user_id`, user episodic root, KNOWLEDGE boundary |
 | [design/memory-search.md](design/memory-search.md) | **Graded retrieval** — Retrieval modes, tool contract, as-of clocks, deep two-phase planner, config knobs |
+| [design/memory-intelligence.md](design/memory-intelligence.md) | Automatic projection, episodes/causal/time memory, constrained traversal, reflection, prospective memory |
 | [ROADMAP.md](ROADMAP.md) Phase 11b | Living checklist (S0–S2 done; S3/S4 partial) |
 | [design/agent-closed-loop.md](design/agent-closed-loop.md) | Plan/verify loop; opt-in L2 project; Context Compiler (Phase 14) |
 
