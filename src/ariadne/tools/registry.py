@@ -29,6 +29,7 @@ class ToolContext:
     evidence_text: str = ""
     approval_hook: ApprovalHook | None = None
     runtime_agent: Any | None = None  # sandbox.runtime_agent.RuntimeAgent
+    user_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -448,12 +449,24 @@ def build_default_registry(
         if ctx.memory is None:
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "memory facade not configured"))
         action = str(args.get("action") or "read")
+        apply = getattr(ctx.memory, "apply_curated", None)
+        if callable(apply):
+            return apply(
+                action=action,
+                content=str(args.get("content") or ""),
+                entry_ref=str(args.get("entry_ref") or ""),
+                scope=str(args.get("scope") or "user"),
+                session_id=ctx.session_id,
+                source_turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                user_id=getattr(ctx, "user_id", None),
+            )
         return ctx.memory.curated.apply(
             action=action,
             content=str(args.get("content") or ""),
             entry_ref=str(args.get("entry_ref") or ""),
             scope=str(args.get("scope") or "user"),
             session_id=ctx.session_id,
+            source_turn_id=str(getattr(ctx, "turn_id", "") or ""),
         )
 
     registry.register(
@@ -464,7 +477,10 @@ def build_default_registry(
             kind="tool",
             description=(
                 "Manage durable curated memory (add/update/remove/read). "
-                "Use for long-lived preferences. Use conversation_state for current-session truth."
+                "Scopes: user (cross-workspace prefs), workspace (project facts), "
+                "session (thread-only). "
+                "Use for long-lived preferences. Use conversation_state for current-session truth. "
+                "For episodic recall of past turns use memory_search."
             ),
             parameters={
                 "type": "object",
@@ -472,12 +488,71 @@ def build_default_registry(
                     "action": {"type": "string", "enum": ["add", "update", "remove", "read"]},
                     "content": {"type": "string"},
                     "entry_ref": {"type": "string"},
-                    "scope": {"type": "string", "enum": ["user", "session"]},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "workspace", "session"],
+                    },
                 },
                 "required": ["action"],
                 "additionalProperties": False,
             },
             handler=memory_tool,
+        )
+    )
+
+    async def memory_search_tool(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        if ctx.memory is None:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "memory facade not configured"))
+        search = getattr(ctx.memory, "memory_search", None)
+        if not callable(search):
+            raise AriadneError(
+                app_error("ARIADNE_CONFIG_INVALID", "memory_search not available on facade")
+            )
+        before = args.get("before_turn_id")
+        before_s = str(before) if before not in (None, "") else None
+        return await search(
+            query=str(args.get("query") or ""),
+            session_id=ctx.session_id,
+            scope=str(args.get("scope") or "session"),
+            mode=str(args.get("mode") or "") or None,
+            limit=int(args.get("limit") or 8),
+            before_turn_id=before_s,
+            user_id=getattr(ctx, "user_id", None),
+        )
+
+    registry.register(
+        ToolSpec(
+            name="memory_search",
+            catalog_description="graded episodic memory search",
+            title="Memory search",
+            kind="tool",
+            description=(
+                "Search past turns/summaries for a named scope (session|workspace|user). "
+                "mode=fast: local lexical+embedding only. "
+                "mode=auto: fast then upgrade to deep on weak/vague signals. "
+                "mode=deep: alias expand + query split + rerank real candidates only — "
+                "never invents history. Hits always carry turn_id and store-grounded snippets. "
+                "Use when L0/L2/curated context is insufficient; do not dump search into every turn."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["session", "workspace", "user"],
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "fast", "deep"],
+                    },
+                    "limit": {"type": "integer"},
+                    "before_turn_id": {"type": "string"},
+                },
+                "required": ["query", "scope"],
+                "additionalProperties": False,
+            },
+            handler=memory_search_tool,
         )
     )
 
@@ -657,18 +732,30 @@ def build_default_registry(
         if isinstance(ref_names, list) and ref_names:
             targeted = [str(x) for x in ref_names]
             include_refs = True
-        if ctx.skill_events is not None:
-            from ..types import SkillEvent
-
-            ctx.skill_events.append(SkillEvent(kind="load", skill_name=name))
         # requires_tools enforcement: report missing tools (do not invent handlers).
         available = set(registry.tools.keys())
         missing = ctx.skills.missing_tools(skill, available)
         body_text = skill.body_section(section) if section else skill.body
+        import hashlib
+
+        content_digest = hashlib.sha256(
+            (body_text or "").encode("utf-8")
+        ).hexdigest()[:16]
+        if ctx.skill_events is not None:
+            from ..types import SkillEvent
+
+            ctx.skill_events.append(
+                SkillEvent(
+                    kind="load",
+                    skill_name=name,
+                    content_digest=content_digest,
+                )
+            )
         payload: dict[str, Any] = {
             "name": skill.name,
             "description": skill.description,
             "body": body_text,
+            "content_digest": content_digest,
             "section": section or "full",
             "requires_tools": skill.requires_tools,
             "missing_tools": missing,
