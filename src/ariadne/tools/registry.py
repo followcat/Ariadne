@@ -33,6 +33,8 @@ class ToolContext:
     exposure: ToolExposureState | None = None
     skill_events: list[Any] | None = None
     evidence_text: str = ""
+    # User/tool-observed evidence only; excludes the model's own assertions.
+    observed_evidence_text: str = ""
     approval_hook: ApprovalHook | None = None
     runtime_agent: Any | None = None  # sandbox.runtime_agent.RuntimeAgent
     user_id: str | None = None

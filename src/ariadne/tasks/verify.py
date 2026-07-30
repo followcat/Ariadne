@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import struct
 import time
 import uuid
 from dataclasses import dataclass
@@ -61,6 +63,10 @@ class DeterministicVerifier:
                 return self._command_exit(check, traces=traces, attempt_id=attempt_id, resume=resume)
             if check.kind in {"path_exists", "path_absent", "file_contains"}:
                 return self._path_check(check, attempt_id=attempt_id)
+            if check.kind == "image_file":
+                return self._image_file(check, attempt_id=attempt_id)
+            if check.kind == "llm_semantic" and resume:
+                return CheckResult(check_id=check.check_id, status="stale")
             return CheckResult(
                 check_id=check.check_id,
                 status="error",
@@ -178,4 +184,98 @@ class DeterministicVerifier:
             evidence=[evidence],
             observed_value={"exists": True, "contains": contains},
             checked_at=time.time(),
+        )
+
+    @staticmethod
+    def _image_info(data: bytes) -> tuple[str, int | None, int | None]:
+        if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+            width, height = struct.unpack(">II", data[16:24])
+            return "png", width, height
+        if data[:6] in {b"GIF87a", b"GIF89a"} and len(data) >= 10:
+            width, height = struct.unpack("<HH", data[6:10])
+            return "gif", width, height
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "webp", None, None
+        if data.startswith(b"\xff\xd8"):
+            offset = 2
+            while offset + 9 <= len(data):
+                if data[offset] != 0xFF:
+                    offset += 1
+                    continue
+                marker = data[offset + 1]
+                offset += 2
+                if marker in {0xD8, 0xD9}:
+                    continue
+                if offset + 2 > len(data):
+                    break
+                segment_len = int.from_bytes(data[offset : offset + 2], "big")
+                if segment_len < 2 or offset + segment_len > len(data):
+                    break
+                if marker in {
+                    0xC0,
+                    0xC1,
+                    0xC2,
+                    0xC3,
+                    0xC5,
+                    0xC6,
+                    0xC7,
+                    0xC9,
+                    0xCA,
+                    0xCB,
+                    0xCD,
+                    0xCE,
+                    0xCF,
+                } and segment_len >= 7:
+                    height = int.from_bytes(data[offset + 3 : offset + 5], "big")
+                    width = int.from_bytes(data[offset + 5 : offset + 7], "big")
+                    return "jpeg", width, height
+                offset += segment_len
+            return "jpeg", None, None
+        raise ValueError("file bytes are not a supported PNG/JPEG/GIF/WebP image")
+
+    def _image_file(self, check: Check, *, attempt_id: str) -> CheckResult:
+        path = self._workspace_path(check.spec.get("path"))
+        if not path.is_file():
+            return CheckResult(
+                check_id=check.check_id,
+                status="fail",
+                observed_value={"exists": path.exists(), "valid_image": False},
+            )
+        data = path.read_bytes()
+        image_format, width, height = self._image_info(data)
+        wanted_format = str(check.spec.get("format") or "").lower().removeprefix("image/")
+        if wanted_format == "jpg":
+            wanted_format = "jpeg"
+        min_bytes = int(check.spec.get("min_bytes") or 1)
+        min_width = int(check.spec.get("min_width") or 0)
+        min_height = int(check.spec.get("min_height") or 0)
+        passed = len(data) >= min_bytes
+        if wanted_format:
+            passed = passed and image_format == wanted_format
+        if min_width:
+            passed = passed and width is not None and width >= min_width
+        if min_height:
+            passed = passed and height is not None and height >= min_height
+        digest = hashlib.sha256(data).hexdigest()
+        evidence = self._evidence(
+            kind="image",
+            ref=str(path),
+            summary=(
+                f"verified {image_format} image {width or '?'}x{height or '?'} "
+                f"bytes={len(data)} sha256={digest}"
+            ),
+            attempt_id=attempt_id,
+        )
+        return CheckResult(
+            check_id=check.check_id,
+            status="pass" if passed else "fail",
+            evidence=[evidence],
+            observed_value={
+                "path": str(path),
+                "format": image_format,
+                "width": width,
+                "height": height,
+                "bytes": len(data),
+                "sha256": digest,
+            },
         )

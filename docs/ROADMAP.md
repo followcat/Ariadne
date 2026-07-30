@@ -232,7 +232,7 @@ Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
 **North star:** after each material action, verify with evidence; update the plan
 from evidence — not from “tool returned success.”
 
-**Status: 14a–d shipped; 14e pending.**
+**Status: complete (14a–e shipped).**
 
 #### 14a — Verify + TaskState (P0)
 - [x] `TaskState` persistence (local SQLite, task identity + active session
@@ -276,10 +276,14 @@ from evidence — not from “tool returned success.”
   scoped and revisioned, included in memory context with authenticated host edit API
 
 #### 14e — Stretch (P2)
-- [ ] Optional semantic verifier model (only when no deterministic oracle)
-- [ ] Host-scheduled proactive checks
-- [ ] Multimodal environment verification
-- [ ] Controlled multi-agent (only after single-agent loop is solid)
+- [x] Optional structured semantic verifier, evidence-quoting and rejected when
+  a deterministic oracle is present
+- [x] Host-cron scheduled deterministic goal checks with SQLite leases,
+  revisioned pause/resume/cancel, and user notifications
+- [x] `image_file` environment verification of real bytes, format, dimensions,
+  size, and SHA-256 evidence
+- [x] Opt-in controlled 2–3-way advisory delegation through the one registry;
+  delegates have zero capabilities and must quote parent evidence
 
 ## Explicitly deferred forever (unless product changes)
 

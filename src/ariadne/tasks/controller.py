@@ -13,7 +13,8 @@ from ..errors import AriadneError, app_error
 from ..tools.registry import ToolSpec
 from ..types import ToolCallTrace
 from .fingerprint import workspace_fingerprint
-from .models import EvidenceRef, Observation, OpenQuestion, PlanRevision, Step, TaskState
+from .models import Check, CheckResult, EvidenceRef, Observation, OpenQuestion, PlanRevision, Step, TaskState
+from .semantic import SemanticVerifier
 from .store import SQLiteTaskStore
 from .verify import DeterministicVerifier
 
@@ -25,7 +26,8 @@ SUBMIT_TASK_PLAN_TOOL: dict[str, Any] = {
         "name": SUBMIT_TASK_PLAN_NAME,
         "description": (
             "Submit a verifiable plan for task mode. This is a kernel control call, "
-            "not an external capability. Every step requires deterministic done_when checks."
+            "not an external capability. Prefer deterministic done_when checks; semantic "
+            "checks require an explicitly enabled verifier and no deterministic oracle."
         ),
         "parameters": {
             "type": "object",
@@ -74,7 +76,14 @@ SUBMIT_TASK_PLAN_TOOL: dict[str, Any] = {
                     "properties": {
                         "kind": {
                             "type": "string",
-                            "enum": ["command_exit", "path_exists", "path_absent", "file_contains"],
+                            "enum": [
+                                "command_exit",
+                                "path_exists",
+                                "path_absent",
+                                "file_contains",
+                                "llm_semantic",
+                                "image_file",
+                            ],
                         },
                         "spec": {"type": "object"},
                         "required": {"type": "boolean"},
@@ -128,6 +137,7 @@ class TaskAttemptOutcome:
 class TaskController:
     store: SQLiteTaskStore
     verifier: DeterministicVerifier
+    semantic_verifier: SemanticVerifier | None = None
 
     @property
     def workspace(self):
@@ -167,6 +177,7 @@ class TaskController:
         raw_steps = arguments.get("steps")
         if not isinstance(raw_steps, list):
             raise AriadneError(app_error("ARIADNE_TASK_INVALID", "steps must be an array"))
+        self._validate_check_policy(arguments)
         state = TaskState.from_plan(
             session_id=session_id,
             user_id=user_id,
@@ -199,6 +210,7 @@ class TaskController:
                 )
             ) from exc
         requested_ids = [str(value) for value in arguments.get("evidence_ids", [])]
+        self._validate_check_policy(arguments)
         available = {evidence.evidence_id: evidence for evidence in state.replan_evidence}
         missing = sorted(set(requested_ids) - available.keys())
         if missing:
@@ -392,6 +404,151 @@ class TaskController:
         state = self.store.save(state, expected_revision=previous_revision)
         return state, step, f"{step.step_id}:{step.attempt}"
 
+    def _validate_check_policy(self, arguments: dict[str, Any]) -> None:
+        groups: list[tuple[str, list[dict[str, Any]]]] = []
+        for index, step in enumerate(arguments.get("steps") or []):
+            groups.append((f"steps[{index}].preconditions", list(step.get("preconditions") or [])))
+            groups.append((f"steps[{index}].done_when", list(step.get("done_when") or [])))
+        groups.append(("goal_checks", list(arguments.get("goal_checks") or [])))
+        for label, checks in groups:
+            semantic = [check for check in checks if check.get("kind") == "llm_semantic"]
+            if not semantic:
+                for check in checks:
+                    if check.get("kind") == "image_file" and not str(
+                        (check.get("spec") or {}).get("path") or ""
+                    ).strip():
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TASK_INVALID",
+                                "image_file requires spec.path",
+                                field=label,
+                            )
+                        )
+                continue
+            if label.endswith("preconditions"):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TASK_INVALID",
+                        "llm_semantic cannot be a precondition",
+                        field=label,
+                    )
+                )
+            if self.semantic_verifier is None:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TASK_SEMANTIC_UNAVAILABLE",
+                        "llm_semantic checks require an explicitly configured semantic verifier",
+                        field=label,
+                    )
+                )
+            if len(checks) != len(semantic):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TASK_INVALID",
+                        "llm_semantic is allowed only when no deterministic check is available",
+                        field=label,
+                    )
+                )
+            for check in semantic:
+                spec = check.get("spec") or {}
+                if not str(spec.get("criterion") or "").strip() or not str(
+                    spec.get("oracle_unavailable_reason") or ""
+                ).strip():
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_TASK_INVALID",
+                            "llm_semantic requires criterion and oracle_unavailable_reason",
+                            field=label,
+                        )
+                    )
+
+    async def _run_checks_async(
+        self,
+        checks: Iterable[Check],
+        *,
+        traces: Iterable[ToolCallTrace],
+        attempt_id: str,
+    ) -> list[CheckResult]:
+        trace_list = list(traces)
+        results: list[CheckResult] = []
+        for check in checks:
+            if check.kind == "llm_semantic":
+                if self.semantic_verifier is None:
+                    results.append(
+                        CheckResult(
+                            check_id=check.check_id,
+                            status="error",
+                            error=app_error(
+                                "ARIADNE_TASK_SEMANTIC_UNAVAILABLE",
+                                "semantic verifier is not configured",
+                            ),
+                        )
+                    )
+                else:
+                    results.append(
+                        await self.semantic_verifier.run(
+                            check,
+                            traces=trace_list,
+                            attempt_id=attempt_id,
+                        )
+                    )
+            else:
+                results.append(
+                    self.verifier.run(
+                        check,
+                        traces=trace_list,
+                        attempt_id=attempt_id,
+                    )
+                )
+        return results
+
+    async def record_attempt_async(
+        self,
+        state: TaskState,
+        *,
+        traces: Iterable[ToolCallTrace],
+        spec: ToolSpec | None,
+        effect_level: str = "unknown",
+        attempt_id: str,
+    ) -> TaskAttemptOutcome:
+        step = state.current_step
+        if step is None:
+            raise AriadneError(
+                app_error("ARIADNE_TASK_PROTOCOL_ERROR", "task has no current step")
+            )
+        trace_list = list(traces)
+        step_results = await self._run_checks_async(
+            step.done_when,
+            traces=trace_list,
+            attempt_id=attempt_id,
+        )
+        is_last_step = not any(
+            candidate.status == "pending" and candidate.step_id != step.step_id
+            for candidate in state.steps
+        )
+        required_step_ids = {check.check_id for check in step.done_when if check.required}
+        step_will_verify = bool(required_step_ids) and all(
+            result.status == "pass"
+            for result in step_results
+            if result.check_id in required_step_ids
+        ) and required_step_ids <= {result.check_id for result in step_results}
+        goal_results = None
+        if is_last_step and step_will_verify:
+            goal_results = await self._run_checks_async(
+                state.goal_checks,
+                traces=trace_list,
+                attempt_id=f"{attempt_id}:goal",
+            )
+        return self.record_attempt(
+            state,
+            traces=trace_list,
+            spec=spec,
+            effect_level=effect_level,
+            attempt_id=attempt_id,
+            check_results=step_results,
+            goal_check_results=goal_results,
+        )
+
     def record_attempt(
         self,
         state: TaskState,
@@ -400,6 +557,8 @@ class TaskController:
         spec: ToolSpec | None,
         effect_level: str = "unknown",
         attempt_id: str,
+        check_results: list[CheckResult] | None = None,
+        goal_check_results: list[CheckResult] | None = None,
     ) -> TaskAttemptOutcome:
         step = state.current_step
         if step is None:
@@ -417,10 +576,8 @@ class TaskController:
                 attempt_id=attempt_id,
             )
             step.evidence.append(evidence)
-        step.check_results = self.verifier.run_many(
-            step.done_when,
-            traces=trace_list,
-            attempt_id=attempt_id,
+        step.check_results = check_results or self.verifier.run_many(
+            step.done_when, traces=trace_list, attempt_id=attempt_id
         )
         required_results = [
             result
@@ -450,10 +607,8 @@ class TaskController:
             step.status = "verified"
             has_more_steps = self._advance(state)
             if not has_more_steps:
-                state.goal_check_results = self.verifier.run_many(
-                    state.goal_checks,
-                    traces=trace_list,
-                    attempt_id=f"{attempt_id}:goal",
+                state.goal_check_results = goal_check_results or self.verifier.run_many(
+                    state.goal_checks, traces=trace_list, attempt_id=f"{attempt_id}:goal"
                 )
                 required_goal_results = [
                     result
@@ -602,6 +757,8 @@ class TaskController:
             "Submit a concise executable plan with submit_task_plan before using capabilities. "
             "Every step needs deterministic done_when checks. Supported checks: "
             "command_exit (references sandbox_exec in the same attempt), path_exists, "
-            "path_absent, file_contains. Use /workspace-relative paths. "
+            "path_absent, file_contains, image_file. llm_semantic is optional and only "
+            "valid when the host enabled it and no deterministic oracle exists. "
+            "Use /workspace-relative paths. "
             f"The user's requested objective is: {user_goal}"
         )

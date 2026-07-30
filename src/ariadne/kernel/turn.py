@@ -681,6 +681,7 @@ class TurnApplication:
         )
 
         evidence_parts = [user_transcript]
+        observed_evidence_parts = [user_transcript]
         if self.runtime_agent is not None and hasattr(self.runtime_agent, "bind"):
             self.runtime_agent.bind(sandbox)
         ctx = ToolContext(
@@ -692,6 +693,7 @@ class TurnApplication:
             exposure=exposure,
             skill_events=skill_events,
             evidence_text=user_transcript,
+            observed_evidence_text=user_transcript,
             approval_hook=self.approval_hook,
             runtime_agent=self.runtime_agent,
             user_id=user_id,
@@ -1309,6 +1311,8 @@ class TurnApplication:
                         )
                         evidence_parts.append(dumps_tool_output(output)[:2000])
                         ctx.evidence_text = "\n".join(evidence_parts)
+                        observed_evidence_parts.append(dumps_tool_output(output)[:2000])
+                        ctx.observed_evidence_text = "\n".join(observed_evidence_parts)
                         yield TurnEvent(
                             "tool_completed",
                             {
@@ -1422,7 +1426,7 @@ class TurnApplication:
                     and self.task_controller is not None
                     and task_state is not None
                 ):
-                    outcome = self.task_controller.record_attempt(
+                    outcome = await self.task_controller.record_attempt_async(
                         task_state,
                         traces=exchange_traces,
                         spec=task_attempt_spec,

@@ -35,8 +35,9 @@ Host
 
 Optional **task mode** wraps the model/tool loop with SQLite-persisted structured
 steps and deterministic verification. Tool success alone does not mark a step
-complete. Phases 14a–c add evidence-citing replan, effect-aware retry/approval,
-opt-in evidence-bound L2 projection, and a budgeted ContextCompiler. Required
+complete. Phases 14a–e add evidence-citing replan, effect-aware retry/approval,
+opt-in evidence-bound L2 projection, a budgeted ContextCompiler, skill outcome
+feedback, typed user state, and optional semantic/image checks. Required
 tool/check evidence is verbatim and fails explicitly when it cannot fit.
 See [agent-closed-loop.md](agent-closed-loop.md) and ROADMAP Phase 14.
 

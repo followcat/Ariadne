@@ -21,6 +21,7 @@ CheckKind = Literal[
     "http_response",
     "json_path",
     "llm_semantic",
+    "image_file",
     "user_confirm",
 ]
 
@@ -28,6 +29,7 @@ TASK_SCHEMA_VERSION = 1
 PHASE_14A_CHECK_KINDS = frozenset(
     {"command_exit", "path_exists", "path_absent", "file_contains"}
 )
+PHASE_14E_CHECK_KINDS = PHASE_14A_CHECK_KINDS | {"llm_semantic", "image_file"}
 ALL_CHECK_KINDS = frozenset(
     {
         "command_exit",
@@ -38,6 +40,7 @@ ALL_CHECK_KINDS = frozenset(
         "http_response",
         "json_path",
         "llm_semantic",
+        "image_file",
         "user_confirm",
     }
 )
@@ -72,7 +75,9 @@ def _one_of(value: Any, *, label: str, allowed: set[str]) -> str:
 @dataclass(slots=True)
 class EvidenceRef:
     evidence_id: str
-    kind: Literal["tool_result", "command", "file_diff", "test_log", "memory_hit", "user"]
+    kind: Literal[
+        "tool_result", "command", "file_diff", "test_log", "memory_hit", "user", "image"
+    ]
     ref: str
     summary: str
     attempt_id: str
@@ -83,7 +88,15 @@ class EvidenceRef:
         kind = _one_of(
             value.get("kind"),
             label="evidence.kind",
-            allowed={"tool_result", "command", "file_diff", "test_log", "memory_hit", "user"},
+            allowed={
+                "tool_result",
+                "command",
+                "file_diff",
+                "test_log",
+                "memory_hit",
+                "user",
+                "image",
+            },
         )
         return cls(
             evidence_id=str(value["evidence_id"]),
@@ -107,7 +120,7 @@ class Check:
         cls,
         value: dict[str, Any],
         *,
-        allowed_kinds: frozenset[str] = PHASE_14A_CHECK_KINDS,
+        allowed_kinds: frozenset[str] = PHASE_14E_CHECK_KINDS,
     ) -> "Check":
         raw = _mapping(value, label="check")
         kind = str(raw.get("kind") or "")

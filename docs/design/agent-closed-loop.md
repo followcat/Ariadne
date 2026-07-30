@@ -1,6 +1,6 @@
 # Design: Closed-Loop Agent Execution (Personal / 2C)
 
-Status: **active delivery** (Phases 14a–d implemented; Phase 14e pending)
+Status: **implemented** (Phases 14a–e shipped)
 Audience: implementers  
 Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [turn-lifecycle.md](turn-lifecycle.md),
 [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
@@ -423,6 +423,32 @@ Long-lived personalization is **typed memory**, not a bag of notes:
 
 Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 
+### 11.1 Optional stretch boundaries
+
+The P2 features remain opt-in and constrained by the same single-agent kernel:
+
+- `llm_semantic` is accepted only when the host configures a
+  `SemanticVerifier`, the check supplies `oracle_unavailable_reason`, and that
+  check group contains no deterministic oracle. The verifier exposes no
+  capabilities and must return pass/fail plus a verbatim quote from existing
+  tool evidence.
+- `image_file` is a deterministic environment check: it reads a workspace-bound
+  file, validates actual PNG/JPEG/GIF/WebP bytes, optional dimensions/format/
+  size constraints, and records path plus SHA-256 evidence.
+- Scheduled goals are explicit host-cron records, not autonomous conversations.
+  SQLite leases fence runners; only read-only deterministic checks are allowed;
+  each run records a pending/satisfied/error notification. Users can pause,
+  resume, or cancel with revision CAS.
+- Controlled delegation is disabled by default. When enabled,
+  `delegate_analysis` fans out 2–3 distinct advisory subgoals. Delegates receive
+  shared evidence and zero capabilities, return a structured evidence quote,
+  and cannot mutate TaskState or complete the parent goal. The parent remains
+  the sole actor and verifier.
+
+Host switches: `ARIADNE_ENABLE_SEMANTIC_VERIFIER=1` and
+`ARIADNE_ENABLE_CONTROLLED_DELEGATION=1`. Scheduled goals are managed through
+authenticated `/api/me/scheduled-goals*` host endpoints.
+
 ---
 
 ## 12. Phased delivery
@@ -459,10 +485,10 @@ Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 
 ### Phase 14e — Stretch (P2)
 
-- [ ] Optional verifier model for semantic checks only  
-- [ ] Proactive / scheduled goal push (host cron)  
-- [ ] Multimodal environment checks  
-- [ ] Controlled multi-agent (only after single-agent loop is solid)  
+- [x] Optional verifier model for semantic checks only
+- [x] Proactive / scheduled goal push (host cron)
+- [x] Multimodal environment checks
+- [x] Controlled multi-agent (only after single-agent loop is solid)
 
 ---
 
@@ -498,7 +524,7 @@ Infra ERROR ≠ product FAIL.
 | L2 project | Opt-in, evidence-bound | Honest memory defaults |
 | Skill learning | Propose + confirm | Avoid error reinforcement |
 | Persistence | Local SQLite TaskState | Transactional revisions without a hosted service |
-| Multi-agent | Deferred | Complexity without closed loop |
+| Multi-agent | Optional bounded advisory only | Parallel analysis without a second actor/tool loop |
 
 ---
 

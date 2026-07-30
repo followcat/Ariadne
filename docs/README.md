@@ -33,7 +33,7 @@ User-facing pages are bilingual; design contracts stay **English-first** (see [I
 | [design/memory-v1.md](design/memory-v1.md) | Improved memory architecture |
 | [design/memory-scopes.md](design/memory-scopes.md) | User / workspace / session memory scopes |
 | [design/memory-search.md](design/memory-search.md) | Graded `memory_search` (fast/auto/deep) |
-| [design/agent-closed-loop.md](design/agent-closed-loop.md) | Plan → act → verify → replan (next quality leap) |
+| [design/agent-closed-loop.md](design/agent-closed-loop.md) | Shipped plan → act → verify → replan contracts (Phase 14) |
 | [design/sandbox-v1.md](design/sandbox-v1.md) | Redesigned sandbox port |
 | [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md) | How memory and sandbox meet |
 | [design/cli-shell-agent.md](design/cli-shell-agent.md) | CLI as primary shell-agent host |

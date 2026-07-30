@@ -91,6 +91,13 @@ Those can remain external callers or future optional plugins **outside** the ker
 
 Ariadne’s bet: **kernel quality** (skills, toolcall, memory, sandbox port) is the durable open-source asset.
 
+Closed-loop task mode can verify image-producing work with deterministic
+`image_file` checks. The verifier reads only the workspace-bound path, validates
+actual PNG/JPEG/GIF/WebP bytes (not the extension), applies optional format,
+dimension, and size constraints, and records SHA-256 evidence. Visual/semantic
+quality still requires the opt-in evidence-quoting semantic verifier; file
+existence alone never proves visual correctness.
+
 ## Principles in one page
 
 See [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md). Architecture detail lives in [ARCHITECTURE.md](ARCHITECTURE.md).

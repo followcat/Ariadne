@@ -92,6 +92,10 @@ class Settings:
     memory_deep_planner: str = "off"
     # L2 projection queue off by default (honest: no silent empty projector)
     enable_memory_projection: bool = False
+    # Optional evidence-quoting LLM verifier for llm_semantic task checks.
+    enable_semantic_verifier: bool = False
+    # Optional bounded advisory fan-out; delegates never receive capabilities.
+    enable_controlled_delegation: bool = False
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -318,6 +322,14 @@ def load_settings(
         ).strip().lower(),
         enable_memory_projection=pick(
             "ARIADNE_ENABLE_MEMORY_PROJECTION", default="0"
+        ).strip().lower()
+        in {"1", "true", "yes", "on"},
+        enable_semantic_verifier=pick(
+            "ARIADNE_ENABLE_SEMANTIC_VERIFIER", default="0"
+        ).strip().lower()
+        in {"1", "true", "yes", "on"},
+        enable_controlled_delegation=pick(
+            "ARIADNE_ENABLE_CONTROLLED_DELEGATION", default="0"
         ).strip().lower()
         in {"1", "true", "yes", "on"},
         sandbox_profile=(

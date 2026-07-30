@@ -217,6 +217,33 @@ def test_user_model_and_skill_patch_host_edit_surfaces(tmp_path: Path) -> None:
             )
             assert disabled.json()["ranking_enabled"] is False
 
+            workspace = tmp_path / "ws"
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / "ready.flag").write_text("ready", encoding="utf-8")
+            scheduled = await client.post(
+                "/api/me/scheduled-goals",
+                headers=headers,
+                json={
+                    "session_id": "s1",
+                    "goal": "notify when ready",
+                    "check": {"kind": "path_exists", "spec": {"path": "ready.flag"}},
+                    "interval_seconds": 60,
+                    "next_run_at": 0,
+                },
+            )
+            assert scheduled.status_code == 200, scheduled.text
+            ran = await client.post(
+                "/api/me/scheduled-goals/run-due",
+                headers=headers,
+            )
+            assert ran.status_code == 200
+            assert ran.json()["results"][0]["status"] == "completed"
+            notifications = await client.get(
+                "/api/me/goal-notifications",
+                headers=headers,
+            )
+            assert notifications.json()["notifications"][0]["kind"] == "goal_satisfied"
+
     asyncio.run(run())
 
 

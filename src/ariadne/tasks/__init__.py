@@ -15,12 +15,16 @@ from .models import (
 )
 from .store import SQLiteTaskStore
 from .verify import DeterministicVerifier
+from .semantic import SemanticVerifier
+from .scheduler import ScheduledGoalStore
 
 __all__ = [
     "Assumption",
     "Check",
     "CheckResult",
     "DeterministicVerifier",
+    "SemanticVerifier",
+    "ScheduledGoalStore",
     "EvidenceRef",
     "Observation",
     "OpenQuestion",

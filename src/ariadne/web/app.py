@@ -156,6 +156,19 @@ class SkillRankingBody(BaseModel):
     enabled: bool
 
 
+class ScheduledGoalBody(BaseModel):
+    session_id: str
+    goal: str
+    check: dict[str, Any]
+    interval_seconds: float = 3600.0
+    next_run_at: float | None = None
+
+
+class ScheduledGoalStatusBody(BaseModel):
+    status: str
+    expected_revision: int
+
+
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="Ariadne Web")
     users = UserStore(settings.resolved_data_dir / "web" / "users.json")
@@ -197,6 +210,11 @@ def create_app(settings: Settings) -> FastAPI:
         from ..skills.outcomes import SkillOutcomeLedger
 
         return SkillOutcomeLedger(_user_data_dir(username) / "skills" / "outcomes.json")
+
+    def _scheduled_goals(username: str) -> Any:
+        from ..tasks.scheduler import ScheduledGoalStore
+
+        return ScheduledGoalStore(_user_data_dir(username) / "scheduled_goals.sqlite3")
 
     def _workspace_root_for(
         username: str,
@@ -744,6 +762,74 @@ def create_app(settings: Settings) -> FastAPI:
         username: str = Depends(current_user),
     ) -> dict[str, Any]:
         return _skill_outcome_ledger(username).set_ranking_enabled(body.enabled)
+
+    @app.get("/api/me/scheduled-goals")
+    def list_scheduled_goals(
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {"scheduled_goals": _scheduled_goals(username).list(user_id=username)}
+
+    @app.post("/api/me/scheduled-goals")
+    def create_scheduled_goal(
+        body: ScheduledGoalBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return _scheduled_goals(username).create(
+                user_id=username,
+                session_id=body.session_id,
+                goal=body.goal,
+                check=body.check,
+                interval_seconds=body.interval_seconds,
+                next_run_at=body.next_run_at,
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=400, detail=exc.error.message) from exc
+
+    @app.post("/api/me/scheduled-goals/run-due")
+    def run_due_scheduled_goals(
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        from ..tasks.verify import DeterministicVerifier
+
+        try:
+            results = _scheduled_goals(username).run_due(
+                user_id=username,
+                worker_id=f"web-cron:{username}",
+                verifier=DeterministicVerifier(_workspace_root_for(username)),
+            )
+        except AriadneError as exc:
+            raise HTTPException(status_code=409, detail=exc.error.message) from exc
+        return {"results": results, "count": len(results)}
+
+    @app.put("/api/me/scheduled-goals/{schedule_id}")
+    def update_scheduled_goal_status(
+        schedule_id: str,
+        body: ScheduledGoalStatusBody,
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            return _scheduled_goals(username).set_status(
+                schedule_id=schedule_id,
+                user_id=username,
+                status=body.status,
+                expected_revision=body.expected_revision,
+            )
+        except AriadneError as exc:
+            status_code = 409 if exc.error.code == "ARIADNE_SCHEDULE_CONFLICT" else 400
+            raise HTTPException(status_code=status_code, detail=exc.error.message) from exc
+
+    @app.get("/api/me/goal-notifications")
+    def get_goal_notifications(
+        unread_only: bool = Query(default=False),
+        username: str = Depends(current_user),
+    ) -> dict[str, Any]:
+        return {
+            "notifications": _scheduled_goals(username).notifications(
+                user_id=username,
+                unread_only=unread_only,
+            )
+        }
 
     def _parse_images(parts: list[ImagePart] | None) -> list[Any]:
         from ..multimodal import image_from_base64

@@ -30,7 +30,7 @@ from ..sandbox.runtime_agent import RuntimeAgent
 from ..sandbox.toolbox import get_profile as get_toolbox_profile
 from ..skills.store import SkillStore
 from ..skills.outcomes import SkillOutcomeLedger
-from ..tasks import DeterministicVerifier, SQLiteTaskStore, TaskController
+from ..tasks import DeterministicVerifier, SemanticVerifier, SQLiteTaskStore, TaskController
 from ..tools.registry import build_default_registry
 
 
@@ -233,6 +233,10 @@ def compose_agent(settings: Settings) -> Agent:
     )
 
     tools = build_default_registry(memory=memory, skills=skills)
+    if bool(getattr(settings, "enable_controlled_delegation", False)):
+        from ..kernel.delegation import build_controlled_delegation_tool
+
+        tools.register(build_controlled_delegation_tool(model))
     from ..plugins import PluginStore, build_plugin_tools
 
     plugin_configs: dict[str, dict[str, str]] = {}
@@ -299,6 +303,11 @@ def compose_agent(settings: Settings) -> Agent:
         task_controller=TaskController(
             store=SQLiteTaskStore(data_dir / "tasks.sqlite3"),
             verifier=DeterministicVerifier(settings.workspace),
+            semantic_verifier=(
+                SemanticVerifier(model)
+                if bool(getattr(settings, "enable_semantic_verifier", False))
+                else None
+            ),
         ),
         available_credentials=frozenset(available_credentials),
     )
