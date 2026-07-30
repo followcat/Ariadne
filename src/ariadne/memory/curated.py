@@ -69,6 +69,10 @@ class CuratedStore:
             if "source_turn_id" not in row:
                 row["source_turn_id"] = ""
                 changed = True
+            if "source_session_id" not in row:
+                # Do not invent a session; leave empty until a write stamps it.
+                row["source_session_id"] = ""
+                changed = True
             if "updated_at" not in row:
                 row["updated_at"] = time.time()
                 changed = True

@@ -344,11 +344,17 @@ class MemoryFacade:
                     limit=lim,
                     allowed_turn_ids=allowed,
                     before_ts=before_ts,
+                    before_turn_id=cutoff or None,
                 )
                 return self._pack_search_result(
                     mode_used="fast",
                     hits=curated_hits,
-                    notes=notes + (["curated_only", "empty"] if not curated_hits else ["curated_only"]),
+                    notes=notes
+                    + (
+                        ["curated_only", "empty"]
+                        if not curated_hits
+                        else ["curated_only"]
+                    ),
                     scope=scope_n,
                     query=q,
                 )
@@ -398,7 +404,7 @@ class MemoryFacade:
         mode_used = "fast"
 
         if scope_n == "user":
-            # Merge curated hits that have real turn provenance
+            # Merge curated hits that have real turn provenance (+ as-of)
             curated_hits = self._search_curated_hits(
                 scope="user",
                 query=q,
@@ -406,6 +412,7 @@ class MemoryFacade:
                 limit=lim,
                 allowed_turn_ids=allowed,
                 before_ts=before_ts,
+                before_turn_id=cutoff or None,
             )
             merged: dict[str, dict[str, Any]] = {}
             for h in hits + curated_hits:
@@ -450,7 +457,6 @@ class MemoryFacade:
                 plan = DeepPlan(notes="planner_raised")
                 mode_used = "fast"
             else:
-                did_work = False
                 expand = list(aliases or []) + list(plan.alias_extra or [])
                 subqs = [s for s in (plan.subqueries or []) if s.strip()]
                 if not subqs and plan.notes == "local_noop":
@@ -458,17 +464,26 @@ class MemoryFacade:
                     if self.deep_planner is None:
                         notes.append("deep:no_llm_planner")
                     mode_used = "fast"
-                elif not subqs and not plan.rerank_order:
+                elif not subqs and plan.notes.startswith("llm_planner"):
+                    # LLM decomp empty/failed — stay fast unless rerank alone helps later
+                    notes.append(plan.notes or "deep:planner_empty")
+                    if "error" in plan.notes or "parse" in plan.notes:
+                        notes.append("deep:fallback_fast")
+                        mode_used = "fast"
+                    else:
+                        # allow rerank-only on current hits for LLM planner
+                        mode_used = "fast"
+                elif not subqs:
                     notes.append("deep:planner_empty")
                     notes.append(plan.notes or "deep:fallback_fast")
                     mode_used = "fast"
                 else:
+                    # Phase 1: run subqueries and merge into candidate pool
                     merged_h: dict[str, dict[str, Any]] = {
                         f"{h.get('session_id')}:{h.get('turn_id')}": h for h in hits
                     }
-                    for part in subqs or [q]:
+                    for part in subqs:
                         sub = await _fast(part, expand=expand or None)
-                        did_work = True
                         for hit in sub:
                             key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
                             prev = merged_h.get(key)
@@ -477,8 +492,35 @@ class MemoryFacade:
                             ):
                                 merged_h[key] = hit
                     deep_hits = list(merged_h.values())
-                    if plan.rerank_order:
-                        order = {k: i for i, k in enumerate(plan.rerank_order)}
+                    # Phase 2: rerank on the *final* candidate set (not seed-only).
+                    # Prefer dedicated rerank(); else a second plan() call (planners
+                    # that encode both phases via plan only).
+                    rerank_order: list[str] | None = None
+                    rerank_fn = getattr(planner, "rerank", None)
+                    if callable(rerank_fn):
+                        try:
+                            rerank_order = await rerank_fn(
+                                query=q, candidates=deep_hits
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            notes.append(f"deep:rerank_error:{type(exc).__name__}")
+                            rerank_order = None
+                    if rerank_order is None:
+                        try:
+                            plan2 = await planner.plan(
+                                query=q,
+                                aliases=expand,
+                                candidates=deep_hits,
+                            )
+                            rerank_order = plan2.rerank_order
+                            if plan2.notes:
+                                notes.append(f"deep:phase2:{plan2.notes}")
+                        except Exception as exc:  # noqa: BLE001
+                            notes.append(
+                                f"deep:rerank_plan_error:{type(exc).__name__}"
+                            )
+                    if rerank_order:
+                        order = {k: i for i, k in enumerate(rerank_order)}
                         deep_hits.sort(
                             key=lambda h: (
                                 order.get(
@@ -488,19 +530,15 @@ class MemoryFacade:
                                 -float(h.get("score") or 0),
                             )
                         )
-                        did_work = True
+                        notes.append("deep:rerank")
                     else:
                         deep_hits.sort(key=lambda x: -float(x.get("score") or 0))
                     hits = deep_hits[:lim]
-                    if did_work and (subqs or plan.rerank_order):
-                        mode_used = "deep"
-                        notes.append(f"deep:{plan.notes or 'planned'}")
-                        if self.deep_planner is None:
-                            notes.append("deep:local_query_split")
-                            notes.append("deep:no_llm_planner")
-                    else:
-                        mode_used = "fast"
-                        notes.append("deep:noop")
+                    mode_used = "deep"
+                    notes.append(f"deep:{plan.notes or 'planned'}")
+                    if self.deep_planner is None:
+                        notes.append("deep:local_query_split")
+                        notes.append("deep:no_llm_planner")
 
         # Normalize hit evidence — require real turn_id; no curated: synthetic ids
         out_hits: list[dict[str, Any]] = []
@@ -518,12 +556,14 @@ class MemoryFacade:
             snippet = str(h.get("snippet") or h.get("text") or "")[:400]
             src = "chunk"
             ev = h.get("evidence") if isinstance(h.get("evidence"), dict) else {}
-            if ev.get("source") in {"raw", "summary", "chunk"}:
+            if ev.get("source") in {"raw", "summary", "chunk", "curated"}:
                 src = str(ev.get("source"))
             elif h.get("kind") in {"user", "assistant", "tool"}:
                 src = "raw"
             elif h.get("kind") == "summary":
                 src = "summary"
+            elif h.get("kind") == "curated":
+                src = "curated"
             out_hits.append(
                 {
                     "turn_id": tid,
@@ -615,22 +655,32 @@ class MemoryFacade:
         limit: int,
         allowed_turn_ids: set[str] | None = None,
         before_ts: float | None = None,
+        before_turn_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Curated hits with real turn provenance only (no curated: synthetic ids)."""
-        _ = before_ts  # curated entries lack ts; as-of uses source_turn_id ∈ allowed
+        """Curated hits with real turn provenance; honor as-of clocks strictly."""
         store = self._curated_for_scope(scope)
         data = store.apply(action="read", scope=scope, session_id=session_id)
         q_tokens = set(re.findall(r"[a-z0-9_\u4e00-\u9fff]{1,}", query.lower()))
+        cutoff_tid = (before_turn_id or "").strip()
         hits: list[dict[str, Any]] = []
         for item in data.get("entries") or []:
             eid = str(item.get("id") or "").strip()
             src_turn = str(item.get("source_turn_id") or "").strip()
             src_session = str(item.get("source_session_id") or "").strip()
-            # Provenance required for search hits
-            if not src_turn:
+            # Provenance required: real source turn + known session (no query-session fallback)
+            if not src_turn or not src_session:
+                continue
+            if cutoff_tid and src_turn == cutoff_tid:
                 continue
             if allowed_turn_ids is not None and src_turn not in allowed_turn_ids:
                 continue
+            if before_ts is not None:
+                clock = self._lookup_turn_clock(src_turn, session_id=src_session)
+                if clock is None:
+                    # Cannot prove as-of → exclude
+                    continue
+                if float(clock[0]) >= float(before_ts):
+                    continue
             content = str(item.get("content") or "")
             c_low = content.lower()
             score = 0.0
@@ -641,18 +691,15 @@ class MemoryFacade:
                 score = 0.5
             if score <= 0:
                 continue
-            sid = src_session or session_id
-            if not sid:
-                continue
             hits.append(
                 {
                     "turn_id": src_turn,
-                    "session_id": sid,
+                    "session_id": src_session,
                     "score": round(score / max(len(q_tokens), 1), 4),
                     "snippet": content[:400],
-                    "kind": "summary",
+                    "kind": "curated",
                     "evidence": {
-                        "source": "summary",
+                        "source": "curated",
                         "entry_id": eid,
                         "scope": scope,
                     },
@@ -660,6 +707,22 @@ class MemoryFacade:
             )
         hits.sort(key=lambda x: -float(x.get("score") or 0))
         return hits[:limit]
+
+    def _lookup_turn_clock(
+        self, turn_id: str, *, session_id: str | None = None
+    ) -> tuple[float, int] | None:
+        clock = self.semantic.lookup_turn_clock(
+            turn_id=turn_id, session_id=session_id
+        )
+        if clock is None and session_id is not None:
+            clock = self.semantic.lookup_turn_clock(turn_id=turn_id, session_id=None)
+        if clock is None and self.user_episodic is not None:
+            clock = self.user_episodic.lookup_turn_clock(
+                turn_id=turn_id, session_id=session_id
+            ) or self.user_episodic.lookup_turn_clock(
+                turn_id=turn_id, session_id=None
+            )
+        return clock
 
     def _allowed_turns(
         self, session_id: str, before_turn_id: str | None
