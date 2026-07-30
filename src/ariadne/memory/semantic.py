@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import re
 import time
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .embeddings import EmbeddingProvider, HashEmbeddingProvider, cosine
+from .json_file import locked_read_json, locked_update_json
 
 # ASCII words; CJK as single chars so short Chinese queries match longer lines.
 _ASCII = re.compile(r"[a-z0-9_]{2,}")
@@ -47,8 +47,10 @@ class SemanticIndex:
     def __post_init__(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
-            self.path.write_text(
-                json.dumps({"chunks": [], "meta": {"seq": 0}}) + "\n", encoding="utf-8"
+            locked_update_json(
+                self.path,
+                lambda d: d,
+                default={"chunks": [], "meta": {"seq": 0}},
             )
         if self.embedder is None:
             self.embedder = HashEmbeddingProvider()
@@ -62,17 +64,12 @@ class SemanticIndex:
                 self.embedding_model_id = f"hash:{model}"
 
     def _read(self) -> dict[str, Any]:
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = locked_read_json(self.path, default={"chunks": [], "meta": {"seq": 0}})
         if not isinstance(data, dict):
             return {"chunks": [], "meta": {"seq": 0}}
         data.setdefault("chunks", [])
         data.setdefault("meta", {"seq": 0})
         return data
-
-    def _write(self, data: dict[str, Any]) -> None:
-        self.path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
 
     def _next_seq(self, data: dict[str, Any]) -> int:
         meta = data.setdefault("meta", {})
@@ -93,39 +90,49 @@ class SemanticIndex:
         workspace_key: str = "",
         ts: float | None = None,
     ) -> None:
-        data = self._read()
-        chunks = data.setdefault("chunks", [])
-        chunks[:] = [
-            c
-            for c in chunks
-            if not (c.get("session_id") == session_id and c.get("turn_id") == turn_id)
-        ]
         clock_ts = float(ts if ts is not None else time.time())
-        clock_seq = self._next_seq(data)
-        for kind, text in (
+        kinds = (
             ("user", user_text),
             ("assistant", assistant_text),
             ("tool", tool_text),
             ("summary", summary_text),
-        ):
-            clean = (text or "").strip()
-            if not clean:
-                continue
-            chunks.append(
-                {
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "kind": kind,
-                    "text": clean[:4000],
-                    "entity_ids": list(entity_ids or []),
-                    "embedding": None,
-                    "embedding_model": None,
-                    "ts": clock_ts,
-                    "seq": clock_seq,
-                    "workspace_key": workspace_key or "",
-                }
-            )
-        self._write(data)
+        )
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            data.setdefault("chunks", [])
+            data.setdefault("meta", {"seq": 0})
+            chunks = data["chunks"]
+            chunks[:] = [
+                c
+                for c in chunks
+                if not (
+                    c.get("session_id") == session_id and c.get("turn_id") == turn_id
+                )
+            ]
+            clock_seq = self._next_seq(data)
+            for kind, text in kinds:
+                clean = (text or "").strip()
+                if not clean:
+                    continue
+                chunks.append(
+                    {
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "kind": kind,
+                        "text": clean[:4000],
+                        "entity_ids": list(entity_ids or []),
+                        "embedding": None,
+                        "embedding_model": None,
+                        "ts": clock_ts,
+                        "seq": clock_seq,
+                        "workspace_key": workspace_key or "",
+                    }
+                )
+            return data
+
+        locked_update_json(
+            self.path, mut, default={"chunks": [], "meta": {"seq": 0}}
+        )
 
     def lookup_turn_clock(
         self, *, turn_id: str, session_id: str | None = None
@@ -151,26 +158,57 @@ class SemanticIndex:
         return preferred if preferred is not None else fallback
 
     async def ensure_embeddings(self, *, session_id: str | None = None, limit: int = 200) -> int:
+        """Embed pending chunks under exclusive lock around read and write.
+
+        Embed network I/O runs **outside** the lock so concurrent index_turn
+        can still append; after vectors return we re-load and merge by chunk
+        identity (session+turn+kind) rather than fragile list indices.
+        """
+        if self.embedder is None:
+            return 0
         data = self._read()
-        pending = []
+        pending_meta: list[tuple[str, str, str, str]] = []  # sid, tid, kind, text
         model_id = self.embedding_model_id
-        for i, chunk in enumerate(data.get("chunks") or []):
+        for chunk in data.get("chunks") or []:
             if session_id and chunk.get("session_id") != session_id:
                 continue
-            # Re-embed when model stamp mismatches (model change invalidation).
             if chunk.get("embedding") and chunk.get("embedding_model") == model_id:
                 continue
-            pending.append((i, str(chunk.get("text") or "")))
-            if len(pending) >= limit:
+            text = str(chunk.get("text") or "")
+            pending_meta.append(
+                (
+                    str(chunk.get("session_id") or ""),
+                    str(chunk.get("turn_id") or ""),
+                    str(chunk.get("kind") or ""),
+                    text,
+                )
+            )
+            if len(pending_meta) >= limit:
                 break
-        if not pending or self.embedder is None:
+        if not pending_meta:
             return 0
-        vectors = await self.embedder.embed([t for _, t in pending])
-        for (idx, _), vec in zip(pending, vectors):
-            data["chunks"][idx]["embedding"] = vec
-            data["chunks"][idx]["embedding_model"] = model_id
-        self._write(data)
-        return len(pending)
+        vectors = await self.embedder.embed([t for *_, t in pending_meta])
+        by_key = {
+            (sid, tid, kind): vec
+            for (sid, tid, kind, _), vec in zip(pending_meta, vectors)
+        }
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            for chunk in data.get("chunks") or []:
+                key = (
+                    str(chunk.get("session_id") or ""),
+                    str(chunk.get("turn_id") or ""),
+                    str(chunk.get("kind") or ""),
+                )
+                if key in by_key:
+                    chunk["embedding"] = by_key[key]
+                    chunk["embedding_model"] = model_id
+            return data
+
+        locked_update_json(
+            self.path, mut, default={"chunks": [], "meta": {"seq": 0}}
+        )
+        return len(pending_meta)
 
     @staticmethod
     def demote_multiplier(
@@ -287,13 +325,28 @@ class SemanticIndex:
         before_ts: float | None = None,
     ) -> list[dict[str, Any]]:
         """Hybrid lexical+embedding. ``session_id=None`` = whole index."""
+        data = self._read()
+        # Empty / no matching corpus: skip network query embedding entirely.
+        candidate_chunks = [
+            c
+            for c in (data.get("chunks") or [])
+            if self._chunk_passes_filters(
+                c,
+                session_id=session_id,
+                allowed_turn_ids=allowed_turn_ids,
+                before_ts=before_ts,
+            )
+        ]
+        if not candidate_chunks:
+            return []
         await self.ensure_embeddings(session_id=session_id)
+        # Re-read after embed (may have updated vectors under lock).
+        data = self._read()
         q = query or ""
         if expand_aliases:
             q = q + " " + " ".join(expand_aliases)
         assert self.embedder is not None
         q_emb = (await self.embedder.embed([q]))[0]
-        data = self._read()
         scored: list[tuple[float, dict[str, Any]]] = []
         q_bow = _vector(q)
         for chunk in data.get("chunks") or []:
