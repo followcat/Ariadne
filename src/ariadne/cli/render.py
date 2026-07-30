@@ -137,9 +137,15 @@ def render_json(result: TurnResult) -> str:
             for m in result.schema_metrics
         ],
         "skill_events": [
-            {"kind": e.kind, "skill_name": e.skill_name, "detail": e.detail}
+            {
+                "kind": e.kind,
+                "skill_name": e.skill_name,
+                "detail": e.detail,
+                "content_digest": getattr(e, "content_digest", "") or "",
+            }
             for e in result.skill_events
         ],
+        "skill_pins": dict(getattr(result, "skill_pins", None) or {}),
         "memory": {
             "curated_count": result.memory.curated_count,
             "state_entity_count": result.memory.state_entity_count,

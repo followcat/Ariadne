@@ -66,6 +66,8 @@ class SkillEvent:
     kind: Literal["search", "load", "index"]
     skill_name: str = ""
     detail: str = ""
+    # sha256 hex prefix of skill body when load happened (audit / replay pins)
+    content_digest: str = ""
 
 
 @dataclass(slots=True)
@@ -114,6 +116,8 @@ class TurnResult:
     session_id: str = ""
     model: str = ""
     schema_metrics: list[SchemaMetrics] = field(default_factory=list)
+    # skill name → content digest for skills loaded this turn (audit/replay)
+    skill_pins: dict[str, str] = field(default_factory=dict)
 
 
 # Streaming / host events

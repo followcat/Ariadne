@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator, Callable, Awaitable
@@ -455,12 +456,23 @@ class TurnApplication:
                     ),
                 }
             )
+            digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
             skill_events.append(
-                SkillEvent(kind="load", skill_name=skill.name, detail=f"auto_load score={score:.3g}")
+                SkillEvent(
+                    kind="load",
+                    skill_name=skill.name,
+                    detail=f"auto_load score={score:.3g}",
+                    content_digest=digest,
+                )
             )
             yield TurnEvent(
                 "skill_event",
-                {"kind": "load", "skill_name": skill.name, "detail": f"auto_load score={score:.3g}"},
+                {
+                    "kind": "load",
+                    "skill_name": skill.name,
+                    "detail": f"auto_load score={score:.3g}",
+                    "content_digest": digest,
+                },
             )
 
         # Short tool catalog (discovery); full schemas go on the wire separately.
@@ -512,6 +524,7 @@ class TurnApplication:
             evidence_text=user_transcript,
             approval_hook=self.approval_hook,
             runtime_agent=self.runtime_agent,
+            user_id=user_id,
         )
 
         # Inspect-only thrash: many reads without writes → nudge then force wrap-up.
@@ -658,8 +671,21 @@ class TurnApplication:
                             "session_id": session_id,
                         }
                     )
-                    # L1: enqueue source then process to ready (status machine).
-                    source_for_summary = text if text else f"user asked: {prompt[:200]}"
+                    # L1: widen summary input — user + assistant conclusion + truncated tools
+                    tool_blob = "\n".join(
+                        f"{c.name}: {json.dumps(c.output, ensure_ascii=False)[:300]}"
+                        for c in tool_calls
+                        if c.status == "completed"
+                    )
+                    summary_parts = [
+                        f"user: {prompt[:600]}",
+                        f"assistant: {(text or '')[:800]}",
+                    ]
+                    if tool_blob.strip():
+                        summary_parts.append(f"tools:\n{tool_blob[:1200]}")
+                    source_for_summary = "\n".join(summary_parts).strip()
+                    if not source_for_summary:
+                        source_for_summary = f"user asked: {prompt[:200]}"
                     self.memory.summaries.enqueue(
                         session_id=session_id,
                         turn_id=turn_id,
@@ -667,11 +693,6 @@ class TurnApplication:
                     )
                     self.memory.summaries.process_pending(session_id=session_id, max_jobs=4)
                     summary = source_for_summary[:400]
-                    tool_blob = "\n".join(
-                        f"{c.name}: {json.dumps(c.output, ensure_ascii=False)[:300]}"
-                        for c in tool_calls
-                        if c.status == "completed"
-                    )
                     # Tag only entities mentioned this turn (not the entire state set).
                     evidence_blob = "\n".join(
                         [prompt, text, tool_blob]
@@ -688,13 +709,22 @@ class TurnApplication:
                         summary_text=summary,
                         entity_ids=entity_ids,
                     )
-                    # enqueue projection job for optional worker
+                    # enqueue projection job only when a real projection worker is wired
                     if getattr(self.memory, "projection", None) is not None:
                         self.memory.projection.enqueue(
                             session_id=session_id,
                             turn_id=turn_id,
                             evidence_text="\n".join(evidence_parts)[:8000],
                         )
+                    # Skill digest pins for audit/replay (name → content_digest)
+                    skill_pins: dict[str, str] = {}
+                    for ev in skill_events:
+                        if (
+                            getattr(ev, "kind", "") == "load"
+                            and getattr(ev, "skill_name", "")
+                            and getattr(ev, "content_digest", "")
+                        ):
+                            skill_pins[str(ev.skill_name)] = str(ev.content_digest)
                     await guard.release()
                     result = TurnResult(
                         turn_id=turn_id,
@@ -708,6 +738,7 @@ class TurnApplication:
                         session_id=session_id,
                         model=model or self.model.model,
                         schema_metrics=schema_metrics,
+                        skill_pins=skill_pins,
                     )
                     yield TurnEvent("turn_completed", {"result": result})
                     return
