@@ -10,7 +10,8 @@ from typing import Any
 
 from .embeddings import EmbeddingProvider, HashEmbeddingProvider, cosine
 
-_TOKEN = re.compile(r"[a-z0-9_]{2,}")
+# ASCII words + CJK runs (personal 2C; Chinese queries must not be invisible).
+_TOKEN = re.compile(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{1,}")
 
 
 def _tokenize(text: str) -> list[str]:

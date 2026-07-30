@@ -18,6 +18,9 @@ from .transcript import TranscriptStore
 
 STATE_DELTA_MAX_MESSAGES = 6
 STATE_DELTA_CHAR_CAP = 2000
+# design/memory-search.md: hard cap; over-cap is validation error (not silent clamp)
+SEARCH_LIMIT_MAX = 32
+SEARCH_LIMIT_DEFAULT = 8
 
 
 _VAGUE_DEIXIS = re.compile(
@@ -55,19 +58,15 @@ class MemoryFacade:
     )
 
     def resolve_user_id(self, user_id: str | None) -> str:
-        """Bind request user_id; never silently drop a provided id.
+        """Bind request user_id; never silently drop or remap a provided id.
 
         - Empty/None → facade default (usually ``local`` for single-operator CLI).
-        - Facade bound to a concrete account (Web) → mismatch fastfails.
-        - Facade default ``local`` → accept the request id (personal 2C; one
-          operator, no multi-tenant remap).
+        - Non-empty must match facade ``user_id`` exactly (Web account or CLI bind).
         """
-        if user_id is None or str(user_id).strip() == "":
-            return self.user_id or "local"
-        uid = str(user_id).strip()
         facade_uid = self.user_id or "local"
-        if facade_uid == "local":
-            return uid
+        if user_id is None or str(user_id).strip() == "":
+            return facade_uid
+        uid = str(user_id).strip()
         if uid != facade_uid:
             raise AriadneError(
                 app_error(
@@ -237,7 +236,7 @@ class MemoryFacade:
         session_id: str,
         scope: str = "session",
         mode: str | None = None,
-        limit: int = 8,
+        limit: int = SEARCH_LIMIT_DEFAULT,
         before_turn_id: str | None = None,
         user_id: str | None = None,
     ) -> dict[str, Any]:
@@ -264,43 +263,96 @@ class MemoryFacade:
                     "mode must be auto|fast|deep",
                 )
             )
-        lim = max(1, min(int(limit or 8), 32))
-        allowed = self._allowed_turns(session_id, before_turn_id)
+        try:
+            lim_raw = int(limit if limit is not None else SEARCH_LIMIT_DEFAULT)
+        except (TypeError, ValueError) as exc:
+            raise AriadneError(
+                app_error("ARIADNE_INVALID_TOOL_ARGS", "limit must be an integer")
+            ) from exc
+        if lim_raw < 1:
+            raise AriadneError(
+                app_error("ARIADNE_INVALID_TOOL_ARGS", "limit must be >= 1")
+            )
+        if lim_raw > SEARCH_LIMIT_MAX:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    f"limit {lim_raw} exceeds hard max {SEARCH_LIMIT_MAX}",
+                    limit=lim_raw,
+                    limit_max=SEARCH_LIMIT_MAX,
+                )
+            )
+        lim = lim_raw
+        # before_turn_id: apply for all scopes (session uses session order;
+        # workspace uses whole-transcript order so multi-session hits cannot
+        # ignore the cutoff). Unknown cutoff → only known-before ids (conservative).
+        if before_turn_id is not None and str(before_turn_id).strip() != "":
+            if scope_n == "session":
+                allowed = self._allowed_turns(session_id, str(before_turn_id).strip())
+            else:
+                allowed = self.transcript.turn_ids_before(
+                    str(before_turn_id).strip(), session_id=None
+                )
+                # Also exclude active-session turns at/after cutoff even if global
+                # order missed the id (e.g. only session-stamped rows).
+                sess_allowed = self._allowed_turns(session_id, str(before_turn_id).strip())
+                if sess_allowed is not None and allowed is not None:
+                    # Keep intersection of global-before with… no: union of
+                    # session-before + other sessions' turns that appear before
+                    # cutoff in global order. Simpler honest rule: use session
+                    # filter for active session turns; for other sessions only
+                    # allow turn_ids present in global-before set.
+                    allowed = set(allowed) | set(sess_allowed)
+                elif sess_allowed is not None:
+                    allowed = sess_allowed
+        else:
+            allowed = None
 
-        # user scope: search curated text (durable prefs), not invented history
+        # user scope: durable curated only until user-wide episodic index exists.
         if scope_n == "user":
             return self._search_curated_scope(
-                scope="user", query=q, session_id=session_id, limit=lim, mode_used="fast"
+                scope="user",
+                query=q,
+                session_id=session_id,
+                limit=lim,
+                mode_used="fast",
+                allowed_turn_ids=allowed,
+                before_turn_id=before_turn_id,
             )
 
         sid_filter: str | None = session_id if scope_n == "session" else None
         notes: list[str] = []
 
-        async def _fast(expand: list[str] | None = None) -> list[dict[str, Any]]:
+        async def _fast(
+            query_text: str, *, expand: list[str] | None = None
+        ) -> list[dict[str, Any]]:
             auth = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
+            aliases = (
+                expand
+                if expand is not None
+                else self._aliases_from_state(session_id, allowed_turn_ids=allowed)
+            )
             if self.hybrid_semantic:
                 return await self.semantic.search_hybrid(
                     session_id=sid_filter,
-                    query=q,
+                    query=query_text,
                     limit=lim,
-                    expand_aliases=expand
-                    or self._aliases_from_state(session_id, allowed_turn_ids=allowed),
+                    expand_aliases=aliases,
                     demote_entity_ids=set(auth),
                     authoritative_fields=auth,
-                    allowed_turn_ids=allowed if scope_n == "session" else None,
+                    allowed_turn_ids=allowed,
                 )
             return self.semantic.search(
                 session_id=sid_filter,
-                query=q,
+                query=query_text,
                 limit=lim,
-                expand_aliases=expand
-                or self._aliases_from_state(session_id, allowed_turn_ids=allowed),
+                expand_aliases=aliases,
                 demote_entity_ids=set(auth),
                 authoritative_fields=auth,
-                allowed_turn_ids=allowed if scope_n == "session" else None,
+                allowed_turn_ids=allowed,
             )
 
-        hits = await _fast()
+        hits = await _fast(q)
         mode_used = "fast"
 
         def _should_upgrade(h: list[dict[str, Any]]) -> bool:
@@ -310,7 +362,7 @@ class MemoryFacade:
                 return True
             # auto
             if not h:
-                return bool(_VAGUE_DEIXIS.search(q))
+                return bool(_VAGUE_DEIXIS.search(q)) or len(q.split()) >= 4
             top = float(h[0].get("score") or 0)
             if top < 0.12:
                 return True
@@ -323,38 +375,59 @@ class MemoryFacade:
             return False
 
         if mode_n in {"auto", "deep"} and _should_upgrade(hits):
-            # deep without mandatory LLM: alias expand + query split + re-merge
+            # Local deep (no small-model planner yet): real multi-query decomp only.
+            # Must not claim mode_used=deep for a pure no-op re-sort of the same hits.
             aliases = self._aliases_from_state(session_id, allowed_turn_ids=allowed)
-            parts = [p.strip() for p in re.split(r"[，,;；]|和|以及|\band\b", q) if p.strip()]
-            merged: dict[str, dict[str, Any]] = {}
-            for part in parts or [q]:
-                sub = await _fast(expand=aliases)
-                for hit in sub:
-                    key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
-                    prev = merged.get(key)
-                    if prev is None or float(hit.get("score") or 0) > float(
-                        prev.get("score") or 0
-                    ):
-                        merged[key] = hit
-            deep_hits = sorted(
-                merged.values(), key=lambda x: -float(x.get("score") or 0)
-            )[:lim]
-            if deep_hits:
-                hits = deep_hits
-                mode_used = "deep"
-                notes.append("deep:alias_split_rerank")
-            elif mode_n == "deep":
-                notes.append("deep:no_better_hits")
+            parts = [
+                p.strip()
+                for p in re.split(r"[，,;；]|和|以及|\band\b", q)
+                if p.strip()
+            ]
+            multi = len(parts) > 1
+            if multi:
+                merged: dict[str, dict[str, Any]] = {}
+                for part in parts:
+                    # Each sub-query is searched with its own text (not the full q).
+                    sub = await _fast(part, expand=aliases or None)
+                    for hit in sub:
+                        key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
+                        prev = merged.get(key)
+                        if prev is None or float(hit.get("score") or 0) > float(
+                            prev.get("score") or 0
+                        ):
+                            merged[key] = hit
+                deep_hits = sorted(
+                    merged.values(), key=lambda x: -float(x.get("score") or 0)
+                )[:lim]
+                if deep_hits:
+                    hits = deep_hits
+                    mode_used = "deep"
+                    notes.append("deep:local_query_split")
+                    notes.append("deep:no_llm_planner")
+                elif mode_n == "deep":
+                    notes.append("deep:no_hits_after_split")
+                    notes.append("deep:no_llm_planner")
+                    mode_used = "fast"
+                else:
+                    notes.append("auto:upgrade_empty")
+                    notes.append("deep:no_llm_planner")
             else:
-                notes.append("auto:upgrade_attempted")
+                # Single clause: no real decomp available without LLM planner.
+                notes.append("deep:unavailable_local_noop")
+                notes.append("deep:no_llm_planner")
+                mode_used = "fast"
 
-        # Normalize hit evidence shape
+        # Normalize hit evidence shape — drop hits without a real turn_id
         out_hits: list[dict[str, Any]] = []
         for h in hits:
+            tid = str(h.get("turn_id") or "").strip()
+            if not tid:
+                notes.append("dropped_hit_missing_turn_id")
+                continue
             snippet = str(h.get("snippet") or h.get("text") or "")[:400]
             out_hits.append(
                 {
-                    "turn_id": str(h.get("turn_id") or ""),
+                    "turn_id": tid,
                     "session_id": str(h.get("session_id") or session_id),
                     "score": h.get("score"),
                     "snippet": snippet,
@@ -366,10 +439,17 @@ class MemoryFacade:
             )
         if not out_hits:
             notes.append("empty")
+        # de-dupe notes while preserving order
+        seen_n: set[str] = set()
+        notes_u: list[str] = []
+        for n in notes:
+            if n and n not in seen_n:
+                seen_n.add(n)
+                notes_u.append(n)
         return {
             "mode_used": mode_used,
             "hits": out_hits,
-            "notes": "; ".join(notes) if notes else "",
+            "notes": "; ".join(notes_u) if notes_u else "",
             "scope": scope_n,
             "query": q,
         }
@@ -382,12 +462,30 @@ class MemoryFacade:
         session_id: str,
         limit: int,
         mode_used: str,
+        allowed_turn_ids: set[str] | None = None,
+        before_turn_id: str | None = None,
     ) -> dict[str, Any]:
+        """Search durable curated entries for a scope.
+
+        User-wide *episodic* index is not implemented: this path is curated-only.
+        Hits always identify a real store object (entry id); turn_id is the
+        recorded source_turn_id when present, else ``curated:<entry_id>``.
+        """
         store = self._curated_for_scope(scope)
         data = store.apply(action="read", scope=scope, session_id=session_id)
         q_tokens = set(re.findall(r"[a-z0-9_\u4e00-\u9fff]{2,}", query.lower()))
         hits: list[dict[str, Any]] = []
+        notes = ["curated_only", "user_wide_episodic_index=not_implemented"]
         for item in data.get("entries") or []:
+            eid = str(item.get("id") or "").strip()
+            if not eid:
+                continue
+            src_turn = str(item.get("source_turn_id") or "").strip()
+            if allowed_turn_ids is not None:
+                # As-of: only entries grounded in turns known to be before cutoff.
+                # Entries without source_turn_id cannot be proven as-of → skip.
+                if not src_turn or src_turn not in allowed_turn_ids:
+                    continue
             content = str(item.get("content") or "")
             c_low = content.lower()
             score = 0.0
@@ -397,24 +495,31 @@ class MemoryFacade:
             if score <= 0 and query.lower() in c_low:
                 score = 0.5
             if score > 0:
+                # Real store identity always present; never empty turn_id.
+                turn_id = src_turn if src_turn else f"curated:{eid}"
                 hits.append(
                     {
-                        "turn_id": str(item.get("source_turn_id") or ""),
+                        "turn_id": turn_id,
                         "session_id": session_id if scope == "session" else "",
                         "score": round(score / max(len(q_tokens), 1), 4),
                         "snippet": content[:400],
                         "evidence": {
                             "source": "curated",
-                            "entry_id": item.get("id"),
+                            "entry_id": eid,
                             "scope": scope,
+                            "source_turn_id": src_turn or None,
                         },
                     }
                 )
         hits.sort(key=lambda x: -float(x.get("score") or 0))
+        if not hits:
+            notes.append("empty")
+        if before_turn_id:
+            notes.append(f"before_turn_id:{before_turn_id}")
         return {
             "mode_used": mode_used,
             "hits": hits[:limit],
-            "notes": "curated_scope" if hits else "empty",
+            "notes": "; ".join(notes),
             "scope": scope,
             "query": query,
         }
