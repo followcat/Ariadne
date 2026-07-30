@@ -1,8 +1,7 @@
 # Design: Memory Intelligence Vertical Slice
 
 Status: **functional vertical slice complete; memory correctness hardening
-mostly complete, but workspace affinity, terminal transition integrity, and
-scalar secret redaction remain pending**
+mostly complete, but terminal transition integrity remains pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -92,10 +91,12 @@ current goal to `done`; exact action-bound user confirmation is a future path.
 
 Tool arguments and outputs cross an independent Memory redaction boundary.
 Sensitive structured keys are normalized across camelCase and separators
-before matching. Episodes retain only bounded scalar fields from the status
-allowlist; nested or oversized values become digest-only markers. Records keep
-payload digests and tool-call evidence references, never the full raw payload.
-Disabling trace redaction never authorizes secret persistence in Memory.
+before matching. Credential assignments inside scalar strings use the same
+camelCase-aware boundary. Episodes retain only bounded scalar fields from the
+status allowlist; nested or oversized values become digest-only markers.
+Records keep payload digests and tool-call evidence references, never the full
+raw payload. Disabling trace redaction never authorizes secret persistence in
+Memory.
 
 The causal chain is represented by event order and explicit `reason` /
 `because` / `rejected_alternative` fields; it is not an unconstrained knowledge

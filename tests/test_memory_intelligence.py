@@ -999,8 +999,15 @@ def test_camel_case_and_nested_allowlisted_tool_secrets_are_digest_only(
     ("field", "assignment", "secret"),
     [
         ("status", "authToken=AUTHTOKEN123456", "AUTHTOKEN123456"),
+        ("ok", "sessionToken=OKTOKEN123456", "OKTOKEN123456"),
+        ("success", "secretKey=SUCCESSTOKEN123456", "SUCCESSTOKEN123456"),
+        ("exit_code", "authToken=EXITTOKEN123456", "EXITTOKEN123456"),
+        ("returncode", "sessionToken=RETURNTOKEN123456", "RETURNTOKEN123456"),
+        ("count", "secretKey=COUNTTOKEN123456", "COUNTTOKEN123456"),
         ("path", "sessionToken: SESSIONTOKEN123456", "SESSIONTOKEN123456"),
         ("changed", "secretKey=SECRETKEY123456", "SECRETKEY123456"),
+        ("passed", "authToken=PASSEDTOKEN123456", "PASSEDTOKEN123456"),
+        ("failed", "secretKey=FAILEDTOKEN123456", "FAILEDTOKEN123456"),
     ],
 )
 def test_allowlisted_scalar_camel_case_secret_assignments_are_redacted(

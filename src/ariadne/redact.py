@@ -10,7 +10,9 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer ***"),
     (
         re.compile(
-            r"(?i)\b(api[_-]?key|secret|password|passwd|token)"
+            r"(?i)\b(api[_-]?key|(?:auth|access|refresh|session)[_-]?token|"
+            r"(?:client[_-]?)?secret(?:[_-]?key)?|private[_-]?key|"
+            r"password|passwd|token|authorization|cookie|credential)"
             r"((?:[\"']?\s*[:=]\s*[\"']?))([^\s\"']{6,})"
         ),
         r"\1\2***",
@@ -42,6 +44,8 @@ def _is_secret_key(value: Any) -> bool:
 
 
 def redact_text(text: str) -> str:
+    """Redact credential assignments, including camelCase key names."""
+
     out = text
     for pattern, repl in _PATTERNS:
         out = pattern.sub(repl, out)

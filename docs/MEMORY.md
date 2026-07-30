@@ -147,7 +147,8 @@ starve the queue. Store writes are turn-idempotent and completion is recorded
 only after all stages finish. Recovery ids/counts enter the `auto_capture`
 layer report, and recovery failure remains non-fatal to the user turn. Tool
 payloads are independently redacted at the Memory boundary;
-camelCase/separated sensitive keys are normalized before matching.
+camelCase/separated sensitive keys and credential assignments inside scalar
+strings are normalized before matching.
 Episode records keep bounded scalar status fields, digests, and evidence refs;
 nested or oversized values are digest-only and full arguments/outputs are never
 stored.
