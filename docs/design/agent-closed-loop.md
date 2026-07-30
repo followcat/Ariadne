@@ -38,16 +38,17 @@ token budgeting, and operational fault gates remain hardening work.
 
 ## 1. Problem statement
 
-| Strength today | Gap |
+| Strength today | Remaining gap |
 | --- | --- |
-| Graded `memory_search`, scopes, as-of | L2 projection thin / opt-in; cognition ≠ search hits |
-| Skill hybrid selection + digests | Little use→outcome feedback into ranking |
-| Tool loop + approval + schema metrics | Tool success ≠ task / goal success |
-| Layer budgets, deferred exposure | No unified Context Compiler with adoption traces |
-| Session / atelier persistence | Resume is mostly transcript, not structured task state |
+| Graded `memory_search`, scopes, as-of | Conflict UX / default projection still opt-in |
+| Skill hybrid + outcome ledger + patch confirm | Ranking learning needs more real traffic |
+| **Task mode** plan/verify/replan vertical slice | Default path still direct unless `--task` or active task |
+| ContextCompiler + attributions | Provider-exact token budgets still approximate |
+| SQLite TaskState + resume fingerprint | Default product prompts / multi-session UX |
 
-Without plan contracts and verification, complex tasks degrade into
-“LLM improvises until loop limit.”
+Vertical slice is offline-tested. The open problem is **default-path product
+quality** (when to enter task mode, observability, thin turn orchestration),
+not missing modules.
 
 ---
 
@@ -271,15 +272,21 @@ tool call reproduces them.
 
 | Mode | When | Behavior |
 | --- | --- | --- |
-| **direct** (default) | Short / low-risk turns | Existing tool loop; optional light checks |
-| **task** | Multi-step, mutating, or host flag | Explicit TaskState + step verification |
+| **direct** | Default under `task_mode_policy=auto` with no active task | Existing tool loop |
+| **task** | Host force, policy `on`, or active-task resume | Explicit TaskState + step verification |
 
-Activation (host policy), examples:
+**Activation policy** (`ARIADNE_TASK_MODE_POLICY` / Settings `task_mode_policy`):
 
-- User or CLI: `--task` / “plan and verify”
-- Phase 14a: explicit host flag only
-- Later heuristic activation requires outcome evals and is always traced
-- Always-on later only if latency budget allows
+| Policy | Behavior |
+| --- | --- |
+| `off` | Never unless metadata `task_mode=true` |
+| `on` | Always task mode |
+| `auto` (default) | Metadata wins; else enable if an **active task** already exists for the session (resume without re-passing `--task`); otherwise direct |
+
+CLI: `--task` forces metadata on for this run; `--task-mode-policy off|on|auto`
+sets the policy. Kernel emits `task_mode_resolved` with
+`{enabled, reason, policy}` every turn. Stretch features stay off by default:
+semantic verifier, controlled delegation, memory projection.
 
 ### 5.2 Plan control protocol
 

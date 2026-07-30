@@ -232,16 +232,24 @@ Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
 **North star:** after each material action, verify with evidence; update the plan
 from evidence — not from “tool returned success.”
 
-**Status: functional vertical slice complete; production hardening pending.**
+**Status: functional vertical slice complete; default-path hardening in
+progress (not ToB production-ready).**
 
-The 14a–e checkboxes track 2C kernel functionality, not ToB readiness. Current
-hardening delivered after the vertical slice includes fail-closed Web approval,
-read-only task attempts, immutable goal binding, worker fencing/idempotency,
-per-Skill attempt attribution, complete serialized request char accounting,
-bounded verifier reads, required step/goal oracles, coordinator-locked
-projection apply, and load-gating hash-chained task revision events. TaskState
-v1 is an explicit incompatible upgrade because it lacks an authoritative user
-goal/oracle. The remaining gates are listed in the design document's
+Checkboxes mean offline-tested kernel capability, **not** “always-on by
+default” or multi-tenant readiness. Defaults (2C-safe):
+
+| Knob | Default | Notes |
+| --- | --- | --- |
+| Task mode policy | `auto` | Direct loop unless `--task` / metadata, **or** an active task exists (resume) |
+| Semantic verifier | off | `ARIADNE_ENABLE_SEMANTIC_VERIFIER` |
+| Controlled delegation | off | `ARIADNE_ENABLE_CONTROLLED_DELEGATION` |
+| Memory projection | off | `ARIADNE_ENABLE_MEMORY_PROJECTION` |
+
+Hardening already delivered: fail-closed Web approval, read-only task attempts,
+immutable goal binding, worker fencing/idempotency, skill attempt attribution,
+context char accounting, bounded verifier reads, required oracles, locked
+projection apply, hash-chained task revision events, **task_mode_resolved**
+traces, protocol helpers extracted from turn. Remaining gates: see design
 Production-hardening backlog.
 
 #### 14a — Verify + TaskState (P0)
