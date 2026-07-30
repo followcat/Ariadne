@@ -1,16 +1,168 @@
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+
+from ..errors import AriadneError, app_error
+from ..model.base import ModelPort
 from .json_file import locked_read_json, locked_update_json, locked_write_json
 from .state import ConversationStateStore
 
 
-ProjectorFn = Callable[[str, str], Awaitable[list[dict[str, Any]]]]
+@dataclass(slots=True)
+class ProjectionDecision:
+    decision: Literal["apply", "confirmed_no_change"]
+    operations: list[dict[str, Any]]
+    reason: str
+
+
+ProjectorFn = Callable[[str, str], Awaitable[ProjectionDecision]]
+
+PROJECT_STATE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "project_conversation_state",
+        "description": (
+            "Project only explicit current-session facts, goals, preferences, and hypotheses "
+            "from the supplied evidence. Every operation needs a verbatim evidence_quote."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["decision", "operations", "reason"],
+            "properties": {
+                "decision": {"type": "string", "enum": ["apply", "confirmed_no_change"]},
+                "reason": {"type": "string", "minLength": 1},
+                "operations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["op", "evidence_quote"],
+                        "properties": {
+                            "op": {
+                                "type": "string",
+                                "enum": [
+                                    "ensure_entity",
+                                    "set_alias",
+                                    "set_attribute",
+                                    "expire_attribute",
+                                    "set_status",
+                                    "set_relation",
+                                    "remove_relation",
+                                    "ensure_collection",
+                                    "collection_append",
+                                    "collection_remove",
+                                    "collection_move",
+                                ],
+                            },
+                            "entity_id": {"type": "string"},
+                            "type": {"type": "string"},
+                            "alias": {"type": "string"},
+                            "key": {"type": "string"},
+                            "value": {},
+                            "memory_type": {
+                                "type": "string",
+                                "enum": ["fact", "preference", "goal", "hypothesis"],
+                            },
+                            "authority": {
+                                "type": "string",
+                                "enum": ["model_inferred", "tool_observed", "user_explicit"],
+                            },
+                            "status": {"type": "string"},
+                            "relation": {"type": "string"},
+                            "from": {"type": "string"},
+                            "to": {"type": "string"},
+                            "name": {"type": "string"},
+                            "member": {"type": "string"},
+                            "to_index": {"type": "integer"},
+                            "evidence_quote": {"type": "string", "minLength": 1},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def make_llm_projector(model: ModelPort) -> ProjectorFn:
+    """Build a strict, evidence-bound projector. No free-text/fallback parse."""
+
+    async def project(evidence: str, turn_id: str) -> ProjectionDecision:
+        exchange = await model.complete(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a conservative state projector. Use only the evidence block. "
+                        "Do not infer unstated values. Call project_conversation_state exactly once."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"turn_id={turn_id}\n[EVIDENCE]\n{evidence}",
+                },
+            ],
+            tools=[PROJECT_STATE_TOOL],
+            tool_choice={
+                "type": "function",
+                "function": {"name": "project_conversation_state"},
+            },
+            temperature=0.0,
+            max_tokens=2500,
+        )
+        calls = exchange.message.tool_calls or []
+        if len(calls) != 1 or str((calls[0].get("function") or {}).get("name") or "") != (
+            "project_conversation_state"
+        ):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                    "projector must return exactly one project_conversation_state call",
+                )
+            )
+        raw = (calls[0].get("function") or {}).get("arguments") or "{}"
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+            Draft202012Validator(PROJECT_STATE_TOOL["function"]["parameters"]).validate(args)
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                    f"projector returned invalid structured output: {exc}",
+                )
+            ) from exc
+        decision = str(args["decision"])
+        operations = list(args["operations"])
+        if decision == "apply" and not operations:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                    "projector decision=apply requires operations",
+                )
+            )
+        if decision == "confirmed_no_change" and operations:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                    "confirmed_no_change cannot include operations",
+                )
+            )
+        return ProjectionDecision(
+            decision=decision,  # type: ignore[arg-type]
+            operations=operations,
+            reason=str(args["reason"]),
+        )
+
+    return project
 
 
 @dataclass
@@ -19,7 +171,7 @@ class ProjectionJob:
     session_id: str
     turn_id: str
     evidence_text: str
-    status: str  # pending|leased|succeeded|failed|no_change
+    status: str  # pending|leased|succeeded|failed|confirmed_no_change
     attempts: int = 0
     lease_owner: str = ""
     lease_until: float = 0.0
@@ -85,7 +237,7 @@ class ProjectionWorker:
         """Claim next job in per-session enqueue order (turn pipeline order).
 
         Within a session, only the earliest unfinished job is claimable — later
-        turns wait until earlier ones succeed/fail/no_change.
+        turns wait until earlier ones succeed/fail/confirmed_no_change.
         Atomic under exclusive lock (safe across processes).
         """
         now = time.time()
@@ -143,12 +295,20 @@ class ProjectionWorker:
                 n += 1
         return n
 
-    def complete(self, job_id: str, *, status: str, error: str = "") -> None:
+    def complete(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        error: str = "",
+        reason: str = "",
+    ) -> None:
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             for job in data.get("jobs") or []:
                 if job.get("job_id") == job_id:
                     job["status"] = status
                     job["error"] = error
+                    job["reason"] = reason
                     job["lease_owner"] = ""
                     job["lease_until"] = 0.0
                     break
@@ -163,27 +323,88 @@ class ProjectionWorker:
             jobs = [j for j in jobs if j.get("session_id") == session_id]
         return list(jobs)
 
-    async def process_one(self, projector: ProjectorFn, *, worker_id: str = "local") -> dict[str, Any] | None:
-        job = self.claim(worker_id=worker_id)
+    async def process_one(
+        self,
+        projector: ProjectorFn,
+        *,
+        worker_id: str = "local",
+        session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        job = self.claim(worker_id=worker_id, session_id=session_id)
         if job is None:
             return None
         try:
-            ops = await projector(job["evidence_text"], job["turn_id"])
-            if not ops:
-                self.complete(job["job_id"], status="no_change")
-                return {"job_id": job["job_id"], "status": "no_change"}
+            decision = await projector(job["evidence_text"], job["turn_id"])
+            if not isinstance(decision, ProjectionDecision):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                        "projector must return ProjectionDecision",
+                    )
+                )
+            if decision.decision not in {"apply", "confirmed_no_change"}:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                        f"unknown projector decision: {decision.decision}",
+                    )
+                )
+            if decision.decision == "confirmed_no_change":
+                self.complete(
+                    job["job_id"],
+                    status="confirmed_no_change",
+                    reason=decision.reason,
+                )
+                return {
+                    "job_id": job["job_id"],
+                    "status": "confirmed_no_change",
+                    "reason": decision.reason,
+                }
+            if not decision.operations:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                        "decision=apply requires at least one operation",
+                    )
+                )
+            parent_version = self.state_store.version(job["session_id"])
             result = self.state_store.apply_ops(
                 session_id=job["session_id"],
-                operations=ops,
+                operations=decision.operations,
                 source_turn_id=job["turn_id"],
                 evidence_text=job["evidence_text"],
+                expected_parent_version=parent_version,
             )
-            self.complete(job["job_id"], status="succeeded")
-            return {"job_id": job["job_id"], "status": "succeeded", "result": result}
+            self.complete(job["job_id"], status="succeeded", reason=decision.reason)
+            return {
+                "job_id": job["job_id"],
+                "status": "succeeded",
+                "reason": decision.reason,
+                "result": result,
+            }
         except Exception as exc:  # noqa: BLE001
-            status = "failed" if int(job.get("attempts") or 0) >= self.max_attempts else "pending"
-            self.complete(job["job_id"], status=status, error=f"{type(exc).__name__}: {exc}")
-            return {"job_id": job["job_id"], "status": status, "error": str(exc)}
+            terminal = (
+                isinstance(exc, AriadneError)
+                and exc.error.code
+                in {
+                    "ARIADNE_MEMORY_PROJECTOR_PROTOCOL",
+                    "ARIADNE_MEMORY_PROJECTOR_UNAVAILABLE",
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    "ARIADNE_MEMORY_CONFLICT",
+                }
+            )
+            status = (
+                "failed"
+                if terminal or int(job.get("attempts") or 0) >= self.max_attempts
+                else "pending"
+            )
+            error_text = (
+                f"{exc.error.code}: {exc.error.message}"
+                if isinstance(exc, AriadneError)
+                else f"{type(exc).__name__}: {exc}"
+            )
+            self.complete(job["job_id"], status=status, error=error_text)
+            return {"job_id": job["job_id"], "status": status, "error": error_text}
 
     async def drain(self, projector: ProjectorFn, *, max_jobs: int = 20) -> list[dict[str, Any]]:
         results = []

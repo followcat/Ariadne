@@ -146,6 +146,20 @@ def render_json(result: TurnResult) -> str:
             for e in result.skill_events
         ],
         "skill_pins": dict(getattr(result, "skill_pins", None) or {}),
+        "context_attributions": [
+            {
+                "source": item.source,
+                "reason": item.reason,
+                "score": item.score,
+                "token_chars": item.token_chars,
+                "disposition": item.disposition,
+                "role": item.role,
+                "trust": item.trust,
+                "required": item.required,
+                "verbatim": item.verbatim,
+            }
+            for item in getattr(result, "context_attributions", [])
+        ],
         "task": (
             {
                 key: getattr(result.task, key)

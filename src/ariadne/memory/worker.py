@@ -11,9 +11,9 @@ Shared JSON stores (``summaries.json``, ``projection_jobs.json``, ``state.json``
 use fcntl file locks, so **in-process and sub-process workers may run together**
 without lost updates. Prefer short drain ticks over long exclusive holds.
 
-Projection default projector returns no ops (``no_change``) so lag clears when
-state was already applied via the ``conversation_state`` tool. Hosts may inject
-an LLM projector later without changing the queue protocol.
+Projection has no implicit projector. An enabled queue requires an explicitly
+injected evidence-bound projector; otherwise jobs fail visibly instead of being
+silently marked no-change.
 """
 
 from __future__ import annotations
@@ -27,13 +27,20 @@ from pathlib import Path
 from typing import Any
 
 from .facade import MemoryFacade
-from .projection import ProjectorFn
+from .projection import ProjectionDecision, ProjectorFn
 
-# Default projector: evidence was already reduced by tools; mark no_change.
-async def _default_projector(evidence: str, turn_id: str) -> list[dict[str, Any]]:
+
+async def _default_projector(evidence: str, turn_id: str) -> ProjectionDecision:
     _ = evidence
     _ = turn_id
-    return []
+    from ..errors import AriadneError, app_error
+
+    raise AriadneError(
+        app_error(
+            "ARIADNE_MEMORY_PROJECTOR_UNAVAILABLE",
+            "projection is enabled but no projector was configured",
+        )
+    )
 
 
 def make_projector(
@@ -45,13 +52,17 @@ def make_projector(
     quotes; the worker never invents a default LLM dependency.
     """
 
-    async def _wrapped(evidence: str, turn_id: str) -> list[dict[str, Any]]:
+    async def _wrapped(evidence: str, turn_id: str) -> ProjectionDecision:
         result = fn(evidence, turn_id)
         if asyncio.iscoroutine(result):
             result = await result
         if not isinstance(result, list):
             raise TypeError("projector must return a list of ops")
-        return result
+        return ProjectionDecision(
+            decision="apply" if result else "confirmed_no_change",
+            operations=result,
+            reason="explicit custom projector result",
+        )
 
     return _wrapped
 

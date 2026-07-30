@@ -93,7 +93,9 @@ Import rule:
 ```
 
 **Closed-loop (Phase 14):** optional **task mode** inserts persisted plan / step
-verification and evidence-bound replan around the tool loop (14a–b shipped) — see
+verification and evidence-bound replan around the tool loop. An opt-in strict L2
+projector and the shared `ContextCompiler` add evidence-bound state plus prompt
+attribution (14a–c shipped) — see
 [design/agent-closed-loop.md](design/agent-closed-loop.md). Default short turns
 remain the direct loop above.
 

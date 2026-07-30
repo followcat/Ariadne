@@ -685,7 +685,8 @@ def build_default_registry(
                 "Allowed ops: "
                 "ensure_entity {entity_id, type?}; "
                 "set_alias {entity_id, alias}; "
-                "set_attribute {entity_id, key, value, authority?}; "
+                "set_attribute {entity_id, key, value, memory_type?, authority?}; "
+                "expire_attribute {entity_id, key, authority?}; "
                 "set_status {entity_id, status: active|done|cancelled|archived}; "
                 "set_relation {relation, from, to}; "
                 "remove_relation {relation, from, to}; "
@@ -710,6 +711,7 @@ def build_default_registry(
                                         "ensure_entity",
                                         "set_alias",
                                         "set_attribute",
+                                        "expire_attribute",
                                         "set_status",
                                         "set_relation",
                                         "remove_relation",
@@ -724,7 +726,14 @@ def build_default_registry(
                                 "alias": {"type": "string"},
                                 "key": {"type": "string"},
                                 "value": {},
-                                "authority": {"type": "string"},
+                                "memory_type": {
+                                    "type": "string",
+                                    "enum": ["fact", "preference", "goal", "hypothesis"],
+                                },
+                                "authority": {
+                                    "type": "string",
+                                    "enum": ["model_inferred", "tool_observed", "user_explicit"],
+                                },
                                 "status": {"type": "string"},
                                 "relation": {"type": "string"},
                                 "from": {"type": "string"},

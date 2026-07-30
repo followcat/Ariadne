@@ -1,6 +1,6 @@
 # Design: Closed-Loop Agent Execution (Personal / 2C)
 
-Status: **active delivery** (Phases 14a–b implemented; later phases pending)
+Status: **active delivery** (Phases 14a–c implemented; later phases pending)
 Audience: implementers  
 Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [turn-lifecycle.md](turn-lifecycle.md),
 [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
@@ -447,9 +447,9 @@ Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 
 ### Phase 14c — Projector + Context Compiler (P1)
 
-- [ ] Opt-in evidence-bound L2 projector (no silent no_change success)  
-- [ ] Conflict / superseded semantics  
-- [ ] ContextCompiler module + attribution traces  
+- [x] Opt-in evidence-bound L2 projector (no silent no_change success)
+- [x] Conflict / superseded / expired semantics
+- [x] ContextCompiler module + attribution traces
 
 ### Phase 14d — Skill feedback + user model (P1)
 

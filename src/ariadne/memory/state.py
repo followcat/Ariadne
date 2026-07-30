@@ -12,6 +12,7 @@ ALLOWED_OPS = {
     "ensure_entity",
     "set_alias",
     "set_attribute",
+    "expire_attribute",
     "set_status",
     "set_relation",
     "remove_relation",
@@ -20,6 +21,14 @@ ALLOWED_OPS = {
     "collection_remove",
     "collection_move",
 }
+
+ATTRIBUTE_AUTHORITIES = {
+    "model_inferred": 0,
+    "tool_observed": 1,
+    "user_explicit": 2,
+}
+ATTRIBUTE_MEMORY_TYPES = {"fact", "preference", "goal", "hypothesis"}
+ATTRIBUTE_STATUSES = {"active", "superseded", "expired"}
 
 MAX_ENTITIES = 256
 MAX_RELATIONS_PER_TYPE = 64
@@ -61,7 +70,7 @@ class ConversationStateStore:
     def get_as_of(
         self, session_id: str, *, allowed_turn_ids: set[str] | None = None
     ) -> dict[str, Any]:
-        """Point-in-time state: drop attributes sourced after the cutoff turns.
+        """Point-in-time state, restoring superseded values valid at the cutoff.
 
         When ``allowed_turn_ids`` is None, returns current state. Attributes
         without ``source_turn_id`` are kept (conservative). Entities that end
@@ -76,11 +85,28 @@ class ConversationStateStore:
             attrs = ent.get("attributes") or {}
             kept: dict[str, Any] = {}
             for key, payload in attrs.items():
-                if isinstance(payload, dict):
-                    src = str(payload.get("source_turn_id") or "").strip()
-                    if src and src not in allowed_turn_ids:
-                        continue
-                kept[key] = payload
+                if not isinstance(payload, dict):
+                    kept[key] = payload
+                    continue
+                candidates = [
+                    *(payload.get("history") or []),
+                    {k: v for k, v in payload.items() if k != "history"},
+                ]
+                valid = [
+                    candidate
+                    for candidate in candidates
+                    if not str(candidate.get("source_turn_id") or "").strip()
+                    or str(candidate.get("source_turn_id")) in allowed_turn_ids
+                ]
+                if not valid:
+                    continue
+                restored = copy.deepcopy(valid[-1])
+                older = [copy.deepcopy(candidate) for candidate in valid[:-1]]
+                if restored.get("status") == "superseded":
+                    restored["status"] = "active"
+                    restored.pop("superseded_by", None)
+                restored["history"] = older
+                kept[key] = restored
             ent["attributes"] = kept
         return filtered
 
@@ -128,7 +154,13 @@ class ConversationStateStore:
             attrs = ent.get("attributes") or {}
             for key, payload in attrs.items():
                 if isinstance(payload, dict):
-                    lines.append(f"    {key}={payload.get('value')!r} source_turn={payload.get('source_turn_id')}")
+                    lines.append(
+                        f"    {key}={payload.get('value')!r} "
+                        f"status={payload.get('status') or 'active'} "
+                        f"type={payload.get('memory_type') or 'fact'} "
+                        f"authority={payload.get('authority') or 'model_inferred'} "
+                        f"source_turn={payload.get('source_turn_id')}"
+                    )
                 else:
                     lines.append(f"    {key}={payload!r}")
         for cname, coll in (state.get("collections") or {}).items():
@@ -152,13 +184,61 @@ class ConversationStateStore:
         expected_parent_version: int | None = None,
     ) -> dict[str, Any]:
         if not operations:
-            return {"decision": "no_change", "state": self.get(session_id)}
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    "state apply requires at least one operation; use an explicit projector decision for no change",
+                )
+            )
         # Validate ops against evidence before locking (no invent / no bad quotes).
         evidence = evidence_text or ""
         for op in operations:
             name = str(op.get("op") or "").strip()
             if name not in ALLOWED_OPS:
                 raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", f"unknown state op: {name}"))
+            required_fields = {
+                "ensure_entity": ("entity_id",),
+                "set_alias": ("entity_id", "alias"),
+                "set_attribute": ("entity_id", "key"),
+                "expire_attribute": ("entity_id", "key"),
+                "set_status": ("entity_id", "status"),
+                "set_relation": ("relation", "from", "to"),
+                "remove_relation": ("relation", "from", "to"),
+                "ensure_collection": ("name",),
+                "collection_append": ("name", "member"),
+                "collection_remove": ("name", "member"),
+                "collection_move": ("name", "member", "to_index"),
+            }[name]
+            missing = [field for field in required_fields if field not in op]
+            if missing:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_INVALID_TOOL_ARGS",
+                        f"state op {name} is missing required fields",
+                        op=name,
+                        missing=missing,
+                    )
+                )
+            if name in {"set_attribute", "expire_attribute"}:
+                authority = str(op.get("authority") or "model_inferred")
+                if authority not in ATTRIBUTE_AUTHORITIES:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            f"unknown attribute authority: {authority}",
+                            op=name,
+                        )
+                    )
+            if name == "set_attribute":
+                memory_type = str(op.get("memory_type") or "fact")
+                if memory_type not in ATTRIBUTE_MEMORY_TYPES:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            f"unknown memory_type: {memory_type}",
+                            op=name,
+                        )
+                    )
             quote = str(op.get("evidence_quote") or "").strip()
             if not quote or quote not in evidence:
                 raise AriadneError(
@@ -296,11 +376,99 @@ class ConversationStateStore:
                 eid, {"type": "generic", "aliases": [], "attributes": {}, "status": "active"}
             )
             key = str(op["key"])
-            ent.setdefault("attributes", {})[key] = {
+            attrs = ent.setdefault("attributes", {})
+            prior = attrs.get(key)
+            authority = str(op.get("authority") or "model_inferred")
+            memory_type = str(op.get("memory_type") or "fact")
+            record_id = f"{source_turn_id}:{eid}:{key}"
+            if isinstance(prior, dict):
+                prior_authority = str(prior.get("authority") or "model_inferred")
+                prior_status = str(prior.get("status") or "active")
+                value_changed = prior.get("value") != op.get("value")
+                if (
+                    prior_status == "active"
+                    and value_changed
+                    and ATTRIBUTE_AUTHORITIES[authority]
+                    < ATTRIBUTE_AUTHORITIES.get(prior_authority, 0)
+                ):
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_MEMORY_CONFLICT",
+                            "lower-authority evidence cannot overwrite an active attribute",
+                            entity_id=eid,
+                            key=key,
+                            current_authority=prior_authority,
+                            proposed_authority=authority,
+                            current_source_turn_id=prior.get("source_turn_id"),
+                        )
+                    )
+                if not value_changed and prior_status == "active":
+                    return
+                history = [copy.deepcopy(item) for item in (prior.get("history") or [])]
+                snapshot = {
+                    k: copy.deepcopy(v)
+                    for k, v in prior.items()
+                    if k != "history"
+                }
+                snapshot["status"] = "superseded"
+                snapshot["superseded_by"] = record_id
+                history.append(snapshot)
+            else:
+                history = []
+            attrs[key] = {
+                "record_id": record_id,
                 "value": op.get("value"),
                 "source_turn_id": source_turn_id,
-                "authority": str(op.get("authority") or "user_explicit"),
+                "evidence_quote": str(op.get("evidence_quote") or ""),
+                "authority": authority,
+                "memory_type": memory_type,
+                "status": "active",
+                "history": history,
             }
+        elif name == "expire_attribute":
+            eid = str(op["entity_id"])
+            ent = entities.get(eid)
+            key = str(op["key"])
+            current = (ent.get("attributes") or {}).get(key) if ent else None
+            if not isinstance(current, dict):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CONFLICT",
+                        "cannot expire an attribute that does not exist",
+                        entity_id=eid,
+                        key=key,
+                    )
+                )
+            authority = str(op.get("authority") or "model_inferred")
+            current_authority = str(current.get("authority") or "model_inferred")
+            if ATTRIBUTE_AUTHORITIES[authority] < ATTRIBUTE_AUTHORITIES.get(current_authority, 0):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CONFLICT",
+                        "lower-authority evidence cannot expire an active attribute",
+                        entity_id=eid,
+                        key=key,
+                        current_authority=current_authority,
+                        proposed_authority=authority,
+                    )
+                )
+            history = [copy.deepcopy(item) for item in (current.get("history") or [])]
+            snapshot = {k: copy.deepcopy(v) for k, v in current.items() if k != "history"}
+            snapshot["status"] = "superseded"
+            expired_id = f"{source_turn_id}:{eid}:{key}:expired"
+            snapshot["superseded_by"] = expired_id
+            history.append(snapshot)
+            current.update(
+                {
+                    "record_id": expired_id,
+                    "status": "expired",
+                    "source_turn_id": source_turn_id,
+                    "evidence_quote": str(op.get("evidence_quote") or ""),
+                    "authority": authority,
+                    "history": history,
+                }
+            )
+            current.pop("superseded_by", None)
         elif name == "set_status":
             eid = str(op["entity_id"])
             ent = entities.setdefault(

@@ -232,7 +232,7 @@ Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
 **North star:** after each material action, verify with evidence; update the plan
 from evidence — not from “tool returned success.”
 
-**Status: 14a–b shipped; 14c–e pending.**
+**Status: 14a–c shipped; 14d–e pending.**
 
 #### 14a — Verify + TaskState (P0)
 - [x] `TaskState` persistence (local SQLite, task identity + active session
@@ -258,10 +258,13 @@ from evidence — not from “tool returned success.”
 - [x] Approval consumes effect metadata; required credentials fail closed
 
 #### 14c — Cognitive state + Context Compiler (P1)
-- [ ] Opt-in evidence-bound L2 projector (no silent empty success)
-- [ ] Conflict / superseded / expired semantics for state fields
-- [ ] ContextCompiler: budgeted assembly + attribution traces (source, reason,
-  tokens, included|dropped)
+- [x] Opt-in evidence-bound L2 projector (structured apply vs
+  `confirmed_no_change`; no silent empty success)
+- [x] Conflict / superseded / expired semantics for typed state fields, with
+  authority ordering and as-of history restoration
+- [x] ContextCompiler: deterministic budgeted assembly + attribution traces
+  (source, reason, token chars, included|summarized|dropped); required evidence
+  fails rather than truncates
 
 #### 14d — Skill feedback + user model (P1)
 - [ ] Skill outcome ledger → selection ranking (not auto body rewrite)

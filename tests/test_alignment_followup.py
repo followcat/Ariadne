@@ -253,4 +253,7 @@ def test_memory_worker_drains_summary_and_projection(tmp_path: Path) -> None:
     assert mem.summaries.pending_count("s1") == 0
     assert projection.pending_lag("s1") == 0
     assert mem.summaries.list_ready("s1")
-    assert projection.list_jobs(session_id="s1")[0]["status"] == "no_change"
+    job = projection.list_jobs(session_id="s1")[0]
+    assert job["status"] == "failed"
+    assert "ARIADNE_MEMORY_PROJECTOR_UNAVAILABLE" in job["error"]
+    assert "no projector was configured" in job["error"]

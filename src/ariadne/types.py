@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from .context.compiler import ContextAttribution
     from .tasks.models import TaskSummary
 
 
@@ -125,6 +126,7 @@ class TurnResult:
     # skill name → content digest for skills loaded this turn (audit/replay)
     skill_pins: dict[str, str] = field(default_factory=dict)
     task: TaskSummary | None = None
+    context_attributions: list[ContextAttribution] = field(default_factory=list)
 
 
 # Streaming / host events

@@ -47,6 +47,8 @@ class Settings:
     tool_loop_limit: int = 32
     # Completion budget per model call (not context window). Default 8k; atelier raises to 16k.
     max_tokens: int = 8192
+    # Hard prompt-context budget in characters. Required evidence never truncates.
+    context_max_chars: int = 120_000
     verbose: bool = False
     json_mode: bool = False
     stream: bool = False

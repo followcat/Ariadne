@@ -9,8 +9,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from ..context import ContextAttribution, ContextBlock, ContextCompiler
 from ..errors import AriadneError, app_error
 from ..memory.facade import MemoryFacade
+from ..memory.projection import ProjectorFn
 from ..model.base import ModelPort
 from ..guardrails import scan_input, scan_output
 from ..redact import redact_secrets
@@ -210,6 +212,8 @@ class TurnApplication:
     # Completion budget per model call (default 8k; atelier often 16k).
     max_tokens: int = 8192
     task_controller: TaskController | None = None
+    context_compiler: ContextCompiler = field(default_factory=ContextCompiler)
+    memory_projector: ProjectorFn | None = None
     available_credentials: frozenset[str] = frozenset()
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
@@ -377,6 +381,7 @@ class TurnApplication:
         skill_events: list[SkillEvent] = []
         usage_total = Usage()
         schema_metrics: list[SchemaMetrics] = []
+        context_attributions: list[ContextAttribution] = []
 
         memory_system, memory_summary = await self.memory.build_context_async(
             session_id=session_id, user_id=user_id, query=prompt
@@ -410,25 +415,62 @@ class TurnApplication:
                 + f"(native deferred load: {deferred_names})"
             )
 
-        # Prompt assembly (design: policy → high-signal memory → skills → catalog
-        # → runtime → recent → user). Skill plan sits near user (strong attention).
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_POLICY},
+        # ContextCompiler owns authority ordering, hard budgets, and attribution.
+        context_blocks: list[ContextBlock] = [
+            ContextBlock(
+                source="kernel_policy",
+                role="system",
+                content=SYSTEM_POLICY,
+                reason="kernel execution and safety contract",
+                score=100.0,
+                required=True,
+                trust="kernel",
+                verbatim=True,
+            )
         ]
         extra_sys = (self.extra_system_prompt or "").strip()
         if extra_sys:
-            messages.append({"role": "system", "content": extra_sys})
-        if memory_system:
-            messages.append({"role": "system", "content": memory_system})
+            context_blocks.append(
+                ContextBlock(
+                    source="host_policy",
+                    role="system",
+                    content=extra_sys,
+                    reason="host-injected workspace policy",
+                    score=95.0,
+                    required=True,
+                    trust="host",
+                    verbatim=True,
+                )
+            )
         if task_mode and self.task_controller is not None:
             if task_state is None:
-                messages.append(
-                    {"role": "system", "content": self.task_controller.plan_prompt(prompt)}
-                )
+                task_content = self.task_controller.plan_prompt(prompt)
             else:
-                messages.append(
-                    {"role": "system", "content": self.task_controller.format_context(task_state)}
+                task_content = self.task_controller.format_context(task_state)
+            context_blocks.append(
+                ContextBlock(
+                    source="task_state",
+                    role="system",
+                    content=task_content,
+                    reason="active task goal, step, and verification state",
+                    score=90.0,
+                    required=True,
+                    trust="kernel_state",
+                    verbatim=True,
                 )
+            )
+        if memory_system:
+            context_blocks.append(
+                ContextBlock(
+                    source="memory_context",
+                    role="system",
+                    content=memory_system,
+                    reason="layered state, curated memory, summaries, and recall",
+                    score=80.0,
+                    required=False,
+                    trust="memory_derived",
+                )
+            )
 
         # Always emit compact SKILL_SELECTION (never dump full linear index).
         n_skills = len(self.skills.list())
@@ -443,7 +485,17 @@ class TurnApplication:
             f"{skill_plan.get('other', 0)} other; "
             f"plan_chars={report.get('plan_chars', len(plan_text))}"
         )
-        messages.append({"role": "system", "content": plan_text})
+        context_blocks.append(
+            ContextBlock(
+                source="skill_plan",
+                role="system",
+                content=plan_text,
+                reason="ranked procedural guidance discovery",
+                score=65.0,
+                required=False,
+                trust="skill_registry",
+            )
+        )
         skill_events.append(SkillEvent(kind="index", detail=detail))
         yield TurnEvent("skill_event", {"kind": "index", "detail": detail})
 
@@ -461,16 +513,20 @@ class TurnApplication:
                 missing = self.skills.missing_tools(skill, available_tools)
             if missing:
                 # Enforce requires_tools: inject note instead of body.
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": (
+                context_blocks.append(
+                    ContextBlock(
+                        source=f"skill_body:{skill.name}",
+                        role="system",
+                        content=(
                             f"[SKILL_BODY name={skill.name} score={score:.3g} "
                             f"scope=this_turn skipped=missing_tools]\n"
                             f"requires_tools missing: {', '.join(missing)}. "
                             "Register/enable those tools before following this skill."
                         ),
-                    }
+                        reason="selected skill cannot run without required tools",
+                        score=60.0 + float(score),
+                        trust="skill_registry",
+                    )
                 )
                 skill_events.append(
                     SkillEvent(
@@ -490,14 +546,18 @@ class TurnApplication:
                 continue
             if len(body) > body_chars:
                 body = body[:body_chars] + f"\n[ariadne: skill body truncated to {body_chars} chars]"
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
+            context_blocks.append(
+                ContextBlock(
+                    source=f"skill_body:{skill.name}",
+                    role="system",
+                    content=(
                         f"[SKILL_BODY name={skill.name} score={score:.3g} scope=this_turn]\n"
                         f"{body}"
                     ),
-                }
+                    reason="auto-loaded procedural guidance",
+                    score=60.0 + float(score),
+                    trust="skill_registry",
+                )
             )
             digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
             skill_events.append(
@@ -519,31 +579,98 @@ class TurnApplication:
             )
 
         # Short tool catalog (discovery); full schemas go on the wire separately.
-        messages.append(
-            {
-                "role": "system",
-                "content": "Available tools (catalog):\n" + (catalog or "(none)"),
-            }
+        context_blocks.append(
+            ContextBlock(
+                source="tool_catalog",
+                role="system",
+                content="Available tools (catalog):\n" + (catalog or "(none)"),
+                reason="discoverable capabilities from the single registry",
+                score=75.0,
+                required=True,
+                trust="kernel_registry",
+                verbatim=True,
+            )
         )
 
-        messages.append(
-            {
-                "role": "system",
-                "content": (
+        context_blocks.append(
+            ContextBlock(
+                source="runtime_context",
+                role="system",
+                content=(
                     "[RUNTIME_CONTEXT]\n"
                     f"now_utc: {started_at.isoformat()}\n"
                     f"session_id: {session_id}\n"
                     f"turn_id: {turn_id}"
                 ),
-            }
+                reason="current execution identity and time",
+                score=85.0,
+                required=True,
+                trust="kernel_runtime",
+                verbatim=True,
+            )
         )
 
-        for prior in self.memory.recent_messages(session_id=session_id):
-            messages.append(prior)
+        for prior_index, prior in enumerate(
+            self.memory.recent_messages(session_id=session_id)
+        ):
+            context_blocks.append(
+                ContextBlock(
+                    source=f"recent_raw:{prior_index}",
+                    role=prior["role"],
+                    content=prior.get("content", ""),
+                    reason="recent authoritative conversation window",
+                    score=50.0 + prior_index / 1000,
+                    required=False,
+                    trust="conversation",
+                    tool_call_id=prior.get("tool_call_id"),
+                    name=prior.get("name"),
+                    tool_calls=prior.get("tool_calls"),
+                )
+            )
 
         user_content = build_user_message_content(prompt, image_list or None)
         user_transcript = transcript_user_line(prompt, image_list or None)
-        messages.append({"role": "user", "content": user_content})
+        context_blocks.append(
+            ContextBlock(
+                source="user_input",
+                role="user",
+                content=user_content,
+                reason="current user request",
+                score=100.0,
+                required=True,
+                trust="user",
+                verbatim=True,
+            )
+        )
+        compiled_context = self.context_compiler.compile(context_blocks)
+        messages = compiled_context.messages
+        context_attributions = compiled_context.attributions
+
+        def append_required_context(
+            message: dict[str, Any],
+            *,
+            source: str,
+            reason: str,
+            trust: str,
+        ) -> None:
+            self.context_compiler.append_required(
+                messages=messages,
+                attributions=context_attributions,
+                block=ContextBlock(
+                    source=source,
+                    role=message["role"],
+                    content=message.get("content"),
+                    reason=reason,
+                    score=100.0,
+                    required=True,
+                    trust=trust,
+                    verbatim=True,
+                    tool_call_id=message.get("tool_call_id"),
+                    name=message.get("name"),
+                    tool_calls=message.get("tool_calls"),
+                ),
+            )
+
         self.memory.transcript.append(
             {
                 "role": "user",
@@ -694,7 +821,12 @@ class TurnApplication:
                 }
                 if tool_calls_payload:
                     assistant_msg["tool_calls"] = tool_calls_payload
-                messages.append(assistant_msg)
+                append_required_context(
+                    assistant_msg,
+                    source=f"assistant_exchange:{loop_i}",
+                    reason="model response and capability-call protocol",
+                    trust="model",
+                )
                 if assistant.content:
                     evidence_parts.append(assistant.content)
                     ctx.evidence_text = "\n".join(evidence_parts)
@@ -740,7 +872,7 @@ class TurnApplication:
                         user_id=user_id,
                         arguments=control_args,
                     )
-                    messages.append(
+                    append_required_context(
                         {
                             "role": "tool",
                             "tool_call_id": control_id,
@@ -752,13 +884,19 @@ class TurnApplication:
                                     "revision": task_state.revision,
                                 }
                             ),
-                        }
+                        },
+                        source=f"task_control_result:{control_id}",
+                        reason="persisted task-plan control result",
+                        trust="kernel_state",
                     )
-                    messages.append(
+                    append_required_context(
                         {
                             "role": "system",
                             "content": self.task_controller.format_context(task_state),
-                        }
+                        },
+                        source=f"task_state_revision:{task_state.revision}",
+                        reason="authoritative task state after plan submission",
+                        trust="kernel_state",
                     )
                     yield TurnEvent(
                         "task_started",
@@ -811,7 +949,7 @@ class TurnApplication:
                         task_state,
                         arguments=control_args,
                     )
-                    messages.append(
+                    append_required_context(
                         {
                             "role": "tool",
                             "tool_call_id": control_id,
@@ -823,13 +961,19 @@ class TurnApplication:
                                     "current_step_id": task_state.current_step_id,
                                 }
                             ),
-                        }
+                        },
+                        source=f"task_control_result:{control_id}",
+                        reason="persisted evidence-citing replan result",
+                        trust="kernel_state",
                     )
-                    messages.append(
+                    append_required_context(
                         {
                             "role": "system",
                             "content": self.task_controller.format_context(task_state),
-                        }
+                        },
+                        source=f"task_state_revision:{task_state.revision}",
+                        reason="authoritative task state after replan",
+                        trust="kernel_state",
                     )
                     yield TurnEvent(
                         "task_replanned",
@@ -962,6 +1106,12 @@ class TurnApplication:
                             turn_id=turn_id,
                             evidence_text="\n".join(evidence_parts)[:8000],
                         )
+                        if self.memory_projector is not None:
+                            await self.memory.projection.process_one(
+                                self.memory_projector,
+                                worker_id="turn_application",
+                                session_id=session_id,
+                            )
                     # Skill digest pins for audit/replay (name → content_digest)
                     skill_pins: dict[str, str] = {}
                     for ev in skill_events:
@@ -987,6 +1137,7 @@ class TurnApplication:
                         skill_pins=skill_pins,
                         task=TaskSummary.from_state(task_state) if task_state else None,
                         error=turn_error,
+                        context_attributions=list(context_attributions),
                     )
                     yield TurnEvent(
                         "turn_failed" if turn_status == "failed" else "turn_completed",
@@ -1098,12 +1249,15 @@ class TurnApplication:
                         )
                         tool_calls.append(trace)
                         exchange_traces.append(trace)
-                        messages.append(
+                        append_required_context(
                             {
                                 "role": "tool",
                                 "tool_call_id": call_id,
                                 "content": dumps_tool_output(output),
-                            }
+                            },
+                            source=f"tool_result:{call_id}",
+                            reason="verbatim capability result used as evidence",
+                            trust="tool",
                         )
                         evidence_parts.append(dumps_tool_output(output)[:2000])
                         ctx.evidence_text = "\n".join(evidence_parts)
@@ -1145,7 +1299,7 @@ class TurnApplication:
                             )
                         tool_calls.append(failed_trace)
                         exchange_traces.append(failed_trace)
-                        messages.append(
+                        append_required_context(
                             {
                                 "role": "tool",
                                 "tool_call_id": call_id,
@@ -1158,7 +1312,10 @@ class TurnApplication:
                                         }
                                     }
                                 ),
-                            }
+                            },
+                            source=f"tool_result:{call_id}",
+                            reason="verbatim structured capability failure",
+                            trust="tool",
                         )
                         yield TurnEvent(
                             "tool_completed",
@@ -1188,14 +1345,17 @@ class TurnApplication:
                             )
                         tool_calls.append(failed_trace)
                         exchange_traces.append(failed_trace)
-                        messages.append(
+                        append_required_context(
                             {
                                 "role": "tool",
                                 "tool_call_id": call_id,
                                 "content": dumps_tool_output(
                                     {"error": {"code": err.code, "message": err.message}}
                                 ),
-                            }
+                            },
+                            source=f"tool_result:{call_id}",
+                            reason="verbatim handler failure evidence",
+                            trust="tool",
                         )
                         yield TurnEvent(
                             "tool_completed",
@@ -1241,11 +1401,14 @@ class TurnApplication:
                                 ),
                             },
                         )
-                    messages.append(
+                    append_required_context(
                         {
                             "role": "system",
                             "content": self.task_controller.format_context(task_state),
-                        }
+                        },
+                        source=f"task_state_revision:{task_state.revision}",
+                        reason="authoritative task state after verification",
+                        trust="kernel_state",
                     )
                     if task_state.status == "completed":
                         yield TurnEvent(
@@ -1306,6 +1469,7 @@ class TurnApplication:
                 model=model or self.model.model,
                 schema_metrics=schema_metrics,
                 task=TaskSummary.from_state(task_state) if task_state else None,
+                context_attributions=list(context_attributions),
             )
             yield TurnEvent("turn_failed", {"result": result})
         except AriadneError as exc:
@@ -1338,6 +1502,7 @@ class TurnApplication:
                 model=model or self.model.model,
                 schema_metrics=schema_metrics,
                 task=TaskSummary.from_state(task_state) if task_state else None,
+                context_attributions=list(context_attributions),
             )
             yield TurnEvent("turn_completed" if needs_input else "turn_failed", {"result": result})
         except Exception as exc:  # noqa: BLE001
@@ -1356,6 +1521,7 @@ class TurnApplication:
                 model=model or self.model.model,
                 schema_metrics=schema_metrics,
                 task=TaskSummary.from_state(task_state) if task_state else None,
+                context_attributions=list(context_attributions),
             )
             yield TurnEvent("turn_failed", {"result": result})
 

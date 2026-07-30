@@ -66,15 +66,17 @@ MemoryContext
 
 ### 3.5 Conversation state projection (advanced)
 
-Design target inspired by memory v3 ideas:
+Implemented as an opt-in advanced layer:
 
-- Append-only state changes derived from completed turns
-- Deterministic reducer to a document version
-- Read path requires terminal projection for enrolled sessions
-- Incomplete projection → explicit not-ready error or skip with status (configurable)
-- No “return partial stale state and hope”
+- Strict structured projector decisions: `apply` or `confirmed_no_change`
+- Evidence quotes checked against completed-turn input/output/tool evidence
+- Append-only document versions, CAS parent fencing, and per-field history
+- Authority-aware conflict errors plus `active|superseded|expired` semantics
+- Last-good-plus-raw-delta by default; strict readiness is configurable
+- Disabled, pending, confirmed-no-change, failed, and succeeded remain distinct
 
-Personal MVP may delay full projection machinery, but should not paint itself into a single-blob corner.
+Projection remains off by default; enabling it in the composed host wires the
+configured model as a conservative structured projector.
 
 ## 4. Read API
 

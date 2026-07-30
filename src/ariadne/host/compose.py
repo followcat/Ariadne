@@ -4,12 +4,13 @@ from pathlib import Path
 
 from ..agent import Agent
 from ..config import Settings
+from ..context import ContextCompiler
 from ..errors import AriadneError, app_error
 from ..kernel.turn import TurnApplication
 from ..memory.curated import CuratedStore
 from ..memory.embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
 from ..memory.facade import MemoryFacade
-from ..memory.projection import ProjectionWorker
+from ..memory.projection import ProjectionWorker, make_llm_projector
 from ..memory.semantic import SemanticIndex
 from ..memory.state import ConversationStateStore
 from ..memory.summary import TurnSummaryStore
@@ -285,6 +286,12 @@ def compose_agent(settings: Settings) -> Agent:
         runtime_agent=runtime,
         extra_system_prompt=getattr(settings, "extra_system_prompt", "") or "",
         max_tokens=int(getattr(settings, "max_tokens", None) or 8192),
+        context_compiler=ContextCompiler(
+            max_chars=int(getattr(settings, "context_max_chars", None) or 120_000)
+        ),
+        memory_projector=(
+            make_llm_projector(model) if enable_projection else None
+        ),
         task_controller=TaskController(
             store=SQLiteTaskStore(data_dir / "tasks.sqlite3"),
             verifier=DeterministicVerifier(settings.workspace),

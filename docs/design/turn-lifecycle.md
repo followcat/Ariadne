@@ -11,7 +11,7 @@ Host
       -> MemoryFacade.build_context
       -> SkillSelector.plan
       -> ToolRegistry.build_exposure
-      -> assemble ModelRequest
+      -> ContextCompiler.compile (ordered blocks + attribution)
       -> loop:
            ModelPort.stream/complete
            if tool_calls:
@@ -35,7 +35,9 @@ Host
 
 Optional **task mode** wraps the model/tool loop with SQLite-persisted structured
 steps and deterministic verification. Tool success alone does not mark a step
-complete. Phase 14a is implemented; replan and richer checks follow.
+complete. Phases 14a–c add evidence-citing replan, effect-aware retry/approval,
+opt-in evidence-bound L2 projection, and a budgeted ContextCompiler. Required
+tool/check evidence is verbatim and fails explicitly when it cannot fit.
 See [agent-closed-loop.md](agent-closed-loop.md) and ROADMAP Phase 14.
 
 ## Failure mapping
@@ -46,4 +48,5 @@ See [agent-closed-loop.md](agent-closed-loop.md) and ROADMAP Phase 14.
 | Unknown tool | tool error result or turn fail per policy; default allow one recovery |
 | Loop limit | `ARIADNE_TOOL_LOOP_LIMIT` |
 | Memory required layer not ready | `ARIADNE_MEMORY_NOT_READY` if configured strict |
+| Required prompt evidence over budget | `ARIADNE_CONTEXT_BUDGET_EXCEEDED` |
 | Sandbox missing | `ARIADNE_SANDBOX_DISABLED` |

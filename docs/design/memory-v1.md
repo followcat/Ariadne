@@ -215,7 +215,8 @@ Rules:
 
 1. Every op needs `evidence_quote` found in raw user/assistant text (or explicit tool result if expanded later).
 2. No partial apply of a low-confidence batch.
-3. `uncertain` / low confidence -> retry budget -> `review_required` or `failed` (personal mode may auto-`no_change` after retries to stay unblocked).
+3. `uncertain` / low confidence -> explicit `failed` or host review; retry only
+   transient failures. Never auto-convert failure to no-change.
 4. Processing order strictly by turn id.
 
 ### 5.4 Read semantics (choose one mode; document it)
