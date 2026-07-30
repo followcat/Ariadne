@@ -695,6 +695,113 @@ def test_verified_goal_checks_can_complete_authoritative_goal(tmp_path: Path) ->
     assert goal["status_authority"] == "verified_check"
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "测试通过了吗？",
+        "还没有修复完成。",
+        "修复完成前不要关闭任务。",
+        "不要取消这个任务，继续处理。",
+        "不要放弃这个任务。",
+        "问题已解决。",
+    ],
+)
+def test_free_text_terminal_language_never_closes_authoritative_goal(
+    tmp_path: Path,
+    statement: str,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="free-text-goal",
+        turn_id="t1",
+        user="目标是修复认证问题。",
+    )
+    _capture(
+        memory,
+        session_id="free-text-goal",
+        turn_id="t2",
+        user=statement,
+    )
+
+    goal = memory.state.get("free-text-goal")["entities"]["session:current_goal"]
+    assert goal["status"] == "active"
+    episode = memory.episodes.for_turn(
+        session_id="free-text-goal",
+        turn_id="t2",
+    )
+    assert episode is not None and episode["status"] == "active"
+
+
+def test_model_facing_state_tool_cannot_supply_evidence_authority_or_terminal_status(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="state-authority",
+        turn_id="t1",
+        user="目标是完成安全检查。",
+    )
+    registry = build_default_registry(memory=memory, skills=SkillStore({}))
+    ctx = ToolContext(
+        session_id="state-authority",
+        turn_id="t2",
+        sandbox=None,
+        memory=memory,
+        user_text="继续检查",
+        evidence_text="继续检查",
+        observed_evidence_text="继续检查",
+    )
+    with pytest.raises(AriadneError) as forged:
+        _run(
+            registry.invoke(
+                "conversation_state",
+                {
+                    "action": "apply",
+                    "evidence_text": "测试已经通过",
+                    "operations": [
+                        {
+                            "op": "set_status",
+                            "entity_id": "session:current_goal",
+                            "status": "done",
+                            "authority": "user_explicit",
+                            "evidence_quote": "测试已经通过",
+                        }
+                    ],
+                },
+                ctx,
+            )
+        )
+    assert forged.value.error.code == "ARIADNE_INVALID_TOOL_ARGS"
+
+    with pytest.raises(AriadneError) as terminal:
+        _run(
+            registry.invoke(
+                "conversation_state",
+                {
+                    "action": "apply",
+                    "operations": [
+                        {
+                            "op": "set_status",
+                            "entity_id": "session:current_goal",
+                            "status": "done",
+                            "evidence_quote": "继续检查",
+                        }
+                    ],
+                },
+                ctx,
+            )
+        )
+    assert terminal.value.error.code == "ARIADNE_TOOL_DENIED"
+    assert (
+        memory.state.get("state-authority")["entities"]["session:current_goal"][
+            "status"
+        ]
+        == "active"
+    )
+
+
 def test_structured_tool_secrets_are_redacted_before_episode_persistence(
     tmp_path: Path,
 ) -> None:
@@ -738,6 +845,62 @@ def test_structured_tool_secrets_are_redacted_before_episode_persistence(
     attempt = next(event for event in episode["events"] if event["type"] == "attempt")
     assert "arguments" not in attempt["metadata"]
     assert attempt["metadata"]["arguments_sha256"]
+
+
+def test_camel_case_and_nested_allowlisted_tool_secrets_are_digest_only(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    payload = {
+        "status": {
+            "secretKey": "SECRETKEY123456",
+            "authToken": "AUTHTOKEN123456",
+            "sessionToken": "SESSIONTOKEN123456",
+        }
+    }
+    assert redact_secrets(payload) == {
+        "status": {
+            "secretKey": "***",
+            "authToken": "***",
+            "sessionToken": "***",
+        }
+    }
+
+    _capture(
+        memory,
+        session_id="nested-secrets",
+        turn_id="t1",
+        user="继续",
+        tool_calls=[
+            {
+                "call_id": "nested-secret-call",
+                "name": "nested_secret_tool",
+                "arguments": {},
+                "output": payload,
+                "status": "completed",
+            }
+        ],
+    )
+
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "memory").rglob("*.json")
+    )
+    for secret in (
+        "SECRETKEY123456",
+        "AUTHTOKEN123456",
+        "SESSIONTOKEN123456",
+    ):
+        assert secret not in persisted
+    episode = memory.episodes.for_turn(
+        session_id="nested-secrets",
+        turn_id="t1",
+    )
+    assert episode is not None
+    observation = next(
+        event for event in episode["events"] if event["type"] == "observation"
+    )
+    assert "retained by digest only" in observation["content"]
 
 
 def test_unredacted_traces_do_not_authorize_secret_persistence_in_memory(
@@ -875,6 +1038,81 @@ def test_capture_journal_resumes_after_cross_store_failure_without_duplicates(
         turn_id="t3",
     )
     assert completed is not None and completed["status"] == "completed"
+
+
+def test_next_turn_automatically_resumes_pending_capture_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    for index in (1, 2):
+        _capture(
+            memory,
+            session_id=f"review-{index}",
+            turn_id=f"t{index}",
+            user="代码 review 时先看测试覆盖。",
+        )
+
+    original = ReflectionStore.observe
+    injected = {"failed": False}
+
+    def fail_once(self: ReflectionStore, **kwargs: Any) -> list[dict[str, Any]]:
+        if self is memory.reflection and not injected["failed"]:
+            injected["failed"] = True
+            raise RuntimeError("turn lifecycle reflection failure")
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(ReflectionStore, "observe", fail_once)
+    skills = SkillStore({})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = TurnApplication(
+        model=FakeModel(script=lambda messages, tool_payload: {"content": "好的。"}),
+        tools=build_default_registry(memory=memory, skills=skills),
+        memory=memory,
+        skills=skills,
+        sandbox_backend=LocalWorkdirSandbox(
+            workspace=workspace,
+            data_dir=tmp_path / "data",
+        ),
+        task_mode_policy="off",
+    )
+
+    failed_turn = _run(
+        app.run(
+            prompt="代码 review 时先看测试覆盖。",
+            session_id="review-3",
+        )
+    )
+    failed_layer = next(
+        row for row in failed_turn.memory.layers if row.name == "auto_capture"
+    )
+    assert failed_layer.status == "failed"
+    pending = memory.capture_journal.get(
+        workspace_key="",
+        session_id="review-3",
+        turn_id=failed_turn.turn_id,
+    )
+    assert pending is not None and pending["status"] == "in_progress"
+
+    next_turn = _run(app.run(prompt="继续", session_id="review-3"))
+    recovered = memory.capture_journal.get(
+        workspace_key="",
+        session_id="review-3",
+        turn_id=failed_turn.turn_id,
+    )
+    assert recovered is not None and recovered["status"] == "completed"
+    next_layer = next(
+        row for row in next_turn.memory.layers if row.name == "auto_capture"
+    )
+    assert "recovered=1" in next_layer.notes
+    assert recovered["capture_id"] in next_layer.item_ids
+    candidate = next(
+        row
+        for row in memory.reflection.list(status="pending")
+        if row["key"] == "review_order"
+    )
+    assert candidate["session_count"] == 3
 
 
 def test_failed_attempt_stays_in_same_episode_until_verified_terminal_outcome(
