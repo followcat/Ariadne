@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -47,9 +48,7 @@ class OpenAIEmbeddingProvider:
     model: str = "text-embedding-3-small"
     timeout: float = 60.0
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
+    def _embed_sync(self, texts: list[str]) -> list[list[float]]:
         payload = json.dumps({"model": self.model, "input": texts}).encode("utf-8")
         base = self.base_url.rstrip("/")
         url = base + ("/embeddings" if base.endswith("/v1") else "/v1/embeddings")
@@ -63,17 +62,25 @@ class OpenAIEmbeddingProvider:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                obj = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            raise AriadneError(
-                app_error("ARIADNE_MODEL_ERROR", f"embedding failed: {type(exc).__name__}: {exc}")
-            ) from exc
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            obj = json.loads(resp.read().decode("utf-8"))
         data = obj.get("data") or []
-        # sort by index if present
         data = sorted(data, key=lambda x: int(x.get("index") or 0))
         return [list(map(float, item.get("embedding") or [])) for item in data]
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        try:
+            # Do not block the event loop on urllib.
+            return await asyncio.to_thread(self._embed_sync, texts)
+        except Exception as exc:  # noqa: BLE001
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MODEL_ERROR",
+                    f"embedding failed: {type(exc).__name__}: {exc}",
+                )
+            ) from exc
 
 
 def cosine(a: list[float], b: list[float]) -> float:

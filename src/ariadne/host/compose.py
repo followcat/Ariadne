@@ -122,9 +122,9 @@ def compose_agent(settings: Settings) -> Agent:
         model=settings.model,
     )
 
-    emb_pref = (getattr(settings, "embedding_provider", None) or "auto").strip().lower()
+    # Default hash (offline). openai requires explicit opt-in; auto only when set.
+    emb_pref = (getattr(settings, "embedding_provider", None) or "hash").strip().lower()
     if emb_pref == "auto":
-        # Prefer real embeddings when host credentials exist; else hash offline.
         if settings.api_key and settings.base_url:
             emb_pref = "openai"
         else:

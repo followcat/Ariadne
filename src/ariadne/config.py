@@ -54,8 +54,8 @@ class Settings:
     prefer_deferred_tools: bool = True
     toolbox_profile: str = "minimal"
     docker_image: str | None = None
-    # hash | openai | auto (auto → openai when api_key+base_url else hash)
-    embedding_provider: str = "auto"
+    # hash (default, offline) | openai (explicit opt-in) | auto (openai when creds)
+    embedding_provider: str = "hash"
     embedding_model: str = "text-embedding-3-small"
     idle_ttl_seconds: float = 600.0
     max_ttl_seconds: float = 3600.0
@@ -197,10 +197,10 @@ def load_settings(
         limit = max(int(raw or 32), 1)
     profile = toolbox_profile or pick("ARIADNE_TOOLBOX", default="minimal")
     emb = (
-        embedding_provider or pick("ARIADNE_EMBEDDING_PROVIDER", default="auto")
+        embedding_provider or pick("ARIADNE_EMBEDDING_PROVIDER", default="hash")
     ).strip().lower()
     if emb not in {"hash", "openai", "auto"}:
-        emb = "auto"
+        emb = "hash"
     emb_model = pick("ARIADNE_EMBEDDING_MODEL", default="text-embedding-3-small")
     img = docker_image or pick("ARIADNE_DOCKER_IMAGE", default="") or None
     idle = float(pick("ARIADNE_IDLE_TTL", default="600") or 600)
