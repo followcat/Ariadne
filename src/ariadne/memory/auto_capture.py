@@ -819,17 +819,18 @@ class AutomaticMemoryProjector:
         )
         if goal is not None:
             quote = str(((goal.get("evidence") or [{}])[0]).get("quote") or "")
+            goal_id = f"goal:{turn_id}"
             state_ops.extend(
                 [
                     {
                         "op": "ensure_entity",
-                        "entity_id": "session:current_goal",
+                        "entity_id": goal_id,
                         "type": "goal",
                         "evidence_quote": quote,
                     },
                     {
                         "op": "set_attribute",
-                        "entity_id": "session:current_goal",
+                        "entity_id": goal_id,
                         "key": "description",
                         "value": goal.get("content"),
                         "memory_type": "goal",
@@ -838,25 +839,30 @@ class AutomaticMemoryProjector:
                     },
                     {
                         "op": "set_status",
-                        "entity_id": "session:current_goal",
+                        "entity_id": goal_id,
                         "status": "active",
+                        "authority": "user_explicit",
+                        "evidence_quote": quote,
+                    },
+                    {
+                        "op": "set_current_goal",
+                        "goal_id": goal_id,
                         "authority": "user_explicit",
                         "evidence_quote": quote,
                     },
                 ]
             )
+        else:
+            goal_id = self.state.current_goal_id(session_id)
         terminal = next((event for event in events if _is_terminal_event(event)), None)
-        has_current_goal = "session:current_goal" in (
-            self.state.get(session_id).get("entities") or {}
-        )
-        if terminal is not None and (goal is not None or has_current_goal):
+        if terminal is not None and goal_id:
             quote = str(((terminal.get("evidence") or [{}])[0]).get("quote") or "")
             metadata = terminal.get("metadata") or {}
             kind = str(metadata.get("outcome_kind") or "")
             state_ops.append(
                 {
                     "op": "set_status",
-                    "entity_id": "session:current_goal",
+                    "entity_id": goal_id,
                     "status": (
                         "done"
                         if kind in {"completed", "verified_completion"}

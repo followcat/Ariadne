@@ -945,18 +945,17 @@ def build_default_registry(
                 authority = (
                     "user_explicit" if quote in user_evidence else "tool_observed"
                 )
+                entity_id = str(op.get("entity_id") or "")
+                if entity_id == "session:current_goal":
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_TOOL_DENIED",
+                            "model-facing conversation_state cannot mutate current goal pointer",
+                            entity_id=entity_id,
+                        )
+                    )
                 if str(op.get("op") or "") == "set_status":
                     status = str(op.get("status") or "")
-                    entity_id = str(op.get("entity_id") or "")
-                    if entity_id == "session:current_goal":
-                        raise AriadneError(
-                            app_error(
-                                "ARIADNE_TOOL_DENIED",
-                                "model-facing conversation_state cannot transition current goal status",
-                                entity_id=entity_id,
-                                status=status,
-                            )
-                        )
                     if status in {"done", "cancelled", "archived"}:
                         raise AriadneError(
                             app_error(

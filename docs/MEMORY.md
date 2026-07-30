@@ -131,9 +131,10 @@ Episode search adds problem/attempt/observation/error/decision/outcome chains
 above the existing turn index. Failed attempts are nonterminal. Assistant
 self-reports and user free-text terminal phrases remain non-authoritative; in
 the current slice only closed `verified_check` evidence may close an Episode or
-authoritative goal. The model-facing state tool cannot transition
-`session:current_goal`; StateStore authority is monotonic and terminal entities
-cannot be reactivated in place.
+authoritative goal. Goals use immutable `goal:<turn_id>` identities;
+`session:current_goal` is a Host-owned pointer. The model-facing state tool
+cannot mutate that pointer, StateStore authority is monotonic, and terminal
+entities cannot be reactivated in place. A new objective creates a new Goal.
 Deep search can traverse stored entities, relations, timelines, decisions, and
 outcomes, but always returns real turn citations. Search returns a bounded event
 window and stable event ids; `memory_expand_evidence` pages full stored events

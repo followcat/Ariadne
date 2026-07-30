@@ -229,10 +229,12 @@ an exact action and current-turn token. Failed attempts and unverified outcomes
 remain nonterminal. The model-facing `conversation_state` tool accepts neither
 authority nor caller-supplied evidence text; the Host derives authority only
 from current user and tool-observed evidence. It denies every status transition
-for `session:current_goal` and all terminal writes. StateStore independently
-enforces monotonic status authority, and a terminal entity cannot transition
-back to `active` in place; a later objective needs a new Goal identity or a
-future exact confirmation contract.
+or attribute mutation for the Host-owned `session:current_goal` pointer and all
+terminal writes. Lifecycle state lives on immutable `goal:<turn_id>` entities.
+StateStore independently enforces monotonic status authority, and a terminal
+entity cannot transition back to `active` in place; a later objective receives
+a new Goal identity. The host-only `set_current_goal` operation migrates legacy
+fixed-id goals and atomically updates the pointer.
 
 ### 5.4 Read semantics (choose one mode; document it)
 

@@ -50,6 +50,13 @@ def _capture(
     )
 
 
+def _current_goal(memory: Memory, session_id: str) -> tuple[str, dict[str, Any]]:
+    state = memory.state.get(session_id)
+    goal_id = memory.state.current_goal_id_from_state(state)
+    assert goal_id is not None
+    return goal_id, state["entities"][goal_id]
+
+
 def _event(
     event_type: str,
     content: str,
@@ -232,12 +239,11 @@ def test_consecutive_turns_form_episode_with_decision_reason_and_outcome(
     decision = next(event for event in episode["events"] if event["type"] == "decision")
     assert "查询偶发需要 5 秒" in decision["reason"]
     assert episode["status"] == "completed"
-    state = memory.state.get("login")
-    assert state["entities"]["session:current_goal"]["attributes"]["description"][
-        "value"
-    ] == "修复登录超时"
-    assert state["entities"]["session:current_goal"]["status"] == "done"
-    assert state["entities"]["session:current_goal"]["status_authority"] == "verified_check"
+    goal_id, current_goal = _current_goal(memory, "login")
+    assert goal_id == "goal:t1"
+    assert current_goal["attributes"]["description"]["value"] == "修复登录超时"
+    assert current_goal["status"] == "done"
+    assert current_goal["status_authority"] == "verified_check"
 
 
 def test_why_query_returns_decision_episode_with_real_citations(tmp_path: Path) -> None:
@@ -663,7 +669,7 @@ def test_assistant_assertion_cannot_complete_authoritative_goal(tmp_path: Path) 
         assistant="测试通过，修复完成。",
     )
 
-    goal = memory.state.get("goal")["entities"]["session:current_goal"]
+    _goal_id, goal = _current_goal(memory, "goal")
     assert goal["status"] == "active"
     assert goal["status_authority"] == "user_explicit"
     episode = memory.episodes.for_turn(session_id="goal", turn_id="t2")
@@ -701,7 +707,7 @@ def test_verified_goal_checks_can_complete_authoritative_goal(tmp_path: Path) ->
         },
     )
 
-    goal = memory.state.get("verified-goal")["entities"]["session:current_goal"]
+    _goal_id, goal = _current_goal(memory, "verified-goal")
     assert goal["status"] == "done"
     assert goal["status_authority"] == "verified_check"
 
@@ -761,6 +767,63 @@ def test_completed_goal_a_can_be_followed_by_distinct_active_goal_b(
     assert episode_b is not None and episode_b["status"] == "active"
 
 
+def test_new_goal_migrates_legacy_fixed_goal_without_reactivation(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    memory.state.apply_ops(
+        session_id="legacy-goal",
+        source_turn_id="legacy-turn",
+        evidence_text="旧目标已完成",
+        operations=[
+            {
+                "op": "ensure_entity",
+                "entity_id": "session:current_goal",
+                "type": "goal",
+                "evidence_quote": "旧目标",
+            },
+            {
+                "op": "set_attribute",
+                "entity_id": "session:current_goal",
+                "key": "description",
+                "value": "旧目标",
+                "memory_type": "goal",
+                "authority": "user_explicit",
+                "evidence_quote": "旧目标",
+            },
+            {
+                "op": "set_status",
+                "entity_id": "session:current_goal",
+                "status": "done",
+                "authority": "verified_check",
+                "evidence_quote": "已完成",
+            },
+        ],
+    )
+
+    _capture(
+        memory,
+        session_id="legacy-goal",
+        turn_id="new-turn",
+        user="新目标是完成迁移后的任务。",
+    )
+
+    state = memory.state.get("legacy-goal")
+    pointer = state["entities"]["session:current_goal"]
+    assert pointer["type"] == "goal_pointer"
+    assert pointer["attributes"]["goal_id"]["value"] == "goal:new-turn"
+    legacy = [
+        entity
+        for entity_id, entity in state["entities"].items()
+        if entity_id.startswith("goal:legacy:")
+    ]
+    assert len(legacy) == 1
+    assert legacy[0]["status"] == "done"
+    assert legacy[0]["status_authority"] == "verified_check"
+    assert legacy[0]["attributes"]["description"]["value"] == "旧目标"
+    assert state["entities"]["goal:new-turn"]["status"] == "active"
+
+
 @pytest.mark.parametrize(
     "statement",
     [
@@ -790,7 +853,7 @@ def test_free_text_terminal_language_never_closes_authoritative_goal(
         user=statement,
     )
 
-    goal = memory.state.get("free-text-goal")["entities"]["session:current_goal"]
+    _goal_id, goal = _current_goal(memory, "free-text-goal")
     assert goal["status"] == "active"
     episode = memory.episodes.for_turn(
         session_id="free-text-goal",
@@ -860,12 +923,8 @@ def test_model_facing_state_tool_cannot_supply_evidence_authority_or_terminal_st
             )
         )
     assert terminal.value.error.code == "ARIADNE_TOOL_DENIED"
-    assert (
-        memory.state.get("state-authority")["entities"]["session:current_goal"][
-            "status"
-        ]
-        == "active"
-    )
+    _goal_id, goal = _current_goal(memory, "state-authority")
+    assert goal["status"] == "active"
 
 
 def test_verified_goal_cannot_be_reactivated_by_model_facing_state_tool(
@@ -922,6 +981,7 @@ def test_verified_goal_cannot_be_reactivated_by_model_facing_state_tool(
         )
     assert model_write.value.error.code == "ARIADNE_TOOL_DENIED"
 
+    goal_id, _goal = _current_goal(memory, "verified-reactivation")
     with pytest.raises(AriadneError) as lower_authority:
         memory.state.apply_ops(
             session_id="verified-reactivation",
@@ -930,7 +990,7 @@ def test_verified_goal_cannot_be_reactivated_by_model_facing_state_tool(
             operations=[
                 {
                     "op": "set_status",
-                    "entity_id": "session:current_goal",
+                    "entity_id": goal_id,
                     "status": "active",
                     "authority": "user_explicit",
                     "evidence_quote": "谢谢",
@@ -938,9 +998,7 @@ def test_verified_goal_cannot_be_reactivated_by_model_facing_state_tool(
             ],
         )
     assert lower_authority.value.error.code == "ARIADNE_MEMORY_CONFLICT"
-    goal = memory.state.get("verified-reactivation")["entities"][
-        "session:current_goal"
-    ]
+    _goal_id, goal = _current_goal(memory, "verified-reactivation")
     assert goal["status"] == "done"
     assert goal["status_authority"] == "verified_check"
     episode = memory.episodes.for_turn(
@@ -1502,10 +1560,13 @@ def test_pending_capture_recovery_is_scoped_to_its_workspace(
         )
     )
     assert pending["capture_id"] in report_a["recovered_capture_ids"]
+    state_a_snapshot = state_a.get("session-a")
+    goal_id = state_a.current_goal_id_from_state(state_a_snapshot)
+    assert goal_id is not None
     assert (
-        state_a.get("session-a")["entities"]["session:current_goal"][
-            "attributes"
-        ]["description"]["value"]
+        state_a_snapshot["entities"][goal_id]["attributes"]["description"][
+            "value"
+        ]
         == "修复 A"
     )
     assert "session-a" not in (state_b._read().get("documents") or {})

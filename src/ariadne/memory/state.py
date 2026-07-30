@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ ALLOWED_OPS = {
     "collection_append",
     "collection_remove",
     "collection_move",
+    "set_current_goal",
 }
 
 ATTRIBUTE_AUTHORITIES = {
@@ -36,6 +38,8 @@ ATTRIBUTE_MEMORY_TYPES = {"fact", "preference", "goal", "hypothesis"}
 ATTRIBUTE_STATUSES = {"active", "superseded", "expired"}
 ENTITY_STATUSES = {"active", "done", "cancelled", "archived"}
 TERMINAL_ENTITY_STATUSES = {"done", "cancelled", "archived"}
+CURRENT_GOAL_POINTER_ID = "session:current_goal"
+CURRENT_GOAL_ATTRIBUTE = "goal_id"
 
 MAX_ENTITIES = 256
 MAX_RELATIONS_PER_TYPE = 64
@@ -82,6 +86,29 @@ class ConversationStateStore:
         if not doc:
             return empty_state()
         return dict(doc.get("state") or empty_state())
+
+    @staticmethod
+    def current_goal_id_from_state(state: dict[str, Any]) -> str | None:
+        entities = state.get("entities") or {}
+        pointer = entities.get(CURRENT_GOAL_POINTER_ID)
+        if not isinstance(pointer, dict):
+            return None
+        if pointer.get("type") == "goal_pointer":
+            payload = (pointer.get("attributes") or {}).get(CURRENT_GOAL_ATTRIBUTE)
+            if not isinstance(payload, dict) or payload.get("status") != "active":
+                return None
+            goal_id = str(payload.get("value") or "")
+            goal = entities.get(goal_id)
+            if goal_id and isinstance(goal, dict) and goal.get("type") == "goal":
+                return goal_id
+            return None
+        # Pre-pointer schema used the fixed id as the lifecycle-bearing Goal.
+        if pointer.get("type") == "goal":
+            return CURRENT_GOAL_POINTER_ID
+        return None
+
+    def current_goal_id(self, session_id: str) -> str | None:
+        return self.current_goal_id_from_state(self.get(session_id))
 
     def get_as_of(
         self, session_id: str, *, allowed_turn_ids: set[str] | None = None
@@ -252,6 +279,7 @@ class ConversationStateStore:
                 "collection_append": ("name", "member"),
                 "collection_remove": ("name", "member"),
                 "collection_move": ("name", "member", "to_index"),
+                "set_current_goal": ("goal_id",),
             }[name]
             missing = [field for field in required_fields if field not in op]
             if missing:
@@ -263,7 +291,7 @@ class ConversationStateStore:
                         missing=missing,
                     )
                 )
-            if name in {"set_attribute", "expire_attribute"}:
+            if name in {"set_attribute", "expire_attribute", "set_current_goal"}:
                 authority = str(op.get("authority") or "model_inferred")
                 if authority not in ATTRIBUTE_AUTHORITIES:
                     raise AriadneError(
@@ -414,7 +442,86 @@ class ConversationStateStore:
         collections: dict[str, Any] = state.setdefault("collections", {})
         relations: dict[str, Any] = state.setdefault("relations", {})
         name = op["op"]
-        if name == "set_relation":
+        if name == "set_current_goal":
+            goal_id = str(op["goal_id"])
+            goal = entities.get(goal_id)
+            if not isinstance(goal, dict) or goal.get("type") != "goal":
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CONFLICT",
+                        "current-goal pointer target must be an existing goal",
+                        goal_id=goal_id,
+                    )
+                )
+            pointer = entities.get(CURRENT_GOAL_POINTER_ID)
+            if isinstance(pointer, dict) and pointer.get("type") == "goal":
+                encoded = json.dumps(
+                    pointer,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+                legacy_goal_id = (
+                    "goal:legacy:" + hashlib.sha256(encoded).hexdigest()[:20]
+                )
+                if legacy_goal_id in entities:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_MEMORY_CONFLICT",
+                            "legacy goal migration target already exists",
+                            goal_id=legacy_goal_id,
+                        )
+                    )
+                entities[legacy_goal_id] = pointer
+                del entities[CURRENT_GOAL_POINTER_ID]
+                for collection in collections.values():
+                    if not isinstance(collection, dict):
+                        continue
+                    collection["members"] = [
+                        legacy_goal_id
+                        if member == CURRENT_GOAL_POINTER_ID
+                        else member
+                        for member in collection.get("members") or []
+                    ]
+                for edges in relations.values():
+                    for edge in edges or []:
+                        if edge.get("from") == CURRENT_GOAL_POINTER_ID:
+                            edge["from"] = legacy_goal_id
+                        if edge.get("to") == CURRENT_GOAL_POINTER_ID:
+                            edge["to"] = legacy_goal_id
+            elif isinstance(pointer, dict) and pointer.get("type") != "goal_pointer":
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CONFLICT",
+                        "current-goal pointer id is occupied by another entity type",
+                        entity_type=str(pointer.get("type") or "generic"),
+                    )
+                )
+            pointer = entities.setdefault(
+                CURRENT_GOAL_POINTER_ID,
+                {
+                    "type": "goal_pointer",
+                    "aliases": [],
+                    "attributes": {},
+                    "status": "active",
+                },
+            )
+            pointer["type"] = "goal_pointer"
+            self._apply_one(
+                state,
+                {
+                    "op": "set_attribute",
+                    "entity_id": CURRENT_GOAL_POINTER_ID,
+                    "key": CURRENT_GOAL_ATTRIBUTE,
+                    "value": goal_id,
+                    "memory_type": "goal",
+                    "authority": str(op.get("authority") or "model_inferred"),
+                    "evidence_quote": str(op.get("evidence_quote") or ""),
+                },
+                source_turn_id=source_turn_id,
+            )
+        elif name == "set_relation":
             rel = str(op["relation"])
             edge = {"from": str(op["from"]), "to": str(op["to"])}
             edges = relations.setdefault(rel, [])

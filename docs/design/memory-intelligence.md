@@ -89,6 +89,11 @@ outcome. Free-text user/Assistant language and ordinary tool output remain
 episodic evidence only. In the current slice, only closed Task-verifier evidence
 with authority `verified_check` closes an Episode or sets the authoritative
 current goal to `done`; exact action-bound user confirmation is a future path.
+Each lifecycle-bearing Goal has an immutable `goal:<turn_id>` identity.
+`session:current_goal` is a Host-owned pointer entity, never the Goal itself;
+creating B after completed A changes only the pointer. The host-only
+`set_current_goal` operation atomically migrates a legacy fixed-id Goal to a
+deterministic `goal:legacy:<digest>` identity before installing the pointer.
 
 Tool arguments and outputs cross an independent Memory redaction boundary.
 Sensitive structured keys are normalized across camelCase and separators
