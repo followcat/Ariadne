@@ -1163,7 +1163,26 @@ class TurnApplication:
                             capture_status = str(
                                 capture_report.get("status") or "skipped"
                             )
+                            current_capture_status = str(
+                                capture_report.get("capture_status")
+                                or capture_status
+                            )
+                            recovery_failures = capture_report.get(
+                                "recovery_failures"
+                            ) or []
+                            if not isinstance(recovery_failures, list):
+                                raise AriadneError(
+                                    app_error(
+                                        "ARIADNE_MEMORY_CAPTURE_PROTOCOL",
+                                        "automatic memory recovery failures must be a list",
+                                    )
+                                )
                             if capture_status not in {
+                                "used",
+                                "skipped",
+                                "disabled",
+                                "failed",
+                            } or current_capture_status not in {
                                 "used",
                                 "skipped",
                                 "disabled",
@@ -1172,6 +1191,16 @@ class TurnApplication:
                                     app_error(
                                         "ARIADNE_MEMORY_CAPTURE_PROTOCOL",
                                         "automatic memory capture returned an unknown status",
+                                        status=capture_status,
+                                    )
+                                )
+                            if (capture_status == "failed") != bool(
+                                recovery_failures
+                            ):
+                                raise AriadneError(
+                                    app_error(
+                                        "ARIADNE_MEMORY_CAPTURE_PROTOCOL",
+                                        "failed capture status must correspond to reported recovery failures",
                                         status=capture_status,
                                     )
                                 )
@@ -1184,6 +1213,7 @@ class TurnApplication:
                                     "reflection_candidate_ids",
                                     "prospective_entry_ids",
                                     "triggered_prospective_ids",
+                                    "recovered_capture_ids",
                                 )
                                 for item in (
                                     capture_report.get(key)
@@ -1192,10 +1222,24 @@ class TurnApplication:
                                 )
                                 if item
                             ]
-                            capture_notes = (
-                                f"llm_used={bool(capture_report.get('llm_used'))}; "
-                                f"llm_rejected={int(capture_report.get('llm_rejected') or 0)}"
+                            recovery_codes = sorted(
+                                {
+                                    str(row.get("error_code") or "unknown")
+                                    for row in recovery_failures
+                                    if isinstance(row, dict)
+                                }
                             )
+                            capture_notes = (
+                                f"capture={current_capture_status}; "
+                                f"llm_used={bool(capture_report.get('llm_used'))}; "
+                                f"llm_rejected={int(capture_report.get('llm_rejected') or 0)}; "
+                                f"recovered={len(capture_report.get('recovered_capture_ids') or [])}; "
+                                f"recovery_failed={len(recovery_failures)}"
+                            )
+                            if recovery_codes:
+                                capture_notes += "; recovery_codes=" + ",".join(
+                                    recovery_codes
+                                )
                             capture_layer = LayerReport(
                                 name="auto_capture",
                                 status=capture_status,  # type: ignore[arg-type]

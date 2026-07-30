@@ -28,6 +28,7 @@ Stable enough for hosts to branch on.
 | `ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID` | memory | capture journal schema, stage, or reference is invalid |
 | `ARIADNE_MEMORY_CAPTURE_CONFLICT` | memory | one turn id was replayed with different capturable evidence |
 | `ARIADNE_MEMORY_CAPTURE_CAPACITY` | memory | capture journal hard cap exceeded |
+| `ARIADNE_MEMORY_CAPTURE_RESUME_FAILED` | memory | a pending capture stage raised outside a structured Ariadne error during bounded recovery |
 | `ARIADNE_MEMORY_EVIDENCE_BUDGET` | memory | one evidence unit cannot fit its serialized-byte hard cap |
 | `ARIADNE_EPISODE_INVALID` | memory | episode schema/event/evidence is invalid |
 | `ARIADNE_EPISODE_CAPACITY` | memory | episode or event hard cap exceeded |

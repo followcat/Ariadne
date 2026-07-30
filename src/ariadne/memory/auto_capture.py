@@ -579,6 +579,7 @@ class AutomaticMemoryProjector:
     reflection: ReflectionStore | None = None
     prospective: ProspectiveMemoryStore | None = None
     extractor: MemoryExtractorFn | None = None
+    resume_batch_size: int = 4
 
     async def _prepare(
         self,
@@ -910,61 +911,28 @@ class AutomaticMemoryProjector:
             ],
         }
 
-    async def capture_turn(
-        self,
-        *,
-        session_id: str,
-        turn_id: str,
-        workspace_key: str,
-        user_text: str,
-        assistant_text: str,
-        tool_calls: list[Any] | None = None,
-        verified_goal: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        calls = list(tool_calls or [])
-        digest_payload = {
-            "user_text": redact_text(user_text),
-            "assistant_text": redact_text(assistant_text),
-            "tool_evidence": _sanitized_tool_evidence(calls),
-            "verified_goal": redact_secrets(dict(verified_goal or {})),
-        }
-        input_digest = _payload_digest(digest_payload)
-        existing = self.journal.get(
-            workspace_key=workspace_key,
-            session_id=session_id,
-            turn_id=turn_id,
-        )
-        prepared: dict[str, Any] = {}
-        if existing is None:
-            prepared = await self._prepare(
-                session_id=session_id,
-                turn_id=turn_id,
-                workspace_key=workspace_key,
-                user_text=user_text,
-                assistant_text=assistant_text,
-                tool_calls=calls,
-                verified_goal=verified_goal,
-            )
-        record = self.journal.start(
-            workspace_key=workspace_key,
-            session_id=session_id,
-            turn_id=turn_id,
-            input_digest=input_digest,
-            prepared=prepared,
-        )
+    def _resume_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Finish one journal record from its durable prepared plan only."""
+
         if record.get("status") == "completed":
             report = dict(record.get("report") or {})
             report["idempotent_replay"] = True
             return report
+        capture_id = str(record.get("capture_id") or "")
+        session_id = str(record.get("session_id") or "")
+        turn_id = str(record.get("turn_id") or "")
+        workspace_key = str(record.get("workspace_key") or "")
         prepared = dict(record.get("prepared") or {})
-        if not isinstance(prepared.get("events"), list):
+        if not capture_id or not session_id or not turn_id or not isinstance(
+            prepared.get("events"), list
+        ):
             raise AriadneError(
                 app_error(
                     "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
-                    "automatic-capture journal has no prepared event plan",
+                    "automatic-capture journal has no valid prepared event plan",
+                    capture_id=capture_id,
                 )
             )
-        capture_id = str(record.get("capture_id") or "")
         events = [dict(event) for event in prepared.get("events") or []]
         stage_rows = dict(record.get("stages") or {})
 
@@ -1087,6 +1055,104 @@ class AutomaticMemoryProjector:
             "capture_id": capture_id,
         }
         return self.journal.complete(capture_id=capture_id, report=report)
+
+    def resume_pending(self, *, limit: int | None = None) -> dict[str, Any]:
+        recovered: list[str] = []
+        failures: list[dict[str, str]] = []
+        batch_limit = self.resume_batch_size if limit is None else limit
+        for record in self.journal.list_pending(limit=batch_limit):
+            capture_id = str(record.get("capture_id") or "")
+            try:
+                self._resume_record(record)
+                recovered.append(capture_id)
+            except Exception as exc:  # noqa: BLE001 - persisted and reported
+                error_code = (
+                    exc.error.code
+                    if isinstance(exc, AriadneError)
+                    else "ARIADNE_MEMORY_CAPTURE_RESUME_FAILED"
+                )
+                error_message = redact_text(
+                    exc.error.message if isinstance(exc, AriadneError) else str(exc)
+                )[:500]
+                failure = {
+                    "capture_id": capture_id,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                }
+                try:
+                    self.journal.note_resume_failure(
+                        capture_id=capture_id,
+                        error_code=error_code,
+                        error_message=error_message,
+                    )
+                except Exception as journal_exc:  # noqa: BLE001 - still observable
+                    failure["journal_error"] = redact_text(str(journal_exc))[:500]
+                failures.append(failure)
+        return {
+            "recovered_capture_ids": recovered,
+            "recovery_failures": failures,
+        }
+
+    @staticmethod
+    def _with_recovery(
+        report: dict[str, Any], recovery: dict[str, Any]
+    ) -> dict[str, Any]:
+        result = dict(report)
+        current_status = str(result.get("status") or "skipped")
+        result["capture_status"] = current_status
+        result["recovered_capture_ids"] = list(
+            recovery.get("recovered_capture_ids") or []
+        )
+        result["recovery_failures"] = list(recovery.get("recovery_failures") or [])
+        if result["recovery_failures"]:
+            result["status"] = "failed"
+        return result
+
+    async def capture_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        workspace_key: str,
+        user_text: str,
+        assistant_text: str,
+        tool_calls: list[Any] | None = None,
+        verified_goal: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        recovery = self.resume_pending()
+        calls = list(tool_calls or [])
+        digest_payload = {
+            "user_text": redact_text(user_text),
+            "assistant_text": redact_text(assistant_text),
+            "tool_evidence": _sanitized_tool_evidence(calls),
+            "verified_goal": redact_secrets(dict(verified_goal or {})),
+        }
+        input_digest = _payload_digest(digest_payload)
+        existing = self.journal.get(
+            workspace_key=workspace_key,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        prepared: dict[str, Any] = {}
+        if existing is None:
+            prepared = await self._prepare(
+                session_id=session_id,
+                turn_id=turn_id,
+                workspace_key=workspace_key,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                tool_calls=calls,
+                verified_goal=verified_goal,
+            )
+        record = self.journal.start(
+            workspace_key=workspace_key,
+            session_id=session_id,
+            turn_id=turn_id,
+            input_digest=input_digest,
+            prepared=prepared,
+        )
+        report = self._resume_record(record)
+        return self._with_recovery(report, recovery)
 
 
 def make_llm_memory_extractor(model: Any) -> MemoryExtractorFn:

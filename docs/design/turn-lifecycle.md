@@ -40,6 +40,10 @@ Host
    `skipped` results.
 9. A completed task contributes `verified_check` goal evidence; Assistant text
    alone cannot complete authoritative Memory state.
+10. Before capturing the new turn, automatic Memory resumes a bounded, fair
+    batch of pending journal records from their durable prepared plans. A
+    recovery failure is persisted and reported without changing the user-task
+    result or starving other pending records.
 
 ## Closed-loop extension
 
@@ -60,5 +64,6 @@ See [agent-closed-loop.md](agent-closed-loop.md) and ROADMAP Phase 14.
 | Loop limit | `ARIADNE_TOOL_LOOP_LIMIT` |
 | Memory required layer not ready | `ARIADNE_MEMORY_NOT_READY` if configured strict |
 | Automatic capture protocol violation | failed `auto_capture` LayerReport with `ARIADNE_MEMORY_CAPTURE_PROTOCOL`; turn result unchanged |
+| Pending capture recovery failure | failed `auto_capture` LayerReport with current-capture status and recovery counts in notes; turn result unchanged |
 | Required prompt evidence over budget | `ARIADNE_CONTEXT_BUDGET_EXCEEDED` |
 | Sandbox missing | `ARIADNE_SANDBOX_DISABLED` |

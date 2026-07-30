@@ -17,6 +17,7 @@ CAPTURE_STAGES = (
     "reflection",
     "prospective",
 )
+CAPTURE_RESUME_LIMIT_MAX = 32
 
 
 @dataclass(slots=True)
@@ -72,6 +73,82 @@ class CaptureJournalStore:
         )
         row = (self._read().get("records") or {}).get(capture_id)
         return copy.deepcopy(row) if isinstance(row, dict) else None
+
+    def list_pending(self, limit: int = 4) -> list[dict[str, Any]]:
+        """Return a bounded, fair batch of incomplete captures.
+
+        Oldest ``updated_at`` wins. Recording a failed resume advances that
+        timestamp, rotating a persistently bad record behind other work.
+        """
+
+        if limit < 1 or limit > CAPTURE_RESUME_LIMIT_MAX:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                    "capture resume limit is outside the supported range",
+                    limit=limit,
+                    maximum=CAPTURE_RESUME_LIMIT_MAX,
+                )
+            )
+        records = self._read().get("records") or {}
+        pending = [
+            copy.deepcopy(row)
+            for row in records.values()
+            if isinstance(row, dict) and row.get("status") == "in_progress"
+        ]
+        pending.sort(
+            key=lambda row: (
+                float(row.get("updated_at") or 0.0),
+                float(row.get("created_at") or 0.0),
+                str(row.get("capture_id") or ""),
+            )
+        )
+        return pending[:limit]
+
+    def note_resume_failure(
+        self,
+        *,
+        capture_id: str,
+        error_code: str,
+        error_message: str,
+    ) -> dict[str, Any]:
+        """Persist one failed recovery attempt and rotate the pending record."""
+
+        result: dict[str, Any] = {}
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            row = (data.get("records") or {}).get(capture_id)
+            if not isinstance(row, dict) or row.get("status") != "in_progress":
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                        "capture resume failure has no in-progress journal record",
+                        capture_id=capture_id,
+                    )
+                )
+            now = time.time()
+            attempt = int(row.get("resume_attempts") or 0) + 1
+            failure = {
+                "attempt": attempt,
+                "error_code": str(error_code)[:120],
+                "error_message": str(error_message)[:500],
+                "failed_at": now,
+            }
+            history = [
+                copy.deepcopy(item)
+                for item in row.get("resume_failures") or []
+                if isinstance(item, dict)
+            ][-15:]
+            history.append(failure)
+            row["resume_attempts"] = attempt
+            row["last_resume_failure"] = copy.deepcopy(failure)
+            row["resume_failures"] = history
+            row["updated_at"] = now
+            result.update(copy.deepcopy(failure))
+            return data
+
+        locked_update_json(self.path, mut, default=self._empty())
+        return result
 
     def start(
         self,

@@ -1122,6 +1122,99 @@ def test_next_turn_automatically_resumes_pending_capture_journal(
     assert candidate["session_count"] == 3
 
 
+def test_capture_journal_failed_resume_rotates_pending_records(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    journal = memory.capture_journal
+    for index in (1, 2):
+        journal.start(
+            workspace_key="",
+            session_id=f"rotation-{index}",
+            turn_id=f"t{index}",
+            input_digest=f"digest-{index}",
+            prepared={"events": []},
+        )
+
+    initial = journal.list_pending(2)
+    assert len(initial) == 2
+    failed_id = initial[0]["capture_id"]
+    next_id = initial[1]["capture_id"]
+    journal.note_resume_failure(
+        capture_id=failed_id,
+        error_code="ARIADNE_MEMORY_CAPTURE_RESUME_FAILED",
+        error_message="injected recovery failure",
+    )
+
+    assert journal.list_pending(1)[0]["capture_id"] == next_id
+    failed = next(row for row in journal.list_pending(2) if row["capture_id"] == failed_id)
+    assert failed["resume_attempts"] == 1
+    assert failed["last_resume_failure"]["error_message"] == "injected recovery failure"
+
+
+def test_pending_recovery_failure_is_visible_without_failing_current_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    for index in (1, 2):
+        _capture(
+            memory,
+            session_id=f"persistent-{index}",
+            turn_id=f"t{index}",
+            user="代码 review 时先看测试覆盖。",
+        )
+
+    def always_fail(self: ReflectionStore, **kwargs: Any) -> list[dict[str, Any]]:
+        if self is memory.reflection:
+            raise RuntimeError("persistent reflection failure")
+        return []
+
+    monkeypatch.setattr(ReflectionStore, "observe", always_fail)
+    with pytest.raises(RuntimeError, match="persistent reflection failure"):
+        _capture(
+            memory,
+            session_id="persistent-3",
+            turn_id="t3",
+            user="代码 review 时先看测试覆盖。",
+        )
+    pending = memory.capture_journal.get(
+        workspace_key="",
+        session_id="persistent-3",
+        turn_id="t3",
+    )
+    assert pending is not None and pending["status"] == "in_progress"
+
+    skills = SkillStore({})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = TurnApplication(
+        model=FakeModel(script=lambda messages, tool_payload: {"content": "好的。"}),
+        tools=build_default_registry(memory=memory, skills=skills),
+        memory=memory,
+        skills=skills,
+        sandbox_backend=LocalWorkdirSandbox(
+            workspace=workspace,
+            data_dir=tmp_path / "data",
+        ),
+        task_mode_policy="off",
+    )
+
+    result = _run(app.run(prompt="继续", session_id="persistent-3"))
+    layer = next(row for row in result.memory.layers if row.name == "auto_capture")
+    assert result.status == "completed"
+    assert layer.status == "failed"
+    assert "capture=skipped" in layer.notes
+    assert "recovery_failed=1" in layer.notes
+    pending = memory.capture_journal.get(
+        workspace_key="",
+        session_id="persistent-3",
+        turn_id="t3",
+    )
+    assert pending is not None and pending["status"] == "in_progress"
+    assert pending["resume_attempts"] == 1
+
+
 def test_failed_attempt_stays_in_same_episode_until_verified_terminal_outcome(
     tmp_path: Path,
 ) -> None:
