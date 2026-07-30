@@ -170,6 +170,10 @@ def create_app(settings: Settings) -> FastAPI:
         user_data.mkdir(parents=True, exist_ok=True)
         # Agent sandbox /workspace must match browse APIs for this user.
         # plugins_dir stays on the account even when atelier rebinds data_dir.
+        # Per-account isolation (design/memory-scopes.md): never fall back to
+        # shared ~/.ariadne/memory for Web — bind user_id + user memory root.
+        user_memory = user_data / "memory"
+        user_memory.mkdir(parents=True, exist_ok=True)
         return dataclasses.replace(
             settings,
             base_url=provider["base_url"],
@@ -179,6 +183,8 @@ def create_app(settings: Settings) -> FastAPI:
             data_dir=user_data,
             plugins_dir=user_data,
             merge_home_plugins=False,  # web users only get their own plugins
+            user_id=username,
+            user_memory_dir=user_memory,
         )
 
     def _atelier_mgr(username: str) -> Any:
