@@ -928,12 +928,45 @@ def build_default_registry(
             ops = args.get("operations") or []
             if not isinstance(ops, list):
                 raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "operations must be a list"))
-            evidence = str(args.get("evidence_text") or ctx.evidence_text or "")
+            observed_evidence = str(ctx.observed_evidence_text or "")
+            user_evidence = str(ctx.user_text or "")
+            authorized_ops: list[dict[str, Any]] = []
+            for raw_op in ops:
+                op = dict(raw_op)
+                quote = str(op.get("evidence_quote") or "").strip()
+                if not quote or quote not in observed_evidence:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            "evidence_quote must occur in user or tool-observed turn text",
+                            op=str(op.get("op") or ""),
+                        )
+                    )
+                authority = (
+                    "user_explicit" if quote in user_evidence else "tool_observed"
+                )
+                if str(op.get("op") or "") == "set_status" and str(
+                    op.get("status") or ""
+                ) in {"done", "cancelled", "archived"}:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_TOOL_DENIED",
+                            "model-facing conversation_state cannot write terminal status",
+                            status=str(op.get("status") or ""),
+                        )
+                    )
+                if str(op.get("op") or "") in {
+                    "set_attribute",
+                    "expire_attribute",
+                    "set_status",
+                }:
+                    op["authority"] = authority
+                authorized_ops.append(op)
             return ctx.memory.state.apply_ops(
                 session_id=ctx.session_id,
-                operations=ops,
+                operations=authorized_ops,
                 source_turn_id=ctx.turn_id,
-                evidence_text=evidence,
+                evidence_text=observed_evidence,
             )
         raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "action must be read|apply"))
 
@@ -946,13 +979,15 @@ def build_default_registry(
                 "todos, entities, current facts). "
                 "action=read returns the rendered state. "
                 "action=apply takes operations=[...]; every op must include an "
-                "evidence_quote copied verbatim from the conversation text. "
+                "evidence_quote copied verbatim from current user or tool-observed "
+                "text. The host derives evidence authority; callers cannot supply it. "
                 "Allowed ops: "
                 "ensure_entity {entity_id, type?}; "
                 "set_alias {entity_id, alias}; "
-                "set_attribute {entity_id, key, value, memory_type?, authority?}; "
-                "expire_attribute {entity_id, key, authority?}; "
-                "set_status {entity_id, status: active|done|cancelled|archived}; "
+                "set_attribute {entity_id, key, value, memory_type?}; "
+                "expire_attribute {entity_id, key}; "
+                "set_status {entity_id, status: active}; terminal statuses require "
+                "a host verifier or exact user-confirmation path; "
                 "set_relation {relation, from, to}; "
                 "remove_relation {relation, from, to}; "
                 "ensure_collection {name}; "
@@ -995,11 +1030,10 @@ def build_default_registry(
                                     "type": "string",
                                     "enum": ["fact", "preference", "goal", "hypothesis"],
                                 },
-                                "authority": {
+                                "status": {
                                     "type": "string",
-                                    "enum": ["model_inferred", "tool_observed", "user_explicit"],
+                                    "enum": ["active", "done", "cancelled", "archived"],
                                 },
-                                "status": {"type": "string"},
                                 "relation": {"type": "string"},
                                 "from": {"type": "string"},
                                 "to": {"type": "string"},
@@ -1012,9 +1046,9 @@ def build_default_registry(
                                 },
                             },
                             "required": ["op", "evidence_quote"],
+                            "additionalProperties": False,
                         },
                     },
-                    "evidence_text": {"type": "string"},
                 },
                 "required": ["action"],
                 "additionalProperties": False,

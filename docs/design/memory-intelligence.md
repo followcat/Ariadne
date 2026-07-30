@@ -1,7 +1,8 @@
 # Design: Memory Intelligence Vertical Slice
 
-Status: **functional vertical slice; reviewed correctness hardening complete;
-production hardening pending**
+Status: **functional vertical slice complete; memory correctness hardening
+substantially improved, but secret-boundary and lifecycle recovery fixes remain
+pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -78,10 +79,10 @@ workspace/session identity. `(session_id, turn_id)` is idempotent.
 
 Outcome metadata distinguishes nonterminal failure, verified completion,
 abandonment, and cancellation. A failed tool call is an `error`, not a terminal
-outcome. Only terminal evidence with authority `user_explicit`,
-`tool_observed`, or `verified_check` closes an Episode. Assistant completion
-language is retained as episodic `model_assertion` and cannot set the
-authoritative current goal to `done`.
+outcome. Free-text user/Assistant language and ordinary tool output remain
+episodic evidence only. In the current slice, only closed Task-verifier evidence
+with authority `verified_check` closes an Episode or sets the authoritative
+current goal to `done`; exact action-bound user confirmation is a future path.
 
 Tool arguments and outputs cross an independent Memory redaction boundary.
 Sensitive structured keys are removed, and Episodes retain an allowlisted

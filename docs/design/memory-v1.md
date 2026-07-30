@@ -221,10 +221,14 @@ Rules:
 4. Processing order strictly by turn id.
 
 For automatic cognitive projection, Assistant-authored success language is
-episodic `model_assertion`, not goal authority. Setting an authoritative goal
-to `done` requires a terminal event sourced from explicit user confirmation,
-a closed tool observation, or Task verifier checks. Failed attempts and
-unverified outcomes remain nonterminal.
+episodic `model_assertion`, not goal authority. Free-text user phrases and
+ordinary tool output are also nonterminal: text classification cannot grant
+goal authority. In the current slice, setting an authoritative goal to `done`
+requires closed Task-verifier checks. A future user-confirmation path must bind
+an exact action and current-turn token. Failed attempts and unverified outcomes
+remain nonterminal. The model-facing `conversation_state` tool accepts neither
+authority nor caller-supplied evidence text; the Host derives authority only
+from current user and tool-observed evidence and denies terminal status writes.
 
 ### 5.4 Read semantics (choose one mode; document it)
 

@@ -152,7 +152,11 @@ _ABANDON_RE = re.compile(
 _CANCEL_RE = re.compile(
     r"取消(?:这个|该)?(?:任务|目标|工作)|不做了|cancel(?:led)?", re.I
 )
-_TERMINAL_AUTHORITIES = {"user_explicit", "tool_observed", "verified_check"}
+# Terminal state is an authority boundary, not a text-classification result.
+# The current closed path is Task verifier evidence. A future exact
+# user-confirmation contract may add another authority here, but free text and
+# ordinary tool output must never become terminal merely by matching keywords.
+_TERMINAL_AUTHORITIES = {"verified_check"}
 
 
 def _lifecycle_metadata(*, event_type: str, text: str, source: str) -> dict[str, Any]:
@@ -167,23 +171,15 @@ def _lifecycle_metadata(*, event_type: str, text: str, source: str) -> dict[str,
     }
     if event_type == "decision" and _ABANDON_RE.search(text):
         metadata["outcome_kind"] = "abandoned"
-        metadata["terminal"] = authority in _TERMINAL_AUTHORITIES
     elif event_type == "outcome":
         if _CANCEL_RE.search(text):
             metadata["outcome_kind"] = "cancelled"
-            metadata["terminal"] = authority in _TERMINAL_AUTHORITIES
         elif _ABANDON_RE.search(text):
             metadata["outcome_kind"] = "abandoned"
-            metadata["terminal"] = authority in _TERMINAL_AUTHORITIES
         elif _NONTERMINAL_RE.search(text):
             metadata["outcome_kind"] = "nonterminal"
         elif _COMPLETION_RE.search(text):
-            metadata["outcome_kind"] = (
-                "verified_completion"
-                if authority in {"tool_observed", "verified_check"}
-                else "completed"
-            )
-            metadata["terminal"] = authority in _TERMINAL_AUTHORITIES
+            metadata["outcome_kind"] = "completed"
         else:
             metadata["outcome_kind"] = "nonterminal"
     return metadata

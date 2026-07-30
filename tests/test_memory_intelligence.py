@@ -210,6 +210,13 @@ def test_consecutive_turns_form_episode_with_decision_reason_and_outcome(
         session_id="login",
         turn_id="t4",
         user="更换 DNS 后测试通过，问题已解决。",
+        verified_goal={
+            "status": "completed",
+            "task_id": "task-login",
+            "goal": "修复登录超时",
+            "summary": "登录超时回归检查已通过",
+            "check_ids": ["login-regression"],
+        },
     )
 
     episodes = memory.episodes.list(session_id="login")
@@ -226,7 +233,7 @@ def test_consecutive_turns_form_episode_with_decision_reason_and_outcome(
         "value"
     ] == "修复登录超时"
     assert state["entities"]["session:current_goal"]["status"] == "done"
-    assert state["entities"]["session:current_goal"]["status_authority"] == "user_explicit"
+    assert state["entities"]["session:current_goal"]["status_authority"] == "verified_check"
 
 
 def test_why_query_returns_decision_episode_with_real_citations(tmp_path: Path) -> None:
