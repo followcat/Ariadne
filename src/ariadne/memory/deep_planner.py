@@ -225,7 +225,8 @@ def make_llm_deep_planner(model: Any, *, max_candidates: int = 16) -> DeepPlanne
             system = (
                 "Rerank memory search hits. Reply with JSON only: "
                 '{"rerank_order":["session:turn",...]}. '
-                "Use only the listed keys. Best match first."
+                "Use only the listed keys. Best match first. "
+                'To leave order unchanged return {"rerank_order":[]}.'
             )
             user = (
                 f"query: {query}\n"
@@ -244,10 +245,14 @@ def make_llm_deep_planner(model: Any, *, max_candidates: int = 16) -> DeepPlanne
             obj = _parse_json_object(body)
             if obj is None:
                 raise DeepRerankError("llm_rerank_parse_error")
+            if "rerank_order" not in obj:
+                raise DeepRerankError("llm_rerank_bad_shape")
             allowed = set(allowed_keys)
             rerank_raw = obj.get("rerank_order")
             if not isinstance(rerank_raw, list):
-                # Model chose not to reorder (or malformed) — treat as no-op
+                raise DeepRerankError("llm_rerank_bad_shape")
+            # Empty list = explicit legal no-op (keep score order).
+            if not rerank_raw:
                 return None
             order = [str(k) for k in rerank_raw if str(k) in allowed]
             return order or None

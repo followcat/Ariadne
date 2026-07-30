@@ -500,17 +500,22 @@ class MemoryFacade:
                 # Phase 2: require DeepPlanner.rerank (no plan-only compatibility)
                 rerank_order: list[str] | None = None
                 did_rerank = False
+                rerank_failed = False
                 try:
                     rerank_order = await planner.rerank(
                         query=q, candidates=deep_hits
                     )
                 except DeepRerankError as exc:
                     notes.append(f"deep:{exc.notes}")
-                    notes.append("deep:fallback_fast")
+                    notes.append("deep:rerank_failed")
+                    notes.append("deep:rerank_fallback_score_order")
+                    rerank_failed = True
                     rerank_order = None
                 except Exception as exc:  # noqa: BLE001
                     notes.append(f"deep:rerank_error:{type(exc).__name__}")
-                    notes.append("deep:fallback_fast")
+                    notes.append("deep:rerank_failed")
+                    notes.append("deep:rerank_fallback_score_order")
+                    rerank_failed = True
                     rerank_order = None
                 if rerank_order:
                     order = {k: i for i, k in enumerate(rerank_order)}
@@ -536,7 +541,8 @@ class MemoryFacade:
                 ]
                 set_changed = set(final_keys) != set(seed_keys)
                 order_changed = final_keys != seed_order[: len(final_keys)]
-                # Honest mode_used: only deep when set/order actually changed
+                # Honest mode_used: deep when decomp/rerank changed results.
+                # Rerank failure does not demote deep if subqueries already changed.
                 if set_changed or order_changed or did_rerank:
                     mode_used = "deep"
                     if ran_subqueries and self.deep_planner is None:
@@ -544,12 +550,12 @@ class MemoryFacade:
                         notes.append("deep:no_llm_planner")
                     if did_rerank and not ran_subqueries:
                         notes.append("deep:rerank_only")
-                    elif did_rerank and not set_changed and order_changed:
-                        notes.append("deep:rerank")
                 else:
                     mode_used = "fast"
                     if ran_subqueries:
                         notes.append("deep:noop_unchanged")
+                    elif rerank_failed:
+                        notes.append("deep:fallback_fast")
                     elif plan.notes and "local_noop" not in (plan.notes or ""):
                         notes.append("deep:no_work")
 
