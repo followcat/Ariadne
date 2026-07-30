@@ -67,6 +67,19 @@ const sessions = ref<SessionRow[]>([])
 const messages = ref<ChatMsg[]>([])
 const input = ref('')
 const busy = ref(false)
+/** Closed-loop task mode: force this turn (metadata.task_mode). */
+const forceTaskMode = ref(localStorage.getItem('ariadne_force_task') === '1')
+/** Live banner from SSE task_* events for the in-flight turn. */
+const taskBanner = ref<{
+  mode?: string
+  reason?: string
+  policy?: string
+  status?: string
+  goal?: string
+  step?: string
+  check?: string
+  question?: string
+} | null>(null)
 const sidebarCollapsed = ref(localStorage.getItem('ariadne_sidebar') === '0')
 const toolsCollapsed = ref(localStorage.getItem('ariadne_tools_panel') !== '1')
 const leftTab = ref<LeftTab>((() => {
@@ -850,6 +863,9 @@ async function send() {
   autoSize()
   busy.value = true
   clearTools()
+  taskBanner.value = forceTaskMode.value
+    ? { mode: 'task', reason: 'metadata_task_mode', status: 'starting' }
+    : null
   turnStartedAt = performance.now()
   stickToBottom.value = true
   activeStreamScope = historyCacheKey()
@@ -893,6 +909,7 @@ async function send() {
 
   try {
     const turnBody: Record<string, unknown> = { input: text }
+    if (forceTaskMode.value) turnBody.task_mode = true
     if (atelierId.value) {
       turnBody.atelier_id = atelierId.value
       turnBody.atelier_session = atelierSession.value
@@ -993,7 +1010,74 @@ function handleEvent(
   const toolsOnView =
     opts?.toolsOnView === true || historyCacheKey() === streamScope
 
-  if (ev.kind === 'model_thinking_delta') {
+  if (ev.kind === 'task_mode_resolved') {
+    if (!toolsOnView) return
+    const enabled = Boolean(data.enabled)
+    taskBanner.value = {
+      mode: enabled ? 'task' : 'direct',
+      reason: String(data.reason || ''),
+      policy: String(data.policy || ''),
+      status: enabled ? 'armed' : 'direct',
+    }
+  } else if (ev.kind === 'task_started') {
+    if (!toolsOnView) return
+    taskBanner.value = {
+      ...(taskBanner.value || {}),
+      mode: 'task',
+      status: 'running',
+      goal: String(data.goal || ''),
+      step: `${data.step_count || '?'} steps`,
+    }
+  } else if (ev.kind === 'task_resumed') {
+    if (!toolsOnView) return
+    taskBanner.value = {
+      mode: 'task',
+      reason: String(data.task_mode_reason || 'active_task_resume'),
+      status: String(data.status || 'resumed'),
+      step: data.task_id ? `task ${String(data.task_id).slice(0, 8)}…` : '',
+    }
+  } else if (ev.kind === 'task_step_started') {
+    if (!toolsOnView) return
+    taskBanner.value = {
+      ...(taskBanner.value || { mode: 'task' }),
+      status: 'step',
+      step: String(data.intent || data.step_id || 'step'),
+    }
+  } else if (ev.kind === 'task_check_completed') {
+    if (!toolsOnView) return
+    const st = String(data.status || '')
+    taskBanner.value = {
+      ...(taskBanner.value || { mode: 'task' }),
+      check: `${data.check_id || 'check'}: ${st}`,
+      status: st === 'pass' ? 'verifying' : st,
+    }
+  } else if (ev.kind === 'task_completed') {
+    if (!toolsOnView) return
+    taskBanner.value = {
+      ...(taskBanner.value || { mode: 'task' }),
+      status: 'completed',
+    }
+  } else if (ev.kind === 'task_failed') {
+    if (!toolsOnView) return
+    taskBanner.value = {
+      ...(taskBanner.value || { mode: 'task' }),
+      status: 'failed',
+    }
+  } else if (ev.kind === 'task_needs_input') {
+    if (!toolsOnView) return
+    taskBanner.value = {
+      ...(taskBanner.value || { mode: 'task' }),
+      status: 'needs_input',
+      question: String(data.question || ''),
+    }
+  } else if (ev.kind === 'task_replanned') {
+    if (!toolsOnView) return
+    taskBanner.value = {
+      ...(taskBanner.value || { mode: 'task' }),
+      status: 'replanned',
+      step: `rev ${data.plan_revision ?? ''}`,
+    }
+  } else if (ev.kind === 'model_thinking_delta') {
     if (!m) return
     m.thinking += String(data.text || '')
     if (!m.content) m.thinkingLive = true
@@ -1538,6 +1622,22 @@ onMounted(() => {
       </div>
 
       <div class="composer-wrap">
+        <div
+          v-if="taskBanner"
+          class="task-banner"
+          :class="taskBanner.status"
+          :title="taskBanner.reason || ''"
+        >
+          <span class="tb-mode">{{
+            taskBanner.mode === 'task' ? '任务模式' : '直接模式'
+          }}</span>
+          <span v-if="taskBanner.policy" class="tb-pol">policy={{ taskBanner.policy }}</span>
+          <span v-if="taskBanner.status" class="tb-st">{{ taskBanner.status }}</span>
+          <span v-if="taskBanner.goal" class="tb-goal">{{ taskBanner.goal }}</span>
+          <span v-if="taskBanner.step" class="tb-step">{{ taskBanner.step }}</span>
+          <span v-if="taskBanner.check" class="tb-check">{{ taskBanner.check }}</span>
+          <span v-if="taskBanner.question" class="tb-q">{{ taskBanner.question }}</span>
+        </div>
         <div class="composer">
           <textarea
             ref="inputEl"
@@ -1559,6 +1659,18 @@ onMounted(() => {
           </button>
         </div>
         <div class="foot">
+          <label class="task-toggle" title="本轮强制 closed-loop task 模式（plan/verify）">
+            <input
+              v-model="forceTaskMode"
+              type="checkbox"
+              :disabled="busy"
+              @change="
+                localStorage.setItem('ariadne_force_task', forceTaskMode ? '1' : '0')
+              "
+            />
+            任务模式
+          </label>
+          <span class="foot-sep">·</span>
           Ariadne · 筑梦师 · {{ inAtelier ? '小作坊' : '随便聊聊' }}
         </div>
       </div>
@@ -2055,15 +2167,69 @@ onMounted(() => {
   font-weight: 600;
   flex-shrink: 0;
 }
-.send:disabled {
-  background: var(--line-2);
-  color: var(--muted);
+.task-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+  margin: 0 0 0.4rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  background: var(--panel-2, rgba(120, 140, 180, 0.12));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  color: var(--muted, #9aa3b2);
+}
+.task-banner.completed {
+  border-color: rgba(80, 180, 120, 0.45);
+  color: var(--text, #e8ecf4);
+}
+.task-banner.failed {
+  border-color: rgba(220, 90, 90, 0.5);
+}
+.task-banner.needs_input {
+  border-color: rgba(220, 170, 60, 0.5);
+}
+.task-banner .tb-mode {
+  font-weight: 600;
+  color: var(--text, #e8ecf4);
+}
+.task-banner .tb-goal,
+.task-banner .tb-q {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .foot {
   max-width: 760px;
   margin: 8px auto 0;
-  text-align: center;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem 0.5rem;
   font-size: 11px;
+  color: var(--muted);
+}
+.foot-sep {
+  opacity: 0.45;
+}
+.task-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--muted, #9aa3b2);
+}
+.task-toggle input {
+  margin: 0;
+}
+.send:disabled {
+  background: var(--line-2);
   color: var(--muted);
 }
 

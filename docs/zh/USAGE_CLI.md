@@ -168,7 +168,9 @@ ariadne --task-mode-policy auto run "继续"
 | `ARIADNE_ENABLE_CONTROLLED_DELEGATION` | off |
 | `ARIADNE_ENABLE_MEMORY_PROJECTION` | off |
 
-Web：`POST /api/turns` 请求体字段 `task_mode: true`。
+Web：`POST /api/turns`（及 stream）请求体字段 `task_mode: true`。
+对话 UI 有 **任务模式** 勾选框，并根据 SSE 的 `task_mode_resolved` / `task_*`
+事件显示状态条。
 
 ## 会话标题（主题总结）
 

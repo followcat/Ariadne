@@ -180,7 +180,9 @@ Stretch features stay **off** unless opted in:
 | `ARIADNE_ENABLE_CONTROLLED_DELEGATION` | off |
 | `ARIADNE_ENABLE_MEMORY_PROJECTION` | off |
 
-Web: `POST /api/turns` body field `task_mode: true` (same metadata).
+Web: `POST /api/turns` / stream body field `task_mode: true` (same metadata).
+The chat UI shows a **任务模式** checkbox and a live banner driven by SSE
+`task_mode_resolved` / `task_*` events.
 
 ## Session titles (topic summary)
 
