@@ -41,22 +41,65 @@ class CuratedStore:
             self._migrate_if_needed()
 
     def _migrate_if_needed(self) -> None:
+        # Read first: skip locked rewrite when schema is already current
+        # (Web reconstructs CuratedStore every turn).
+        current = locked_read_json(self.path, default=_empty_store())
+        if not self._migration_needed(current):
+            return
+
         def mut(data: dict[str, Any]) -> dict[str, Any]:
-            if not isinstance(data, dict):
-                data = _empty_store()
-            if "workspace" not in data:
-                data["workspace"] = []
-            for scope_key in ("user", "workspace"):
-                items = list(data.get(scope_key) or [])
-                new_items, _ = self._stabilize_entries(items)
-                data[scope_key] = new_items
-            sessions = data.setdefault("session", {})
-            for sid, items in list(sessions.items()):
-                new_items, _ = self._stabilize_entries(list(items or []))
-                sessions[sid] = new_items
-            return data
+            migrated, _ = self._apply_migration(data)
+            return migrated
 
         locked_update_json(self.path, mut, default=_empty_store())
+
+    def _migration_needed(self, data: Any) -> bool:
+        if not isinstance(data, dict):
+            return True
+        if "workspace" not in data:
+            return True
+        for scope_key in ("user", "workspace"):
+            for item in data.get(scope_key) or []:
+                if self._entry_needs_stabilize(item):
+                    return True
+        for items in (data.get("session") or {}).values():
+            for item in items or []:
+                if self._entry_needs_stabilize(item):
+                    return True
+        return False
+
+    @staticmethod
+    def _entry_needs_stabilize(item: Any) -> bool:
+        if not isinstance(item, dict):
+            return True
+        eid = str(item.get("id") or "").strip()
+        if not eid or re.fullmatch(r"e\d+", eid):
+            return True
+        for key in ("source_turn_id", "source_session_id", "updated_at"):
+            if key not in item:
+                return True
+        return False
+
+    def _apply_migration(self, data: Any) -> tuple[dict[str, Any], bool]:
+        changed = False
+        if not isinstance(data, dict):
+            return _empty_store(), True
+        if "workspace" not in data:
+            data["workspace"] = []
+            changed = True
+        for scope_key in ("user", "workspace"):
+            items = list(data.get(scope_key) or [])
+            new_items, ch = self._stabilize_entries(items)
+            if ch:
+                data[scope_key] = new_items
+                changed = True
+        sessions = data.setdefault("session", {})
+        for sid, items in list(sessions.items()):
+            new_items, ch = self._stabilize_entries(list(items or []))
+            if ch:
+                sessions[sid] = new_items
+                changed = True
+        return data, changed
 
     @staticmethod
     def _stabilize_entries(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
