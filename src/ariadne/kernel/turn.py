@@ -700,15 +700,27 @@ class TurnApplication:
                     entity_ids = self.memory.entities_mentioned_in_text(
                         session_id, evidence_blob
                     )
-                    self.memory.semantic.index_turn(
-                        session_id=session_id,
-                        turn_id=turn_id,
-                        user_text=prompt,
-                        assistant_text=text,
-                        tool_text=tool_blob,
-                        summary_text=summary,
-                        entity_ids=entity_ids,
-                    )
+                    index_turn = getattr(self.memory, "index_turn", None)
+                    if callable(index_turn):
+                        index_turn(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            user_text=prompt,
+                            assistant_text=text,
+                            tool_text=tool_blob,
+                            summary_text=summary,
+                            entity_ids=entity_ids,
+                        )
+                    else:
+                        self.memory.semantic.index_turn(
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            user_text=prompt,
+                            assistant_text=text,
+                            tool_text=tool_blob,
+                            summary_text=summary,
+                            entity_ids=entity_ids,
+                        )
                     # enqueue projection job only when a real projection worker is wired
                     if getattr(self.memory, "projection", None) is not None:
                         self.memory.projection.enqueue(

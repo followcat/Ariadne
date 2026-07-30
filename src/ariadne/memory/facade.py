@@ -9,6 +9,7 @@ from typing import Any
 from ..errors import AriadneError, app_error
 from ..types import LayerReport, MemoryContext, MemoryContextSummary
 from .curated import CuratedStore
+from .deep_planner import DeepPlan, DeepPlanner, LocalSplitPlanner
 from .embeddings import HashEmbeddingProvider
 from .projection import ProjectionWorker
 from .semantic import SemanticIndex
@@ -45,8 +46,14 @@ class MemoryFacade:
     user_id: str | None = "local"
     # Optional separate store for user-scope curated (e.g. ~/.ariadne/memory/curated.json)
     user_curated: CuratedStore | None = None
+    # Cross-workspace user episodic L4 (design S4); None → curated-only user search
+    user_episodic: SemanticIndex | None = None
+    # Optional deep planner (LLM or local split); None → LocalSplitPlanner only
+    deep_planner: DeepPlanner | None = None
     # Default memory_search mode when tool omits mode
     search_mode_default: str = "auto"
+    # Optional workspace key stamped on user-episodic chunks
+    workspace_key: str = ""
     # per-layer char budgets (config, not vibes); truncation is always marked
     layer_budgets: dict[str, int] = field(
         default_factory=lambda: {
@@ -56,6 +63,40 @@ class MemoryFacade:
             "semantic": 1500,
         }
     )
+
+    def index_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+        tool_text: str = "",
+        summary_text: str = "",
+        entity_ids: list[str] | None = None,
+    ) -> None:
+        """Index into workspace semantic and user episodic (when configured)."""
+        self.semantic.index_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            tool_text=tool_text,
+            summary_text=summary_text,
+            entity_ids=entity_ids,
+            workspace_key=self.workspace_key,
+        )
+        if self.user_episodic is not None:
+            self.user_episodic.index_turn(
+                session_id=session_id,
+                turn_id=turn_id,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                tool_text=tool_text,
+                summary_text=summary_text,
+                entity_ids=entity_ids,
+                workspace_key=self.workspace_key,
+            )
 
     def resolve_user_id(self, user_id: str | None) -> str:
         """Bind request user_id; never silently drop or remap a provided id.
@@ -227,6 +268,7 @@ class MemoryFacade:
             scope=scope_n if scope_n != "user" or self.user_curated is None else "user",
             session_id=session_id,
             source_turn_id=source_turn_id,
+            source_session_id=session_id,
         )
 
     async def memory_search(
@@ -283,84 +325,105 @@ class MemoryFacade:
                 )
             )
         lim = lim_raw
-        # before_turn_id: apply for all scopes (session uses session order;
-        # workspace uses whole-transcript order so multi-session hits cannot
-        # ignore the cutoff). Unknown cutoff → only known-before ids (conservative).
-        if before_turn_id is not None and str(before_turn_id).strip() != "":
-            if scope_n == "session":
-                allowed = self._allowed_turns(session_id, str(before_turn_id).strip())
-            else:
-                allowed = self.transcript.turn_ids_before(
-                    str(before_turn_id).strip(), session_id=None
-                )
-                # Also exclude active-session turns at/after cutoff even if global
-                # order missed the id (e.g. only session-stamped rows).
-                sess_allowed = self._allowed_turns(session_id, str(before_turn_id).strip())
-                if sess_allowed is not None and allowed is not None:
-                    # Keep intersection of global-before with… no: union of
-                    # session-before + other sessions' turns that appear before
-                    # cutoff in global order. Simpler honest rule: use session
-                    # filter for active session turns; for other sessions only
-                    # allow turn_ids present in global-before set.
-                    allowed = set(allowed) | set(sess_allowed)
-                elif sess_allowed is not None:
-                    allowed = sess_allowed
-        else:
-            allowed = None
+        cutoff = str(before_turn_id).strip() if before_turn_id else ""
+        before_ts, allowed, asof_notes = self._resolve_as_of(
+            session_id=session_id, before_turn_id=cutoff or None, scope=scope_n
+        )
+        notes: list[str] = list(asof_notes)
 
-        # user scope: durable curated only until user-wide episodic index exists.
+        # Index selection by scope
         if scope_n == "user":
-            return self._search_curated_scope(
-                scope="user",
-                query=q,
-                session_id=session_id,
-                limit=lim,
-                mode_used="fast",
-                allowed_turn_ids=allowed,
-                before_turn_id=before_turn_id,
-            )
-
-        sid_filter: str | None = session_id if scope_n == "session" else None
-        notes: list[str] = []
+            index = self.user_episodic
+            sid_filter: str | None = None
+            if index is None:
+                notes.append("user_episodic=unavailable")
+                curated_hits = self._search_curated_hits(
+                    scope="user",
+                    query=q,
+                    session_id=session_id,
+                    limit=lim,
+                    allowed_turn_ids=allowed,
+                    before_ts=before_ts,
+                )
+                return self._pack_search_result(
+                    mode_used="fast",
+                    hits=curated_hits,
+                    notes=notes + (["curated_only", "empty"] if not curated_hits else ["curated_only"]),
+                    scope=scope_n,
+                    query=q,
+                )
+        else:
+            index = self.semantic
+            sid_filter = session_id if scope_n == "session" else None
 
         async def _fast(
-            query_text: str, *, expand: list[str] | None = None
+            query_text: str,
+            *,
+            expand: list[str] | None = None,
+            idx: SemanticIndex | None = None,
+            session_filter: str | None = None,
         ) -> list[dict[str, Any]]:
+            store = idx or index
+            assert store is not None
             auth = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
             aliases = (
                 expand
                 if expand is not None
                 else self._aliases_from_state(session_id, allowed_turn_ids=allowed)
             )
+            sf = sid_filter if session_filter is None else session_filter
             if self.hybrid_semantic:
-                return await self.semantic.search_hybrid(
-                    session_id=sid_filter,
+                return await store.search_hybrid(
+                    session_id=sf,
                     query=query_text,
                     limit=lim,
                     expand_aliases=aliases,
                     demote_entity_ids=set(auth),
                     authoritative_fields=auth,
                     allowed_turn_ids=allowed,
+                    before_ts=before_ts,
                 )
-            return self.semantic.search(
-                session_id=sid_filter,
+            return store.search(
+                session_id=sf,
                 query=query_text,
                 limit=lim,
                 expand_aliases=aliases,
                 demote_entity_ids=set(auth),
                 authoritative_fields=auth,
                 allowed_turn_ids=allowed,
+                before_ts=before_ts,
             )
 
         hits = await _fast(q)
         mode_used = "fast"
+
+        if scope_n == "user":
+            # Merge curated hits that have real turn provenance
+            curated_hits = self._search_curated_hits(
+                scope="user",
+                query=q,
+                session_id=session_id,
+                limit=lim,
+                allowed_turn_ids=allowed,
+                before_ts=before_ts,
+            )
+            merged: dict[str, dict[str, Any]] = {}
+            for h in hits + curated_hits:
+                key = f"{h.get('session_id')}:{h.get('turn_id')}"
+                prev = merged.get(key)
+                if prev is None or float(h.get("score") or 0) > float(
+                    prev.get("score") or 0
+                ):
+                    merged[key] = h
+            hits = sorted(
+                merged.values(), key=lambda x: -float(x.get("score") or 0)
+            )[:lim]
 
         def _should_upgrade(h: list[dict[str, Any]]) -> bool:
             if mode_n == "fast":
                 return False
             if mode_n == "deep":
                 return True
-            # auto
             if not h:
                 return bool(_VAGUE_DEIXIS.search(q)) or len(q.split()) >= 4
             top = float(h[0].get("score") or 0)
@@ -375,71 +438,119 @@ class MemoryFacade:
             return False
 
         if mode_n in {"auto", "deep"} and _should_upgrade(hits):
-            # Local deep (no small-model planner yet): real multi-query decomp only.
-            # Must not claim mode_used=deep for a pure no-op re-sort of the same hits.
             aliases = self._aliases_from_state(session_id, allowed_turn_ids=allowed)
-            parts = [
-                p.strip()
-                for p in re.split(r"[，,;；]|和|以及|\band\b", q)
-                if p.strip()
-            ]
-            multi = len(parts) > 1
-            if multi:
-                merged: dict[str, dict[str, Any]] = {}
-                for part in parts:
-                    # Each sub-query is searched with its own text (not the full q).
-                    sub = await _fast(part, expand=aliases or None)
-                    for hit in sub:
-                        key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
-                        prev = merged.get(key)
-                        if prev is None or float(hit.get("score") or 0) > float(
-                            prev.get("score") or 0
-                        ):
-                            merged[key] = hit
-                deep_hits = sorted(
-                    merged.values(), key=lambda x: -float(x.get("score") or 0)
-                )[:lim]
-                if deep_hits:
-                    hits = deep_hits
-                    mode_used = "deep"
-                    notes.append("deep:local_query_split")
-                    notes.append("deep:no_llm_planner")
-                elif mode_n == "deep":
-                    notes.append("deep:no_hits_after_split")
-                    notes.append("deep:no_llm_planner")
+            planner: DeepPlanner = self.deep_planner or LocalSplitPlanner()
+            try:
+                plan: DeepPlan = await planner.plan(
+                    query=q, aliases=aliases, candidates=hits
+                )
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"deep:planner_error:{type(exc).__name__}")
+                notes.append("deep:fallback_fast")
+                plan = DeepPlan(notes="planner_raised")
+                mode_used = "fast"
+            else:
+                did_work = False
+                expand = list(aliases or []) + list(plan.alias_extra or [])
+                subqs = [s for s in (plan.subqueries or []) if s.strip()]
+                if not subqs and plan.notes == "local_noop":
+                    notes.append("deep:unavailable_local_noop")
+                    if self.deep_planner is None:
+                        notes.append("deep:no_llm_planner")
+                    mode_used = "fast"
+                elif not subqs and not plan.rerank_order:
+                    notes.append("deep:planner_empty")
+                    notes.append(plan.notes or "deep:fallback_fast")
                     mode_used = "fast"
                 else:
-                    notes.append("auto:upgrade_empty")
-                    notes.append("deep:no_llm_planner")
-            else:
-                # Single clause: no real decomp available without LLM planner.
-                notes.append("deep:unavailable_local_noop")
-                notes.append("deep:no_llm_planner")
-                mode_used = "fast"
+                    merged_h: dict[str, dict[str, Any]] = {
+                        f"{h.get('session_id')}:{h.get('turn_id')}": h for h in hits
+                    }
+                    for part in subqs or [q]:
+                        sub = await _fast(part, expand=expand or None)
+                        did_work = True
+                        for hit in sub:
+                            key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
+                            prev = merged_h.get(key)
+                            if prev is None or float(hit.get("score") or 0) > float(
+                                prev.get("score") or 0
+                            ):
+                                merged_h[key] = hit
+                    deep_hits = list(merged_h.values())
+                    if plan.rerank_order:
+                        order = {k: i for i, k in enumerate(plan.rerank_order)}
+                        deep_hits.sort(
+                            key=lambda h: (
+                                order.get(
+                                    f"{h.get('session_id')}:{h.get('turn_id')}",
+                                    10_000,
+                                ),
+                                -float(h.get("score") or 0),
+                            )
+                        )
+                        did_work = True
+                    else:
+                        deep_hits.sort(key=lambda x: -float(x.get("score") or 0))
+                    hits = deep_hits[:lim]
+                    if did_work and (subqs or plan.rerank_order):
+                        mode_used = "deep"
+                        notes.append(f"deep:{plan.notes or 'planned'}")
+                        if self.deep_planner is None:
+                            notes.append("deep:local_query_split")
+                            notes.append("deep:no_llm_planner")
+                    else:
+                        mode_used = "fast"
+                        notes.append("deep:noop")
 
-        # Normalize hit evidence shape — drop hits without a real turn_id
+        # Normalize hit evidence — require real turn_id; no curated: synthetic ids
         out_hits: list[dict[str, Any]] = []
         for h in hits:
             tid = str(h.get("turn_id") or "").strip()
-            if not tid:
+            if not tid or tid.startswith("curated:"):
                 notes.append("dropped_hit_missing_turn_id")
                 continue
+            sid = str(h.get("session_id") or "").strip()
+            if not sid and scope_n != "user":
+                sid = session_id
+            if not sid:
+                notes.append("dropped_hit_missing_session_id")
+                continue
             snippet = str(h.get("snippet") or h.get("text") or "")[:400]
+            src = "chunk"
+            ev = h.get("evidence") if isinstance(h.get("evidence"), dict) else {}
+            if ev.get("source") in {"raw", "summary", "chunk"}:
+                src = str(ev.get("source"))
+            elif h.get("kind") in {"user", "assistant", "tool"}:
+                src = "raw"
+            elif h.get("kind") == "summary":
+                src = "summary"
             out_hits.append(
                 {
                     "turn_id": tid,
-                    "session_id": str(h.get("session_id") or session_id),
+                    "session_id": sid,
                     "score": h.get("score"),
                     "snippet": snippet,
                     "evidence": {
-                        "source": "chunk",
+                        "source": src,
                         "kind": h.get("kind"),
                     },
                 }
             )
         if not out_hits:
             notes.append("empty")
-        # de-dupe notes while preserving order
+        return self._pack_search_result(
+            mode_used=mode_used, hits=out_hits, notes=notes, scope=scope_n, query=q
+        )
+
+    def _pack_search_result(
+        self,
+        *,
+        mode_used: str,
+        hits: list[dict[str, Any]],
+        notes: list[str],
+        scope: str,
+        query: str,
+    ) -> dict[str, Any]:
         seen_n: set[str] = set()
         notes_u: list[str] = []
         for n in notes:
@@ -448,81 +559,107 @@ class MemoryFacade:
                 notes_u.append(n)
         return {
             "mode_used": mode_used,
-            "hits": out_hits,
+            "hits": hits,
             "notes": "; ".join(notes_u) if notes_u else "",
-            "scope": scope_n,
-            "query": q,
+            "scope": scope,
+            "query": query,
         }
 
-    def _search_curated_scope(
+    def _resolve_as_of(
+        self,
+        *,
+        session_id: str,
+        before_turn_id: str | None,
+        scope: str,
+    ) -> tuple[float | None, set[str] | None, list[str]]:
+        """Resolve before_turn_id to before_ts + optional allowed turn ids."""
+        notes: list[str] = []
+        if not before_turn_id:
+            return None, None, notes
+        tid = before_turn_id.strip()
+        # Prefer clock from semantic / user_episodic indexes (cross-session).
+        clock = self.semantic.lookup_turn_clock(turn_id=tid, session_id=session_id)
+        if clock is None and scope != "session":
+            clock = self.semantic.lookup_turn_clock(turn_id=tid, session_id=None)
+        if clock is None and self.user_episodic is not None:
+            clock = self.user_episodic.lookup_turn_clock(
+                turn_id=tid, session_id=session_id
+            ) or self.user_episodic.lookup_turn_clock(turn_id=tid, session_id=None)
+        before_ts = clock[0] if clock else None
+        if before_ts is not None:
+            notes.append(f"before_ts:{before_ts}")
+            # When we have a global clock, do not also filter by turn-id set
+            # (other sessions' turn_ids are not in the active transcript order).
+            return before_ts, None, notes
+        # Fallback: transcript order (session / global file)
+        if scope == "session":
+            allowed = self._allowed_turns(session_id, tid)
+        else:
+            allowed = self.transcript.turn_ids_before(tid, session_id=None)
+            sess_allowed = self._allowed_turns(session_id, tid)
+            if allowed is not None and sess_allowed is not None:
+                allowed = set(allowed) | set(sess_allowed)
+            elif sess_allowed is not None:
+                allowed = sess_allowed
+        notes.append("before_turn_id:transcript_order")
+        if allowed is None:
+            notes.append("clock:missing")
+        return None, allowed, notes
+
+    def _search_curated_hits(
         self,
         *,
         scope: str,
         query: str,
         session_id: str,
         limit: int,
-        mode_used: str,
         allowed_turn_ids: set[str] | None = None,
-        before_turn_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Search durable curated entries for a scope.
-
-        User-wide *episodic* index is not implemented: this path is curated-only.
-        Hits always identify a real store object (entry id); turn_id is the
-        recorded source_turn_id when present, else ``curated:<entry_id>``.
-        """
+        before_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Curated hits with real turn provenance only (no curated: synthetic ids)."""
+        _ = before_ts  # curated entries lack ts; as-of uses source_turn_id ∈ allowed
         store = self._curated_for_scope(scope)
         data = store.apply(action="read", scope=scope, session_id=session_id)
-        q_tokens = set(re.findall(r"[a-z0-9_\u4e00-\u9fff]{2,}", query.lower()))
+        q_tokens = set(re.findall(r"[a-z0-9_\u4e00-\u9fff]{1,}", query.lower()))
         hits: list[dict[str, Any]] = []
-        notes = ["curated_only", "user_wide_episodic_index=not_implemented"]
         for item in data.get("entries") or []:
             eid = str(item.get("id") or "").strip()
-            if not eid:
-                continue
             src_turn = str(item.get("source_turn_id") or "").strip()
-            if allowed_turn_ids is not None:
-                # As-of: only entries grounded in turns known to be before cutoff.
-                # Entries without source_turn_id cannot be proven as-of → skip.
-                if not src_turn or src_turn not in allowed_turn_ids:
-                    continue
+            src_session = str(item.get("source_session_id") or "").strip()
+            # Provenance required for search hits
+            if not src_turn:
+                continue
+            if allowed_turn_ids is not None and src_turn not in allowed_turn_ids:
+                continue
             content = str(item.get("content") or "")
             c_low = content.lower()
             score = 0.0
             for t in q_tokens:
-                if t in c_low:
+                if len(t) >= 1 and t in c_low:
                     score += 1.0
             if score <= 0 and query.lower() in c_low:
                 score = 0.5
-            if score > 0:
-                # Real store identity always present; never empty turn_id.
-                turn_id = src_turn if src_turn else f"curated:{eid}"
-                hits.append(
-                    {
-                        "turn_id": turn_id,
-                        "session_id": session_id if scope == "session" else "",
-                        "score": round(score / max(len(q_tokens), 1), 4),
-                        "snippet": content[:400],
-                        "evidence": {
-                            "source": "curated",
-                            "entry_id": eid,
-                            "scope": scope,
-                            "source_turn_id": src_turn or None,
-                        },
-                    }
-                )
+            if score <= 0:
+                continue
+            sid = src_session or session_id
+            if not sid:
+                continue
+            hits.append(
+                {
+                    "turn_id": src_turn,
+                    "session_id": sid,
+                    "score": round(score / max(len(q_tokens), 1), 4),
+                    "snippet": content[:400],
+                    "kind": "summary",
+                    "evidence": {
+                        "source": "summary",
+                        "entry_id": eid,
+                        "scope": scope,
+                    },
+                }
+            )
         hits.sort(key=lambda x: -float(x.get("score") or 0))
-        if not hits:
-            notes.append("empty")
-        if before_turn_id:
-            notes.append(f"before_turn_id:{before_turn_id}")
-        return {
-            "mode_used": mode_used,
-            "hits": hits[:limit],
-            "notes": "; ".join(notes),
-            "scope": scope,
-            "query": query,
-        }
+        return hits[:limit]
 
     def _allowed_turns(
         self, session_id: str, before_turn_id: str | None
@@ -944,14 +1081,16 @@ class Memory(MemoryFacade):
         enable_projection: bool = False,
         user_id: str | None = "local",
         user_curated_path: str | Path | None = None,
+        user_episodic_path: str | Path | None = None,
         search_mode_default: str = "auto",
+        deep_planner: DeepPlanner | None = None,
     ) -> "Memory":
         """Local personal memory root.
 
-        Projection is **off by default** (honest L2): without a real projector,
-        jobs are not silently completed as empty ``no_change``. Pass
-        ``enable_projection=True`` to create a queue for hosts that inject a
-        projector (or accept tool-driven state only via ``conversation_state``).
+        Projection is **off by default** (honest L2). User episodic index is
+        enabled when ``user_episodic_path`` is set, or defaults under
+        ``user_curated_path`` parent / ``episodic/semantic.json``, or
+        ``{path}/episodic/semantic.json`` for single-root tests.
         """
         root = Path(path)
         root.mkdir(parents=True, exist_ok=True)
@@ -964,17 +1103,27 @@ class Memory(MemoryFacade):
         user_curated: CuratedStore | None = None
         if user_curated_path is not None:
             user_curated = CuratedStore(path=Path(user_curated_path))
+        embedder = HashEmbeddingProvider()
+        # Default user episodic for personal use: under path so scope=user works
+        # in tests without extra wiring.
+        if user_episodic_path is not None:
+            ep_path = Path(user_episodic_path)
+        elif user_curated_path is not None:
+            ep_path = Path(user_curated_path).parent / "episodic" / "semantic.json"
+        else:
+            ep_path = root / "episodic" / "semantic.json"
+        user_episodic = SemanticIndex(path=ep_path, embedder=embedder)
         return cls(
             transcript=TranscriptStore(path=root / "transcript.jsonl"),
             curated=CuratedStore(path=root / "curated.json"),
             state=state,
             summaries=TurnSummaryStore(path=root / "summaries.json"),
-            semantic=SemanticIndex(
-                path=root / "semantic.json", embedder=HashEmbeddingProvider()
-            ),
+            semantic=SemanticIndex(path=root / "semantic.json", embedder=embedder),
             projection=projection,
             user_id=user_id,
             user_curated=user_curated,
+            user_episodic=user_episodic,
+            deep_planner=deep_planner,
             search_mode_default=search_mode_default,
         )
 

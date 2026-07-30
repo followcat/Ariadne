@@ -139,6 +139,7 @@ class CuratedStore:
         scope: str = "user",
         session_id: str,
         source_turn_id: str = "",
+        source_session_id: str = "",
     ) -> dict[str, Any]:
         action = (action or "").strip().lower()
         scope = (scope or "user").strip().lower()
@@ -195,6 +196,7 @@ class CuratedStore:
                     "id": uuid.uuid4().hex[:12],
                     "content": clean,
                     "source_turn_id": (source_turn_id or "").strip(),
+                    "source_session_id": (source_session_id or session_id or "").strip(),
                     "updated_at": time.time(),
                 }
             )
@@ -205,6 +207,12 @@ class CuratedStore:
                 "id": prev["id"],
                 "content": clean,
                 "source_turn_id": (source_turn_id or prev.get("source_turn_id") or ""),
+                "source_session_id": (
+                    source_session_id
+                    or prev.get("source_session_id")
+                    or session_id
+                    or ""
+                ),
                 "updated_at": time.time(),
             }
         elif action == "remove":
