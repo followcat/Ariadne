@@ -15,7 +15,6 @@ from ..memory.facade import MemoryFacade
 from ..memory.projection import ProjectorFn
 from ..model.base import ModelPort
 from ..guardrails import scan_input, scan_output
-from ..redact import redact_secrets
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.port import SandboxBackend, SandboxSession
 from ..skills.store import SkillStore
@@ -38,7 +37,7 @@ from ..tasks.runtime import (
     resolve_final_answer_status,
     select_task_tools_payload,
 )
-from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry, dumps_tool_output
+from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry
 from ..types import (
     Message,
     RunTurnCommand,
@@ -49,6 +48,7 @@ from ..types import (
     TurnResult,
     Usage,
 )
+from .tool_exchange import invoke_tool_exchange
 
 
 SYSTEM_POLICY = """You are Ariadne, a local agent working inside a user project directory.
@@ -1199,190 +1199,38 @@ class TurnApplication:
                     if cap_plan.step_started_event is not None:
                         yield cap_plan.step_started_event
 
-                exchange_traces: list[ToolCallTrace] = []
-                for call in tool_calls_payload:
-                    call_id = str(call.get("id") or uuid.uuid4().hex)
-                    fn = call.get("function") or {}
-                    name = str(fn.get("name") or "")
-                    if name:
-                        recent_tool_names.append(name)
-                        if len(recent_tool_names) > 24:
-                            recent_tool_names = recent_tool_names[-24:]
-                    raw_args = fn.get("arguments") or "{}"
-                    started = datetime.now(timezone.utc)
-                    yield TurnEvent("tool_started", {"call_id": call_id, "name": name})
-                    args: dict[str, Any] = {}
-                    try:
-                        args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-                        if not isinstance(args, dict):
-                            raise AriadneError(
-                                app_error(
-                                    "ARIADNE_INVALID_TOOL_ARGS",
-                                    "tool arguments must be a JSON object",
-                                )
-                            )
-                        output = await self.tools.invoke(name, args, ctx)
-                        trace_args = redact_secrets(args) if self.redact_traces else args
-                        if self.redact_traces:
-                            output = redact_secrets(output)
-                        finished = datetime.now(timezone.utc)
-                        spec = self.tools.get(name)
-                        trace = ToolCallTrace(
-                            call_id=call_id,
-                            name=name,
-                            arguments=trace_args if isinstance(trace_args, dict) else args,
-                            output=output,
-                            status="completed",
-                            started_at=started,
-                            finished_at=finished,
-                            schema_chars=spec.schema_chars() if spec else 0,
-                            task_id=task_state.task_id if task_state else "",
-                            step_id=(task_state.current_step_id or "") if task_state else "",
-                            attempt_id=task_attempt_id,
-                        )
-                        tool_calls.append(trace)
-                        exchange_traces.append(trace)
-                        append_required_context(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": dumps_tool_output(output),
-                            },
-                            source=f"tool_result:{call_id}",
-                            reason="verbatim capability result used as evidence",
-                            trust="tool",
-                        )
-                        evidence_parts.append(dumps_tool_output(output)[:2000])
-                        ctx.evidence_text = "\n".join(evidence_parts)
-                        observed_evidence_parts.append(dumps_tool_output(output)[:2000])
-                        ctx.observed_evidence_text = "\n".join(observed_evidence_parts)
-                        yield TurnEvent(
-                            "tool_completed",
-                            {
-                                "call_id": call_id,
-                                "name": name,
-                                "status": "completed",
-                                "arguments": trace_args if isinstance(trace_args, dict) else args,
-                                "output": output,
-                            },
-                        )
-                        if name in {"search_skills", "load_skill", "adopt_skill"} and skill_events:
-                            if name == "adopt_skill":
-                                adopted_name = str(args.get("name") or "")
-                                adopted_event = next(
-                                    (
-                                        event
-                                        for event in reversed(skill_events)
-                                        if event.kind == "adopt"
-                                        and event.skill_name == adopted_name
-                                    ),
-                                    None,
-                                )
-                                if adopted_event is not None and not adopted_event.attempt_id:
-                                    if task_attempt_id and task_state is not None:
-                                        bind_skill_event(
-                                            adopted_event,
-                                            task_id=task_state.task_id,
-                                            step_id=task_state.current_step_id or "",
-                                            attempt_id=task_attempt_id,
-                                        )
-                                    else:
-                                        pending_skill_adoptions[adopted_name] = adopted_event
-                            yield TurnEvent(
-                                "skill_event",
-                                {
-                                    "kind": skill_events[-1].kind,
-                                    "skill_name": skill_events[-1].skill_name,
-                                    "detail": skill_events[-1].detail,
-                                },
-                            )
-                    except AriadneError as exc:
-                        finished = datetime.now(timezone.utc)
-                        err = exc.error
-                        fail_args = redact_secrets(args) if self.redact_traces else args
-                        failed_trace = ToolCallTrace(
-                                call_id=call_id,
-                                name=name,
-                                arguments=fail_args if isinstance(fail_args, dict) else args,
-                                output=None,
-                                status="failed",
-                                error=err,
-                                started_at=started,
-                                finished_at=finished,
-                                task_id=task_state.task_id if task_state else "",
-                                step_id=(task_state.current_step_id or "") if task_state else "",
-                                attempt_id=task_attempt_id,
-                            )
-                        tool_calls.append(failed_trace)
-                        exchange_traces.append(failed_trace)
-                        append_required_context(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": dumps_tool_output(
-                                    {
-                                        "error": {
-                                            "code": err.code,
-                                            "message": err.message,
-                                            "details": err.details,
-                                        }
-                                    }
-                                ),
-                            },
-                            source=f"tool_result:{call_id}",
-                            reason="verbatim structured capability failure",
-                            trust="tool",
-                        )
-                        yield TurnEvent(
-                            "tool_completed",
-                            {
-                                "call_id": call_id,
-                                "name": name,
-                                "status": "failed",
-                                "arguments": fail_args if isinstance(fail_args, dict) else args,
-                                "error": {"code": err.code, "message": err.message},
-                            },
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        finished = datetime.now(timezone.utc)
-                        err = app_error("ARIADNE_TOOL_HANDLER_ERROR", f"{type(exc).__name__}: {exc}")
-                        failed_trace = ToolCallTrace(
-                                call_id=call_id,
-                                name=name,
-                                arguments=args,
-                                output=None,
-                                status="failed",
-                                error=err,
-                                started_at=started,
-                                finished_at=finished,
-                                task_id=task_state.task_id if task_state else "",
-                                step_id=(task_state.current_step_id or "") if task_state else "",
-                                attempt_id=task_attempt_id,
-                            )
-                        tool_calls.append(failed_trace)
-                        exchange_traces.append(failed_trace)
-                        append_required_context(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "content": dumps_tool_output(
-                                    {"error": {"code": err.code, "message": err.message}}
-                                ),
-                            },
-                            source=f"tool_result:{call_id}",
-                            reason="verbatim handler failure evidence",
-                            trust="tool",
-                        )
-                        yield TurnEvent(
-                            "tool_completed",
-                            {
-                                "call_id": call_id,
-                                "name": name,
-                                "status": "failed",
-                                "arguments": args,
-                                "error": {"code": err.code, "message": err.message},
-                            },
-                        )
+                exchange = await invoke_tool_exchange(
+                    tools=self.tools,
+                    tool_calls_payload=tool_calls_payload,
+                    ctx=ctx,
+                    redact_traces=self.redact_traces,
+                    task_id=task_state.task_id if task_state else "",
+                    step_id=(task_state.current_step_id or "") if task_state else "",
+                    attempt_id=task_attempt_id,
+                    skill_events=skill_events,
+                    pending_skill_adoptions=pending_skill_adoptions,
+                    bind_skill_event=bind_skill_event,
+                )
+                for name in exchange.tool_names:
+                    recent_tool_names.append(name)
+                if len(recent_tool_names) > 24:
+                    recent_tool_names = recent_tool_names[-24:]
+                for app in exchange.appends:
+                    append_required_context(
+                        app.message,
+                        source=app.source,
+                        reason=app.reason,
+                        trust=app.trust,
+                    )
+                for snippet in exchange.evidence_snippets:
+                    evidence_parts.append(snippet)
+                ctx.evidence_text = "\n".join(evidence_parts)
+                for snippet in exchange.observed_evidence_snippets:
+                    observed_evidence_parts.append(snippet)
+                ctx.observed_evidence_text = "\n".join(observed_evidence_parts)
+                tool_calls.extend(exchange.traces)
+                for ev in exchange.events:
+                    yield ev
 
                 if (
                     task_mode
@@ -1393,7 +1241,7 @@ class TurnApplication:
                     finalized = await finalize_attempt(
                         controller=self.task_controller,
                         state=task_state,
-                        traces=exchange_traces,
+                        traces=exchange.traces,
                         attempt_spec=task_attempt_spec,
                         attempt_effect=task_attempt_effect,
                         attempt_id=task_attempt_id,
