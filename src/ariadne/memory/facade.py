@@ -11,12 +11,18 @@ from ..types import LayerReport, MemoryContext, MemoryContextSummary
 from .curated import CuratedStore
 from .deep_planner import DeepPlan, DeepPlanner, DeepRerankError, LocalSplitPlanner
 from .embeddings import HashEmbeddingProvider
+from .episodes import EpisodeStore
 from .projection import ProjectionWorker
+from .prospective import ProspectiveMemoryStore
+from .reflection import ReflectionStore
 from .semantic import SemanticIndex
 from .state import ConversationStateStore
 from .summary import TurnSummaryStore
 from .transcript import TranscriptStore
 from .user_model import UserModelStore
+
+if False:  # pragma: no cover - typing without a runtime import cycle
+    from .auto_capture import AutomaticMemoryProjector
 
 STATE_DELTA_MAX_MESSAGES = 6
 STATE_DELTA_CHAR_CAP = 2000
@@ -56,6 +62,13 @@ class MemoryFacade:
     # Optional workspace key stamped on user-episodic chunks
     workspace_key: str = ""
     user_model: UserModelStore | None = None
+    # Higher-level, evidence-bound memory intelligence. These extend rather
+    # than replace the existing turn semantic index.
+    episodes: EpisodeStore | None = None
+    auto_capture: Any | None = None
+    reflection: ReflectionStore | None = None
+    prospective: ProspectiveMemoryStore | None = None
+    episode_search: bool = True
     # per-layer char budgets (config, not vibes); truncation is always marked
     layer_budgets: dict[str, int] = field(
         default_factory=lambda: {
@@ -64,8 +77,107 @@ class MemoryFacade:
             "turn_summary": 2000,
             "semantic": 1500,
             "user_model": 2000,
+            "reflection": 1200,
+            "prospective": 1200,
         }
     )
+
+    async def capture_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        user_text: str,
+        assistant_text: str,
+        tool_calls: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.auto_capture is None:
+            return {"status": "disabled"}
+        return await self.auto_capture.capture_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            workspace_key=self.workspace_key,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            tool_calls=tool_calls or [],
+        )
+
+    def _append_cognitive_context(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        blocks: list[str],
+        layers: list[LayerReport],
+    ) -> None:
+        if self.reflection is None:
+            layers.append(LayerReport(name="reflection", status="disabled"))
+        else:
+            try:
+                text, count = self.reflection.render_pending()
+                text, note = self._apply_budget("reflection", text)
+                if text:
+                    blocks.append(text)
+                    layers.append(
+                        LayerReport(
+                            name="reflection",
+                            status="used",
+                            token_chars=len(text),
+                            item_ids=[f"pending:{count}"],
+                            notes=note,
+                        )
+                    )
+                else:
+                    layers.append(LayerReport(name="reflection", status="skipped"))
+            except Exception as exc:  # noqa: BLE001 - optional layer, fail visible
+                layers.append(
+                    LayerReport(
+                        name="reflection",
+                        status="failed",
+                        notes=f"{type(exc).__name__}: {exc}"[:200],
+                    )
+                )
+
+        if self.prospective is None:
+            layers.append(LayerReport(name="prospective", status="disabled"))
+        else:
+            try:
+                query_paths = re.findall(
+                    r"(?:[A-Za-z0-9_.*-]+/)+[A-Za-z0-9_.*/-]+", query or ""
+                )
+                self.prospective.match(
+                    context={
+                        "workspace": self.workspace_key,
+                        "text": query,
+                        "changed_paths": query_paths,
+                        "tool_names": [],
+                        "event_types": [],
+                        "entity_ids": [],
+                    }
+                )
+                text, count = self.prospective.render_active()
+                text, note = self._apply_budget("prospective", text)
+                if text:
+                    blocks.append(text)
+                    layers.append(
+                        LayerReport(
+                            name="prospective",
+                            status="used",
+                            token_chars=len(text),
+                            item_ids=[f"triggered:{count}"],
+                            notes=note,
+                        )
+                    )
+                else:
+                    layers.append(LayerReport(name="prospective", status="skipped"))
+            except Exception as exc:  # noqa: BLE001 - optional layer, fail visible
+                layers.append(
+                    LayerReport(
+                        name="prospective",
+                        status="failed",
+                        notes=f"{type(exc).__name__}: {exc}"[:200],
+                    )
+                )
 
     def index_turn(
         self,
@@ -333,6 +445,22 @@ class MemoryFacade:
             session_id=session_id, before_turn_id=cutoff or None, scope=scope_n
         )
         notes: list[str] = list(asof_notes)
+        episode_hits: list[dict[str, Any]] = []
+        if self.episodes is not None and self.episode_search:
+            try:
+                episode_hits = self.episodes.search(
+                    query=q,
+                    scope=scope_n,
+                    session_id=session_id,
+                    workspace_key=self.workspace_key,
+                    limit=lim,
+                    allowed_turn_ids=allowed,
+                    before_ts=before_ts,
+                )
+                if episode_hits:
+                    notes.append("episode:search")
+            except Exception as exc:  # noqa: BLE001 - search layer is optional
+                notes.append(f"episode:error:{type(exc).__name__}")
 
         # Index selection by scope
         if scope_n == "user":
@@ -349,14 +477,18 @@ class MemoryFacade:
                     before_ts=before_ts,
                     before_turn_id=cutoff or None,
                 )
+                combined = sorted(
+                    curated_hits + episode_hits,
+                    key=lambda row: -float(row.get("score") or 0),
+                )[:lim]
                 return self._pack_search_result(
                     mode_used="fast",
-                    hits=curated_hits,
+                    hits=combined,
                     notes=notes
                     + (
-                        ["curated_only", "empty"]
-                        if not curated_hits
-                        else ["curated_only"]
+                        ["episode_curated_only", "empty"]
+                        if not combined
+                        else ["episode_curated_only"]
                     ),
                     scope=scope_n,
                     query=q,
@@ -429,6 +561,44 @@ class MemoryFacade:
                 merged.values(), key=lambda x: -float(x.get("score") or 0)
             )[:lim]
 
+        def _merge_episode_candidates(
+            current: list[dict[str, Any]], additions: list[dict[str, Any]]
+        ) -> list[dict[str, Any]]:
+            merged: dict[str, dict[str, Any]] = {
+                f"{row.get('session_id')}:{row.get('turn_id')}": dict(row)
+                for row in current
+            }
+            for episode_hit in additions:
+                key = f"{episode_hit.get('session_id')}:{episode_hit.get('turn_id')}"
+                previous = merged.get(key)
+                if previous is None:
+                    merged[key] = dict(episode_hit)
+                    continue
+                enriched = dict(previous)
+                for field in (
+                    "episode_id",
+                    "related_turn_ids",
+                    "event_chain",
+                    "citations",
+                    "traversal_steps",
+                ):
+                    if episode_hit.get(field):
+                        enriched[field] = episode_hit.get(field)
+                enriched["kind"] = "episode"
+                enriched["evidence"] = dict(episode_hit.get("evidence") or {})
+                if float(episode_hit.get("score") or 0) >= float(
+                    previous.get("score") or 0
+                ):
+                    enriched["score"] = episode_hit.get("score")
+                    enriched["snippet"] = episode_hit.get("snippet")
+                merged[key] = enriched
+            return sorted(
+                merged.values(), key=lambda row: -float(row.get("score") or 0)
+            )[:lim]
+
+        if episode_hits:
+            hits = _merge_episode_candidates(hits, episode_hits)
+
         def _should_upgrade(h: list[dict[str, Any]]) -> bool:
             if mode_n == "fast":
                 return False
@@ -464,12 +634,15 @@ class MemoryFacade:
                 plan = DeepPlan(notes="planner_raised")
             expand = list(aliases or []) + list(plan.alias_extra or [])
             subqs = [s for s in (plan.subqueries or []) if s.strip()]
+            traversal_steps = [
+                step for step in (plan.traversal_steps or []) if str(step).strip()
+            ]
             planner_failed = (
                 "error" in (plan.notes or "")
                 or "parse" in (plan.notes or "")
                 or plan.notes == "planner_raised"
             )
-            if plan.notes == "local_noop" and not subqs:
+            if plan.notes == "local_noop" and not subqs and not traversal_steps:
                 notes.append("deep:unavailable_local_noop")
                 if self.deep_planner is None:
                     notes.append("deep:no_llm_planner")
@@ -492,6 +665,28 @@ class MemoryFacade:
                         if prev is None or float(hit.get("score") or 0) > float(
                             prev.get("score") or 0
                         ):
+                            merged_h[key] = hit
+                ran_traversal = False
+                if traversal_steps and self.episodes is not None and self.episode_search:
+                    traversal_hits = self.episodes.traverse(
+                        query=q,
+                        steps=traversal_steps,
+                        scope=scope_n,
+                        session_id=session_id,
+                        workspace_key=self.workspace_key,
+                        limit=lim,
+                        allowed_turn_ids=allowed,
+                        before_ts=before_ts,
+                    )
+                    if traversal_hits:
+                        ran_traversal = True
+                        notes.append(
+                            "deep:traversal=" + ",".join(traversal_steps)
+                        )
+                        for hit in _merge_episode_candidates(
+                            list(merged_h.values()), traversal_hits
+                        ):
+                            key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
                             merged_h[key] = hit
                 deep_hits = list(merged_h.values())
                 deep_hits.sort(key=lambda x: -float(x.get("score") or 0))
@@ -546,7 +741,7 @@ class MemoryFacade:
                 order_changed = final_keys != seed_order[: len(final_keys)]
                 # Honest mode_used: deep when decomp/rerank changed results.
                 # Rerank failure does not demote deep if subqueries already changed.
-                if set_changed or order_changed or did_rerank:
+                if set_changed or order_changed or did_rerank or ran_traversal:
                     mode_used = "deep"
                     if ran_subqueries and self.deep_planner is None:
                         notes.append("deep:local_query_split")
@@ -578,7 +773,7 @@ class MemoryFacade:
             snippet = str(h.get("snippet") or h.get("text") or "")[:400]
             src = "chunk"
             ev = h.get("evidence") if isinstance(h.get("evidence"), dict) else {}
-            if ev.get("source") in {"raw", "summary", "chunk", "curated"}:
+            if ev.get("source") in {"raw", "summary", "chunk", "curated", "episode"}:
                 src = str(ev.get("source"))
             elif h.get("kind") in {"user", "assistant", "tool"}:
                 src = "raw"
@@ -596,15 +791,23 @@ class MemoryFacade:
                 evidence["scope"] = ev.get("scope")
             if ev.get("chunk_id"):
                 evidence["chunk_id"] = ev.get("chunk_id")
-            out_hits.append(
-                {
+            normalized_hit = {
                     "turn_id": tid,
                     "session_id": sid,
                     "score": h.get("score"),
                     "snippet": snippet,
                     "evidence": evidence,
                 }
-            )
+            for field in (
+                "episode_id",
+                "related_turn_ids",
+                "event_chain",
+                "citations",
+                "traversal_steps",
+            ):
+                if h.get(field) is not None:
+                    normalized_hit[field] = h.get(field)
+            out_hits.append(normalized_hit)
         if not out_hits:
             notes.append("empty")
         return self._pack_search_result(
@@ -960,6 +1163,13 @@ class MemoryFacade:
                 )
             )
 
+        self._append_cognitive_context(
+            session_id=session_id,
+            query=query,
+            blocks=blocks,
+            layers=layers,
+        )
+
         curated_text, curated_count = self._curated_snapshot(session_id)
         curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
@@ -1142,6 +1352,13 @@ class MemoryFacade:
                 )
             )
 
+        self._append_cognitive_context(
+            session_id=session_id,
+            query=query,
+            blocks=blocks,
+            layers=layers,
+        )
+
         curated_text, curated_count = self._curated_snapshot(session_id)
         curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
@@ -1273,6 +1490,19 @@ class Memory(MemoryFacade):
         else:
             ep_path = root / "episodic" / "semantic.json"
         user_episodic = SemanticIndex(path=ep_path, embedder=embedder)
+        from .auto_capture import AutomaticMemoryProjector
+
+        episodes = EpisodeStore(path=root / "episodes.json")
+        reflection = ReflectionStore(path=root / "reflection.json")
+        prospective = ProspectiveMemoryStore(path=root / "prospective.json")
+        user_model = UserModelStore(path=root / "user_model.json")
+        auto_capture = AutomaticMemoryProjector(
+            episodes=episodes,
+            user_model=user_model,
+            state=state,
+            reflection=reflection,
+            prospective=prospective,
+        )
         return cls(
             transcript=TranscriptStore(path=root / "transcript.jsonl"),
             curated=CuratedStore(path=root / "curated.json"),
@@ -1283,7 +1513,11 @@ class Memory(MemoryFacade):
             user_id=user_id,
             user_curated=user_curated,
             user_episodic=user_episodic,
-            user_model=UserModelStore(path=root / "user_model.json"),
+            user_model=user_model,
+            episodes=episodes,
+            auto_capture=auto_capture,
+            reflection=reflection,
+            prospective=prospective,
             deep_planner=deep_planner,
             search_mode_default=search_mode_default,
         )

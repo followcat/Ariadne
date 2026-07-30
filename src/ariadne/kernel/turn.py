@@ -40,6 +40,7 @@ from ..tasks.runtime import (
 from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry
 from ..types import (
     Message,
+    LayerReport,
     RunTurnCommand,
     SchemaMetrics,
     SkillEvent,
@@ -730,6 +731,7 @@ class TurnApplication:
             skill_events=skill_events,
             evidence_text=user_transcript,
             observed_evidence_text=user_transcript,
+            user_text=user_transcript,
             approval_hook=self.approval_hook,
             runtime_agent=self.runtime_agent,
             user_id=user_id,
@@ -1121,6 +1123,73 @@ class TurnApplication:
                             tool_text=tool_blob,
                             summary_text=summary,
                             entity_ids=entity_ids,
+                        )
+                    # Memory intelligence runs at the one completed-turn write
+                    # boundary. It is optional/background cognition: failures
+                    # are observable, but never rewrite an already determined
+                    # user-task result.
+                    capture = getattr(self.memory, "capture_turn", None)
+                    if callable(capture):
+                        try:
+                            capture_report = await capture(
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                user_text=prompt,
+                                assistant_text=text,
+                                tool_calls=tool_calls,
+                            )
+                            capture_status = str(
+                                capture_report.get("status") or "skipped"
+                            )
+                            if capture_status not in {
+                                "used",
+                                "skipped",
+                                "disabled",
+                            }:
+                                capture_status = "skipped"
+                            capture_ids = [
+                                str(item)
+                                for key in (
+                                    "episode_id",
+                                    "state_version",
+                                    "user_model_entry_ids",
+                                    "reflection_candidate_ids",
+                                    "prospective_entry_ids",
+                                    "triggered_prospective_ids",
+                                )
+                                for item in (
+                                    capture_report.get(key)
+                                    if isinstance(capture_report.get(key), list)
+                                    else [capture_report.get(key)]
+                                )
+                                if item
+                            ]
+                            capture_notes = (
+                                f"llm_used={bool(capture_report.get('llm_used'))}; "
+                                f"llm_rejected={int(capture_report.get('llm_rejected') or 0)}"
+                            )
+                            capture_layer = LayerReport(
+                                name="auto_capture",
+                                status=capture_status,  # type: ignore[arg-type]
+                                item_ids=capture_ids,
+                                notes=capture_notes,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - fail visible, non-fatal
+                            capture_layer = LayerReport(
+                                name="auto_capture",
+                                status="failed",
+                                notes=f"{type(exc).__name__}: {exc}"[:200],
+                            )
+                        memory_summary.layers.append(capture_layer)
+                        yield TurnEvent(
+                            "memory_layer",
+                            {
+                                "name": capture_layer.name,
+                                "status": capture_layer.status,
+                                "token_chars": capture_layer.token_chars,
+                                "item_ids": capture_layer.item_ids,
+                                "notes": capture_layer.notes,
+                            },
                         )
                     # enqueue projection job only when a real projection worker is wired
                     if getattr(self.memory, "projection", None) is not None:

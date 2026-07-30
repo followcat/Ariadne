@@ -8,9 +8,13 @@ from ..context import ContextCompiler
 from ..errors import AriadneError, app_error
 from ..kernel.turn import TurnApplication
 from ..memory.curated import CuratedStore
+from ..memory.auto_capture import AutomaticMemoryProjector, make_llm_memory_extractor
 from ..memory.embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
+from ..memory.episodes import EpisodeStore
 from ..memory.facade import MemoryFacade
 from ..memory.projection import ProjectionWorker, make_llm_projector
+from ..memory.prospective import ProspectiveMemoryStore
+from ..memory.reflection import ReflectionStore
 from ..memory.semantic import SemanticIndex
 from ..memory.state import ConversationStateStore
 from ..memory.summary import TurnSummaryStore
@@ -175,6 +179,30 @@ def compose_agent(settings: Settings) -> Agent:
         from ..memory.deep_planner import LocalSplitPlanner
 
         deep_planner = LocalSplitPlanner()
+    episodes = EpisodeStore(path=user_memory_dir / "episodes.json")
+    reflection = ReflectionStore(
+        path=user_memory_dir / "reflection.json",
+        min_distinct_sessions=int(
+            getattr(settings, "memory_reflection_sessions", None) or 3
+        ),
+    )
+    prospective = ProspectiveMemoryStore(path=user_memory_dir / "prospective.json")
+    user_model = UserModelStore(path=user_memory_dir / "user_model.json")
+    auto_capture = None
+    if bool(getattr(settings, "memory_auto_capture", True)):
+        extractor = (
+            make_llm_memory_extractor(model)
+            if bool(getattr(settings, "memory_auto_capture_llm", True))
+            else None
+        )
+        auto_capture = AutomaticMemoryProjector(
+            episodes=episodes,
+            user_model=user_model,
+            state=state_store,
+            reflection=reflection,
+            prospective=prospective,
+            extractor=extractor,
+        )
     memory = MemoryFacade(
         transcript=transcript,
         curated=CuratedStore(path=data_dir / "memory" / "curated.json"),
@@ -205,7 +233,12 @@ def compose_agent(settings: Settings) -> Agent:
         deep_planner=deep_planner,
         search_mode_default=getattr(settings, "memory_search_mode", None) or "auto",
         workspace_key=str(settings.workspace.resolve()) if settings.workspace else "",
-        user_model=UserModelStore(path=user_memory_dir / "user_model.json"),
+        user_model=user_model,
+        episodes=episodes,
+        auto_capture=auto_capture,
+        reflection=reflection,
+        prospective=prospective,
+        episode_search=bool(getattr(settings, "memory_episode_search", True)),
     )
 
     skill_dirs: list[Path] = []

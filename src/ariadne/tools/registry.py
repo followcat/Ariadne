@@ -35,6 +35,9 @@ class ToolContext:
     evidence_text: str = ""
     # User/tool-observed evidence only; excludes the model's own assertions.
     observed_evidence_text: str = ""
+    # Exact current user input. Confirmation-gated memory tools must not infer
+    # consent from assistant-authored evidence_text.
+    user_text: str = ""
     approval_hook: ApprovalHook | None = None
     runtime_agent: Any | None = None  # sandbox.runtime_agent.RuntimeAgent
     user_id: str | None = None
@@ -620,7 +623,8 @@ def build_default_registry(
                 "Search past turns/summaries for a named scope (session|workspace|user). "
                 "mode=fast: local lexical+embedding only. "
                 "mode=auto: fast then upgrade to deep on weak/vague signals. "
-                "mode=deep: alias expand + query split + rerank real candidates only — "
+                "mode=deep: alias/query planning plus constrained episode entity/relation/"
+                "timeline/decision/outcome traversal and rerank of real candidates only — "
                 "never invents history. Hits always carry turn_id and store-grounded snippets. "
                 "Use when L0/L2/curated context is insufficient; do not dump search into every turn."
             ),
@@ -646,6 +650,176 @@ def build_default_registry(
             side_effect_level="read",
             network_access="none",
             idempotent=True,
+        )
+    )
+
+    async def memory_reflection_tool(
+        args: dict[str, Any], ctx: ToolContext
+    ) -> dict[str, Any]:
+        if ctx.memory is None or getattr(ctx.memory, "reflection", None) is None:
+            raise AriadneError(
+                app_error("ARIADNE_CONFIG_INVALID", "reflection memory is not configured")
+            )
+        action = str(args.get("action") or "list").strip().lower()
+        if action == "list":
+            status = str(args.get("status") or "").strip() or None
+            return {"candidates": ctx.memory.reflection.list(status=status)}
+        if action in {"accept", "reject"}:
+            user_text = str(getattr(ctx, "user_text", "") or "").casefold()
+            markers = (
+                ("接受", "同意", "确认", "设为长期", "记住这个", "accept", "approve", "confirm")
+                if action == "accept"
+                else ("拒绝", "不同意", "不要设", "reject", "decline")
+            )
+            if not any(marker in user_text for marker in markers):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TOOL_DENIED",
+                        "reflection decisions require explicit confirmation in the current user message",
+                    )
+                )
+            return ctx.memory.reflection.decide(
+                candidate_id=str(args.get("candidate_id") or ""),
+                action=action,
+                user_model=getattr(ctx.memory, "user_model", None),
+                workspace_key=str(getattr(ctx.memory, "workspace_key", "") or ""),
+                session_id=ctx.session_id,
+            )
+        raise AriadneError(
+            app_error(
+                "ARIADNE_INVALID_TOOL_ARGS", "reflection action must be list|accept|reject"
+            )
+        )
+
+    registry.register(
+        ToolSpec(
+            name="memory_reflection",
+            catalog_description="review cross-session memory suggestions",
+            description=(
+                "List, accept, or reject evidence-backed cross-session pattern suggestions. "
+                "Inferred preferences never become active until accept is explicitly requested."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "accept", "reject"],
+                    },
+                    "candidate_id": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "accepted", "rejected"],
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+            handler=memory_reflection_tool,
+            tool_exposure="named_deferred",
+            side_effect_level="unknown",
+            side_effect_resolver=lambda args: (
+                "read" if str(args.get("action") or "list") == "list" else "write"
+            ),
+            network_access="none",
+            idempotent=None,
+        )
+    )
+
+    async def prospective_memory_tool(
+        args: dict[str, Any], ctx: ToolContext
+    ) -> dict[str, Any]:
+        if ctx.memory is None or getattr(ctx.memory, "prospective", None) is None:
+            raise AriadneError(
+                app_error("ARIADNE_CONFIG_INVALID", "prospective memory is not configured")
+            )
+        action = str(args.get("action") or "list").strip().lower()
+        if action == "list":
+            status = str(args.get("status") or "").strip() or None
+            return {"entries": ctx.memory.prospective.list(status=status)}
+        if action == "create":
+            trigger = args.get("trigger")
+            if not isinstance(trigger, dict):
+                raise AriadneError(
+                    app_error("ARIADNE_INVALID_TOOL_ARGS", "trigger must be an object")
+                )
+            return ctx.memory.prospective.create(
+                content=str(args.get("content") or ""),
+                trigger=trigger,
+                source_session_id=ctx.session_id,
+                source_turn_id=ctx.turn_id,
+                idempotency_key=str(args.get("idempotency_key") or ""),
+            )
+        if action in {"cancel", "complete"}:
+            return ctx.memory.prospective.transition(
+                entry_id=str(args.get("entry_id") or ""), action=action
+            )
+        raise AriadneError(
+            app_error(
+                "ARIADNE_INVALID_TOOL_ARGS",
+                "prospective action must be create|list|cancel|complete",
+            )
+        )
+
+    registry.register(
+        ToolSpec(
+            name="prospective_memory",
+            catalog_description="future reminder with structured triggers",
+            description=(
+                "Create/list/cancel/complete a future reminder. Triggers are an AND of "
+                "workspace_equals, path_glob, text_contains, tool_name, event_type, entity_id. "
+                "The kernel matches observations; external timers and polling belong to the host."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "list", "cancel", "complete"],
+                    },
+                    "entry_id": {"type": "string"},
+                    "content": {"type": "string"},
+                    "trigger": {
+                        "type": "object",
+                        "properties": {
+                            key: {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "minItems": 1,
+                                    },
+                                ]
+                            }
+                            for key in (
+                                "workspace_equals",
+                                "path_glob",
+                                "text_contains",
+                                "tool_name",
+                                "event_type",
+                                "entity_id",
+                            )
+                        },
+                        "additionalProperties": False,
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "triggered", "completed", "cancelled"],
+                    },
+                    "idempotency_key": {"type": "string"},
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+            handler=prospective_memory_tool,
+            tool_exposure="named_deferred",
+            side_effect_level="unknown",
+            side_effect_resolver=lambda args: (
+                "read" if str(args.get("action") or "list") == "list" else "write"
+            ),
+            network_access="none",
+            idempotent=None,
         )
     )
 

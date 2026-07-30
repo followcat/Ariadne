@@ -92,6 +92,11 @@ class Settings:
     memory_deep_planner: str = "off"
     # L2 projection queue off by default (honest: no silent empty projector)
     enable_memory_projection: bool = False
+    # Deterministic-first completed-turn capture. LLM is ambiguity-only.
+    memory_auto_capture: bool = True
+    memory_auto_capture_llm: bool = True
+    memory_episode_search: bool = True
+    memory_reflection_sessions: int = 3
     # Optional evidence-quoting LLM verifier for llm_semantic task checks.
     enable_semantic_verifier: bool = False
     # Optional bounded advisory fan-out; delegates never receive capabilities.
@@ -338,6 +343,22 @@ def load_settings(
             "ARIADNE_ENABLE_MEMORY_PROJECTION", default="0"
         ).strip().lower()
         in {"1", "true", "yes", "on"},
+        memory_auto_capture=pick(
+            "ARIADNE_MEMORY_AUTO_CAPTURE", default="1"
+        ).strip().lower()
+        not in {"0", "false", "no", "off"},
+        memory_auto_capture_llm=pick(
+            "ARIADNE_MEMORY_AUTO_CAPTURE_LLM", default="1"
+        ).strip().lower()
+        not in {"0", "false", "no", "off"},
+        memory_episode_search=pick(
+            "ARIADNE_MEMORY_EPISODE_SEARCH", default="1"
+        ).strip().lower()
+        not in {"0", "false", "no", "off"},
+        memory_reflection_sessions=max(
+            2,
+            pick_int(None, "ARIADNE_MEMORY_REFLECTION_SESSIONS", default=3),
+        ),
         enable_semantic_verifier=pick(
             "ARIADNE_ENABLE_SEMANTIC_VERIFIER", default="0"
         ).strip().lower()
