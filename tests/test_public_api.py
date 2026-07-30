@@ -81,7 +81,7 @@ def test_agent_inspection_helpers(tmp_path: Path) -> None:
     async def run() -> None:
         tools = await agent.list_tools()
         names = {t["name"] for t in tools}
-        assert {"sandbox_exec", "memory", "search_skills"} <= names
+        assert {"sandbox_exec", "memory", "memory_search", "search_skills"} <= names
         skills = await agent.list_skills()
         assert skills == []
         agent.turn_app.memory.curated.apply(
