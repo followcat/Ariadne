@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..errors import AriadneError, app_error
 from ..types import LayerReport, MemoryContext, MemoryContextSummary
@@ -18,6 +20,12 @@ STATE_DELTA_MAX_MESSAGES = 6
 STATE_DELTA_CHAR_CAP = 2000
 
 
+_VAGUE_DEIXIS = re.compile(
+    r"(昨天|之前|那个|上次|早先|earlier|yesterday|previous|that\s+(plan|approach|issue|bug)|the\s+one\s+we)",
+    re.I,
+)
+
+
 @dataclass
 class MemoryFacade:
     transcript: TranscriptStore
@@ -29,6 +37,13 @@ class MemoryFacade:
     recent_limit: int = 4
     hybrid_semantic: bool = True
     require_ready: bool = False  # if True, pending projection lag fails the build
+    # Personal operator id for this facade (design/memory-scopes.md). Not multi-tenant SaaS.
+    # None means explicit single-operator default "local" — never silently discard a provided id.
+    user_id: str | None = "local"
+    # Optional separate store for user-scope curated (e.g. ~/.ariadne/memory/curated.json)
+    user_curated: CuratedStore | None = None
+    # Default memory_search mode when tool omits mode
+    search_mode_default: str = "auto"
     # per-layer char budgets (config, not vibes); truncation is always marked
     layer_budgets: dict[str, int] = field(
         default_factory=lambda: {
@@ -38,6 +53,56 @@ class MemoryFacade:
             "semantic": 1500,
         }
     )
+
+    def resolve_user_id(self, user_id: str | None) -> str:
+        """Bind request user_id; never silently drop a provided id.
+
+        - Empty/None → facade default (usually ``local`` for single-operator CLI).
+        - Facade bound to a concrete account (Web) → mismatch fastfails.
+        - Facade default ``local`` → accept the request id (personal 2C; one
+          operator, no multi-tenant remap).
+        """
+        if user_id is None or str(user_id).strip() == "":
+            return self.user_id or "local"
+        uid = str(user_id).strip()
+        facade_uid = self.user_id or "local"
+        if facade_uid == "local":
+            return uid
+        if uid != facade_uid:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    f"user_id {uid!r} does not match memory facade user {facade_uid!r}",
+                    user_id=uid,
+                    facade_user_id=facade_uid,
+                )
+            )
+        return uid
+
+    def _curated_for_scope(self, scope: str) -> CuratedStore:
+        if scope == "user" and self.user_curated is not None:
+            return self.user_curated
+        return self.curated
+
+    def _curated_snapshot(self, session_id: str) -> tuple[str, int]:
+        """Merge user-scope (optional separate store) + workspace/session curated."""
+        lines: list[str] = []
+        count = 0
+        for scope, store in (
+            ("user", self._curated_for_scope("user")),
+            ("workspace", self.curated),
+            ("session", self.curated),
+        ):
+            data = store.apply(action="read", scope=scope, session_id=session_id)
+            items = list(data.get("entries") or [])
+            if not items:
+                continue
+            lines.append(f"[CURATED_DURABLE {scope}]")
+            for item in items:
+                eid = item.get("id", "?")
+                lines.append(f"- ({eid}) {item['content']}")
+                count += 1
+        return "\n".join(lines), count
 
     def _apply_budget(self, name: str, text: str) -> tuple[str, str]:
         """Clamp a layer block to its configured budget with an explicit marker."""
@@ -58,6 +123,8 @@ class MemoryFacade:
         before_turn_id: str | None = None,
         require_ready: bool | None = None,
     ) -> tuple[str, MemoryContextSummary]:
+        # Resolve user_id (fastfail on mismatch — never silent ignore)
+        self.resolve_user_id(user_id)
         # sync wrapper for simple callers
         import asyncio
 
@@ -91,6 +158,7 @@ class MemoryFacade:
         require_ready: bool | None = None,
     ) -> MemoryContext:
         """Normative Read API: structured MemoryContext (MEMORY §4)."""
+        self.resolve_user_id(user_id)
         text, summary = await self.build_context_async(
             session_id=session_id,
             query=query,
@@ -123,10 +191,233 @@ class MemoryFacade:
         )
 
     def get_curated(self, *, session_id: str) -> dict[str, object]:
-        """Convenience read for hosts: user-scope + session-scope curated entries."""
-        user = self.curated.apply(action="read", scope="user", session_id=session_id)
-        session = self.curated.apply(action="read", scope="session", session_id=session_id)
-        return {"user": user["entries"], "session": session["entries"]}
+        """Convenience read for hosts: user + workspace + session curated entries."""
+        uc = self._curated_for_scope("user")
+        user = uc.apply(action="read", scope="user", session_id=session_id)
+        workspace = self.curated.apply(
+            action="read", scope="workspace", session_id=session_id
+        )
+        session = self.curated.apply(
+            action="read", scope="session", session_id=session_id
+        )
+        return {
+            "user": user["entries"],
+            "workspace": workspace["entries"],
+            "session": session["entries"],
+        }
+
+    def apply_curated(
+        self,
+        *,
+        action: str,
+        content: str = "",
+        entry_ref: str = "",
+        scope: str = "user",
+        session_id: str,
+        source_turn_id: str = "",
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Route curated ops to the correct store for scope (user may be separate)."""
+        self.resolve_user_id(user_id)
+        scope_n = (scope or "user").strip().lower()
+        store = self._curated_for_scope(scope_n)
+        return store.apply(
+            action=action,
+            content=content,
+            entry_ref=entry_ref,
+            scope=scope_n if scope_n != "user" or self.user_curated is None else "user",
+            session_id=session_id,
+            source_turn_id=source_turn_id,
+        )
+
+    async def memory_search(
+        self,
+        *,
+        query: str,
+        session_id: str,
+        scope: str = "session",
+        mode: str | None = None,
+        limit: int = 8,
+        before_turn_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Graded episodic search (design/memory-search.md). Never invents turns."""
+        self.resolve_user_id(user_id)
+        q = (query or "").strip()
+        if not q:
+            raise AriadneError(
+                app_error("ARIADNE_INVALID_TOOL_ARGS", "query is required")
+            )
+        scope_n = (scope or "session").strip().lower()
+        if scope_n not in {"session", "workspace", "user"}:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    "scope must be session|workspace|user",
+                )
+            )
+        mode_n = (mode or self.search_mode_default or "auto").strip().lower()
+        if mode_n not in {"auto", "fast", "deep"}:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    "mode must be auto|fast|deep",
+                )
+            )
+        lim = max(1, min(int(limit or 8), 32))
+        allowed = self._allowed_turns(session_id, before_turn_id)
+
+        # user scope: search curated text (durable prefs), not invented history
+        if scope_n == "user":
+            return self._search_curated_scope(
+                scope="user", query=q, session_id=session_id, limit=lim, mode_used="fast"
+            )
+
+        sid_filter: str | None = session_id if scope_n == "session" else None
+        notes: list[str] = []
+
+        async def _fast(expand: list[str] | None = None) -> list[dict[str, Any]]:
+            auth = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
+            if self.hybrid_semantic:
+                return await self.semantic.search_hybrid(
+                    session_id=sid_filter,
+                    query=q,
+                    limit=lim,
+                    expand_aliases=expand
+                    or self._aliases_from_state(session_id, allowed_turn_ids=allowed),
+                    demote_entity_ids=set(auth),
+                    authoritative_fields=auth,
+                    allowed_turn_ids=allowed if scope_n == "session" else None,
+                )
+            return self.semantic.search(
+                session_id=sid_filter,
+                query=q,
+                limit=lim,
+                expand_aliases=expand
+                or self._aliases_from_state(session_id, allowed_turn_ids=allowed),
+                demote_entity_ids=set(auth),
+                authoritative_fields=auth,
+                allowed_turn_ids=allowed if scope_n == "session" else None,
+            )
+
+        hits = await _fast()
+        mode_used = "fast"
+
+        def _should_upgrade(h: list[dict[str, Any]]) -> bool:
+            if mode_n == "fast":
+                return False
+            if mode_n == "deep":
+                return True
+            # auto
+            if not h:
+                return bool(_VAGUE_DEIXIS.search(q))
+            top = float(h[0].get("score") or 0)
+            if top < 0.12:
+                return True
+            if len(h) >= 2:
+                gap = top - float(h[1].get("score") or 0)
+                if gap < 0.04 and top < 0.35:
+                    return True
+            if _VAGUE_DEIXIS.search(q) and top < 0.25:
+                return True
+            return False
+
+        if mode_n in {"auto", "deep"} and _should_upgrade(hits):
+            # deep without mandatory LLM: alias expand + query split + re-merge
+            aliases = self._aliases_from_state(session_id, allowed_turn_ids=allowed)
+            parts = [p.strip() for p in re.split(r"[，,;；]|和|以及|\band\b", q) if p.strip()]
+            merged: dict[str, dict[str, Any]] = {}
+            for part in parts or [q]:
+                sub = await _fast(expand=aliases)
+                for hit in sub:
+                    key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
+                    prev = merged.get(key)
+                    if prev is None or float(hit.get("score") or 0) > float(
+                        prev.get("score") or 0
+                    ):
+                        merged[key] = hit
+            deep_hits = sorted(
+                merged.values(), key=lambda x: -float(x.get("score") or 0)
+            )[:lim]
+            if deep_hits:
+                hits = deep_hits
+                mode_used = "deep"
+                notes.append("deep:alias_split_rerank")
+            elif mode_n == "deep":
+                notes.append("deep:no_better_hits")
+            else:
+                notes.append("auto:upgrade_attempted")
+
+        # Normalize hit evidence shape
+        out_hits: list[dict[str, Any]] = []
+        for h in hits:
+            snippet = str(h.get("snippet") or h.get("text") or "")[:400]
+            out_hits.append(
+                {
+                    "turn_id": str(h.get("turn_id") or ""),
+                    "session_id": str(h.get("session_id") or session_id),
+                    "score": h.get("score"),
+                    "snippet": snippet,
+                    "evidence": {
+                        "source": "chunk",
+                        "kind": h.get("kind"),
+                    },
+                }
+            )
+        if not out_hits:
+            notes.append("empty")
+        return {
+            "mode_used": mode_used,
+            "hits": out_hits,
+            "notes": "; ".join(notes) if notes else "",
+            "scope": scope_n,
+            "query": q,
+        }
+
+    def _search_curated_scope(
+        self,
+        *,
+        scope: str,
+        query: str,
+        session_id: str,
+        limit: int,
+        mode_used: str,
+    ) -> dict[str, Any]:
+        store = self._curated_for_scope(scope)
+        data = store.apply(action="read", scope=scope, session_id=session_id)
+        q_tokens = set(re.findall(r"[a-z0-9_\u4e00-\u9fff]{2,}", query.lower()))
+        hits: list[dict[str, Any]] = []
+        for item in data.get("entries") or []:
+            content = str(item.get("content") or "")
+            c_low = content.lower()
+            score = 0.0
+            for t in q_tokens:
+                if t in c_low:
+                    score += 1.0
+            if score <= 0 and query.lower() in c_low:
+                score = 0.5
+            if score > 0:
+                hits.append(
+                    {
+                        "turn_id": str(item.get("source_turn_id") or ""),
+                        "session_id": session_id if scope == "session" else "",
+                        "score": round(score / max(len(q_tokens), 1), 4),
+                        "snippet": content[:400],
+                        "evidence": {
+                            "source": "curated",
+                            "entry_id": item.get("id"),
+                            "scope": scope,
+                        },
+                    }
+                )
+        hits.sort(key=lambda x: -float(x.get("score") or 0))
+        return {
+            "mode_used": mode_used,
+            "hits": hits[:limit],
+            "notes": "curated_scope" if hits else "empty",
+            "scope": scope,
+            "query": query,
+        }
 
     def _allowed_turns(
         self, session_id: str, before_turn_id: str | None
@@ -262,7 +553,8 @@ class MemoryFacade:
             session_id, allowed_turn_ids=allowed
         )
         state_text, state_note = self._apply_budget("conversation_state", state_text)
-        notes = ", ".join(x for x in (state_note, pit_note) if x)
+        proj_note = "projection:disabled" if self.projection is None else ""
+        notes = ", ".join(x for x in (state_note, proj_note, pit_note) if x)
         if state_text:
             blocks.append(state_text)
             layers.append(
@@ -278,8 +570,8 @@ class MemoryFacade:
             layers.append(
                 LayerReport(
                     name="conversation_state",
-                    status="skipped",
-                    notes=pit_note,
+                    status="disabled" if self.projection is None else "skipped",
+                    notes=notes or pit_note,
                 )
             )
 
@@ -296,7 +588,7 @@ class MemoryFacade:
                 )
             )
 
-        curated_text, curated_count = self.curated.snapshot_text(session_id=session_id)
+        curated_text, curated_count = self._curated_snapshot(session_id)
         curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
             blocks.append(curated_text)
@@ -393,7 +685,7 @@ class MemoryFacade:
         before_turn_id: str | None = None,
         require_ready: bool | None = None,
     ) -> tuple[str, MemoryContextSummary]:
-        _ = user_id
+        self.resolve_user_id(user_id)
         if not self.hybrid_semantic:
             return self._build_context_sync(
                 session_id=session_id,
@@ -413,7 +705,8 @@ class MemoryFacade:
         state_text, state_note = self._apply_budget("conversation_state", state_text)
         lag = self.projection.pending_lag(session_id) if self.projection else 0
         lag_note = f"projection_lag:{lag}" if lag else ""
-        notes = ", ".join(x for x in (state_note, lag_note, pit_note) if x)
+        proj_note = "projection:disabled" if self.projection is None else ""
+        notes = ", ".join(x for x in (state_note, lag_note, proj_note, pit_note) if x)
         if state_text:
             blocks.append(state_text)
             layers.append(
@@ -429,8 +722,8 @@ class MemoryFacade:
             layers.append(
                 LayerReport(
                     name="conversation_state",
-                    status="skipped",
-                    notes=", ".join(x for x in (lag_note, pit_note) if x),
+                    status="disabled" if self.projection is None else "skipped",
+                    notes=notes,
                 )
             )
 
@@ -447,7 +740,7 @@ class MemoryFacade:
                 )
             )
 
-        curated_text, curated_count = self.curated.snapshot_text(session_id=session_id)
+        curated_text, curated_count = self._curated_snapshot(session_id)
         curated_text, _ = self._apply_budget("curated", curated_text)
         if curated_text:
             blocks.append(curated_text)
@@ -472,6 +765,7 @@ class MemoryFacade:
         else:
             layers.append(LayerReport(name="turn_summary", status="skipped"))
 
+        # Episodic L4 is light/budgeted in build_context; use memory_search for hard recall
         auth_fields = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
         try:
             hits = await self.semantic.search_hybrid(
@@ -495,7 +789,7 @@ class MemoryFacade:
                         status="used",
                         token_chars=len(semantic_text),
                         item_ids=[h["turn_id"] for h in hits],
-                        notes="hybrid; field_demote",
+                        notes="hybrid; field_demote; prefer memory_search for hard recall",
                     )
                 )
             else:
@@ -538,20 +832,48 @@ class Memory(MemoryFacade):
     """PUBLIC_API constructors for the layered memory stack."""
 
     @classmethod
-    def local(cls, path: str | Path = "./.ariadne/memory") -> "Memory":
+    def local(
+        cls,
+        path: str | Path = "./.ariadne/memory",
+        *,
+        enable_projection: bool = False,
+        user_id: str | None = "local",
+        user_curated_path: str | Path | None = None,
+        search_mode_default: str = "auto",
+    ) -> "Memory":
+        """Local personal memory root.
+
+        Projection is **off by default** (honest L2): without a real projector,
+        jobs are not silently completed as empty ``no_change``. Pass
+        ``enable_projection=True`` to create a queue for hosts that inject a
+        projector (or accept tool-driven state only via ``conversation_state``).
+        """
         root = Path(path)
         root.mkdir(parents=True, exist_ok=True)
         state = ConversationStateStore(path=root / "state.json")
+        projection: ProjectionWorker | None = None
+        if enable_projection:
+            projection = ProjectionWorker(
+                path=root / "projection_jobs.json", state_store=state
+            )
+        user_curated: CuratedStore | None = None
+        if user_curated_path is not None:
+            user_curated = CuratedStore(path=Path(user_curated_path))
         return cls(
             transcript=TranscriptStore(path=root / "transcript.jsonl"),
             curated=CuratedStore(path=root / "curated.json"),
             state=state,
             summaries=TurnSummaryStore(path=root / "summaries.json"),
-            semantic=SemanticIndex(path=root / "semantic.json", embedder=HashEmbeddingProvider()),
-            projection=ProjectionWorker(path=root / "projection_jobs.json", state_store=state),
+            semantic=SemanticIndex(
+                path=root / "semantic.json", embedder=HashEmbeddingProvider()
+            ),
+            projection=projection,
+            user_id=user_id,
+            user_curated=user_curated,
+            search_mode_default=search_mode_default,
         )
 
     @classmethod
-    def in_memory(cls) -> "Memory":
+    def in_memory(cls, **kwargs: Any) -> "Memory":
         """Tests only: file stores rooted in a throwaway temp dir."""
-        return cls.local(path=Path(tempfile.mkdtemp(prefix="ariadne-mem-")))
+        return cls.local(path=Path(tempfile.mkdtemp(prefix="ariadne-mem-")), **kwargs)

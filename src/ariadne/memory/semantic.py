@@ -156,7 +156,7 @@ class SemanticIndex:
     def search(
         self,
         *,
-        session_id: str,
+        session_id: str | None,
         query: str,
         limit: int = 5,
         expand_aliases: list[str] | None = None,
@@ -164,6 +164,7 @@ class SemanticIndex:
         authoritative_fields: dict[str, dict[str, Any]] | None = None,
         allowed_turn_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Lexical search. ``session_id=None`` searches all sessions in this index (workspace)."""
         q = query or ""
         if expand_aliases:
             q = q + " " + " ".join(expand_aliases)
@@ -171,7 +172,7 @@ class SemanticIndex:
         data = self._read()
         scored: list[tuple[float, dict[str, Any]]] = []
         for chunk in data.get("chunks") or []:
-            if chunk.get("session_id") != session_id:
+            if session_id is not None and chunk.get("session_id") != session_id:
                 continue
             tid = str(chunk.get("turn_id") or "")
             if allowed_turn_ids is not None and tid and tid not in allowed_turn_ids:
@@ -190,15 +191,19 @@ class SemanticIndex:
         seen: set[str] = set()
         for score, chunk in scored:
             tid = str(chunk.get("turn_id"))
-            if tid in seen:
+            sid = str(chunk.get("session_id") or "")
+            key = f"{sid}:{tid}"
+            if key in seen:
                 continue
-            seen.add(tid)
+            seen.add(key)
             out.append(
                 {
                     "turn_id": tid,
+                    "session_id": sid,
                     "kind": chunk.get("kind"),
                     "score": round(score, 4),
                     "text": str(chunk.get("text") or "")[:400],
+                    "snippet": str(chunk.get("text") or "")[:400],
                 }
             )
             if len(out) >= limit:
@@ -208,7 +213,7 @@ class SemanticIndex:
     async def search_hybrid(
         self,
         *,
-        session_id: str,
+        session_id: str | None,
         query: str,
         limit: int = 5,
         expand_aliases: list[str] | None = None,
@@ -216,6 +221,7 @@ class SemanticIndex:
         authoritative_fields: dict[str, dict[str, Any]] | None = None,
         allowed_turn_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Hybrid lexical+embedding. ``session_id=None`` = whole index (workspace scope)."""
         await self.ensure_embeddings(session_id=session_id)
         q = query or ""
         if expand_aliases:
@@ -226,7 +232,7 @@ class SemanticIndex:
         scored: list[tuple[float, dict[str, Any]]] = []
         q_bow = _vector(q)
         for chunk in data.get("chunks") or []:
-            if chunk.get("session_id") != session_id:
+            if session_id is not None and chunk.get("session_id") != session_id:
                 continue
             tid = str(chunk.get("turn_id") or "")
             if allowed_turn_ids is not None and tid and tid not in allowed_turn_ids:
@@ -249,15 +255,19 @@ class SemanticIndex:
         seen: set[str] = set()
         for score, chunk in scored:
             tid = str(chunk.get("turn_id"))
-            if tid in seen:
+            sid = str(chunk.get("session_id") or "")
+            key = f"{sid}:{tid}"
+            if key in seen:
                 continue
-            seen.add(tid)
+            seen.add(key)
             out.append(
                 {
                     "turn_id": tid,
+                    "session_id": sid,
                     "kind": chunk.get("kind"),
                     "score": round(score, 4),
                     "text": str(chunk.get("text") or "")[:400],
+                    "snippet": str(chunk.get("text") or "")[:400],
                 }
             )
             if len(out) >= limit:
