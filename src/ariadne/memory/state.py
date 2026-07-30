@@ -79,6 +79,29 @@ class ConversationStateStore:
         state = self.get(session_id)
         if allowed_turn_ids is None:
             return state
+        versions = self.list_versions(session_id)
+        # New-format versions retain the complete closed operations. Replaying
+        # them reconstructs relations, aliases, entity status and collections,
+        # not only attributes. Mixed/legacy histories keep the conservative
+        # attribute fallback below because their lost operation arguments cannot
+        # be recovered honestly.
+        if versions and all(
+            isinstance(row.get("operations"), list)
+            and all(isinstance(op, dict) for op in row.get("operations") or [])
+            for row in versions
+        ):
+            replayed = empty_state()
+            for row in versions:
+                source_turn_id = str(row.get("source_turn_id") or row.get("watermark_turn_id") or "")
+                if source_turn_id and source_turn_id not in allowed_turn_ids:
+                    continue
+                for op in row.get("operations") or []:
+                    self._apply_one(
+                        replayed,
+                        copy.deepcopy(op),
+                        source_turn_id=source_turn_id,
+                    )
+            return replayed
         filtered = copy.deepcopy(state)
         entities = filtered.get("entities") or {}
         for _eid, ent in list(entities.items()):
@@ -321,7 +344,9 @@ class ConversationStateStore:
                     "version": new_version,
                     "parent_version": current_version,
                     "watermark_turn_id": source_turn_id,
+                    "source_turn_id": source_turn_id,
                     "ops": [str(op.get("op")) for op in operations],
+                    "operations": copy.deepcopy(operations),
                 }
             )
             result_holder.update(

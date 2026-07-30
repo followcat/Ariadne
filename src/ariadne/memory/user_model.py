@@ -92,6 +92,8 @@ class UserModelStore:
         source_turn_id: str = "",
         entry_id: str | None = None,
         expected_revision: int | None = None,
+        change_reason: str = "",
+        evidence: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._validate(
             entry_type=entry_type,
@@ -102,13 +104,53 @@ class UserModelStore:
             workspace_key=workspace_key,
             session_id=session_id,
         )
-        eid = (entry_id or uuid.uuid4().hex[:16]).strip()
+        requested_eid = (entry_id or "").strip()
+        eid = requested_eid or uuid.uuid4().hex[:16]
         now = time.time()
         result: dict[str, Any] = {}
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
+            nonlocal eid
             entries = data.setdefault("entries", {})
-            current = entries.get(eid)
+            logical_matches = [
+                row
+                for row in entries.values()
+                if row.get("status") == "active"
+                and row.get("type") == entry_type
+                and row.get("key") == key.strip()
+                and row.get("scope") == scope
+                and (
+                    scope != "workspace"
+                    or row.get("workspace_key") == workspace_key
+                )
+                and (scope != "session" or row.get("session_id") == session_id)
+            ]
+            if len(logical_matches) > 1:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_USER_MODEL_CONFLICT",
+                        "multiple active entries exist for one logical user-model key",
+                        entry_type=entry_type,
+                        key=key.strip(),
+                        scope=scope,
+                    )
+                )
+            logical_current = logical_matches[0] if logical_matches else None
+            if requested_eid:
+                current = entries.get(eid)
+                if logical_current is not None and logical_current.get("entry_id") != eid:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_USER_MODEL_CONFLICT",
+                            "another active entry already owns the logical user-model key",
+                            entry_id=eid,
+                            active_entry_id=logical_current.get("entry_id"),
+                        )
+                    )
+            else:
+                current = logical_current
+                if current is not None:
+                    eid = str(current.get("entry_id") or "")
             if current is None and entry_id is not None:
                 raise AriadneError(
                     app_error("ARIADNE_USER_MODEL_NOT_FOUND", f"entry not found: {eid}")
@@ -136,6 +178,7 @@ class UserModelStore:
                     if field != "history"
                 }
                 snapshot["status"] = "superseded"
+                snapshot["valid_until"] = now
                 history.append(snapshot)
             row = {
                 "entry_id": eid,
@@ -152,6 +195,11 @@ class UserModelStore:
                 "revision": current_revision + 1,
                 "created_at": float((current or {}).get("created_at") or now),
                 "updated_at": now,
+                "valid_from": now,
+                "valid_until": None,
+                "previous_value": copy.deepcopy((current or {}).get("value")),
+                "change_reason": (change_reason or "").strip(),
+                "evidence": copy.deepcopy(evidence or []),
                 "history": history,
             }
             entries[eid] = row
@@ -160,6 +208,37 @@ class UserModelStore:
 
         locked_update_json(self.path, mut, default={"schema_version": 1, "entries": {}})
         return result
+
+    def upsert_by_key(
+        self,
+        *,
+        entry_type: str,
+        key: str,
+        value: Any,
+        source: str,
+        confidence: float,
+        scope: str,
+        workspace_key: str = "",
+        session_id: str = "",
+        source_turn_id: str = "",
+        change_reason: str = "",
+        evidence: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically supersede the one active logical key, or create it."""
+
+        return self.upsert(
+            entry_type=entry_type,
+            key=key,
+            value=value,
+            source=source,
+            confidence=confidence,
+            scope=scope,
+            workspace_key=workspace_key,
+            session_id=session_id,
+            source_turn_id=source_turn_id,
+            change_reason=change_reason,
+            evidence=evidence,
+        )
 
     def expire(
         self, *, entry_id: str, expected_revision: int, source: str = "user_explicit"
@@ -190,13 +269,16 @@ class UserModelStore:
             history = [copy.deepcopy(item) for item in row.get("history") or []]
             snapshot = {key: copy.deepcopy(value) for key, value in row.items() if key != "history"}
             snapshot["status"] = "superseded"
+            snapshot["valid_until"] = time.time()
             history.append(snapshot)
+            now = time.time()
             row.update(
                 {
                     "status": "expired",
                     "source": source,
                     "revision": revision + 1,
-                    "updated_at": time.time(),
+                    "updated_at": now,
+                    "valid_until": now,
                     "history": history,
                 }
             )
@@ -225,6 +307,70 @@ class UserModelStore:
             rows.append(copy.deepcopy(row))
         rows.sort(key=lambda row: (str(row.get("type")), str(row.get("key"))))
         return rows
+
+    def timeline(
+        self,
+        *,
+        entry_type: str,
+        key: str,
+        scope: str = "user",
+        workspace_key: str = "",
+        session_id: str = "",
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for current in (self._read().get("entries") or {}).values():
+            if current.get("type") != entry_type or current.get("key") != key:
+                continue
+            if current.get("scope") != scope:
+                continue
+            if scope == "workspace" and current.get("workspace_key") != workspace_key:
+                continue
+            if scope == "session" and current.get("session_id") != session_id:
+                continue
+            rows.extend(copy.deepcopy(current.get("history") or []))
+            rows.append(
+                {
+                    field: copy.deepcopy(value)
+                    for field, value in current.items()
+                    if field != "history"
+                }
+            )
+        rows.sort(
+            key=lambda row: float(row.get("valid_from") or row.get("updated_at") or 0)
+        )
+        return rows
+
+    def get_as_of(
+        self,
+        *,
+        timestamp: float,
+        workspace_key: str = "",
+        session_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """Return logical user-model values whose validity includes timestamp."""
+
+        selected: list[dict[str, Any]] = []
+        for current in (self._read().get("entries") or {}).values():
+            scope = str(current.get("scope") or "user")
+            if scope == "workspace" and current.get("workspace_key") != workspace_key:
+                continue
+            if scope == "session" and current.get("session_id") != session_id:
+                continue
+            versions = [
+                *(current.get("history") or []),
+                {field: value for field, value in current.items() if field != "history"},
+            ]
+            valid = []
+            for row in versions:
+                start = float(row.get("valid_from") or row.get("updated_at") or 0)
+                end_raw = row.get("valid_until")
+                end = float(end_raw) if end_raw is not None else None
+                if start <= timestamp and (end is None or timestamp < end):
+                    valid.append(row)
+            if valid:
+                selected.append(copy.deepcopy(valid[-1]))
+        selected.sort(key=lambda row: (str(row.get("type")), str(row.get("key"))))
+        return selected
 
     def render(self, *, workspace_key: str = "", session_id: str = "") -> tuple[str, int]:
         rows = self.list(workspace_key=workspace_key, session_id=session_id)

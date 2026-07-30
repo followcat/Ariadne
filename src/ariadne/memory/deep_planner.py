@@ -1,7 +1,8 @@
 """Deep search planners (design/memory-search.md §4.2).
 
-Planners may only emit sub-queries, alias expansions, and a reorder of
-**existing** candidate keys. They must never invent turn text.
+Planners may only emit sub-queries, alias expansions, closed episode traversal
+operations, and a reorder of **existing** candidate keys. They must never
+invent turn text, facts, or identifiers.
 
 S3 flow (two phase when using LLM):
 
@@ -17,11 +18,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .episodes import TRAVERSAL_STEPS
+
 
 @dataclass
 class DeepPlan:
     subqueries: list[str] = field(default_factory=list)
     alias_extra: list[str] = field(default_factory=list)
+    # Closed host-executed episode traversal operations. No facts/ids in plans.
+    traversal_steps: list[str] = field(default_factory=list)
     # Ordered "session_id:turn_id" keys drawn only from candidates (rerank phase)
     rerank_order: list[str] | None = None
     notes: str = ""
@@ -121,11 +126,40 @@ class LocalSplitPlanner:
             for p in re.split(r"[，,;；]|和|以及|\band\b", query or "")
             if p.strip()
         ]
+        q = (query or "").casefold()
+        traversal: list[str] = []
+        if re.search(r"为什么|原因|why|because", q):
+            traversal.extend(
+                [
+                    "resolve_entity",
+                    "retrieve_timeline",
+                    "locate_decision",
+                    "expand_evidence",
+                ]
+            )
+        if re.search(r"后来|最后|最终|是否解决|解决了吗|outcome|resolved|finally", q):
+            traversal.extend(
+                [
+                    "resolve_entity",
+                    "retrieve_timeline",
+                    "locate_outcome",
+                    "expand_evidence",
+                ]
+            )
+        if re.search(r"转给|交给|负责人|assignee|assigned|related to|有关", q):
+            traversal.extend(["resolve_entity", "follow_relation", "retrieve_timeline"])
+        traversal = list(dict.fromkeys(traversal))
         if len(parts) <= 1:
-            return DeepPlan(subqueries=[], alias_extra=list(aliases or []), notes="local_noop")
+            return DeepPlan(
+                subqueries=[],
+                alias_extra=list(aliases or []),
+                traversal_steps=traversal,
+                notes="local_traversal" if traversal else "local_noop",
+            )
         return DeepPlan(
             subqueries=parts,
             alias_extra=list(aliases or []),
+            traversal_steps=traversal,
             notes="local_query_split",
         )
 
@@ -157,8 +191,11 @@ def make_llm_deep_planner(model: Any, *, max_candidates: int = 16) -> DeepPlanne
                 cand_lines.append(f"- {key}: {snip}")
             system = (
                 "You plan memory retrieval. Reply with JSON only: "
-                '{"subqueries":["..."],"alias_extra":["..."]}. '
+                '{"subqueries":["..."],"alias_extra":["..."],'
+                '"traversal_steps":["resolve_entity",...]}. '
                 "subqueries are short search strings to run next. "
+                "traversal_steps may only use resolve_entity, follow_relation, "
+                "retrieve_timeline, locate_decision, locate_outcome, expand_evidence. "
                 "Do not invent dialogue or turn ids. "
                 "Do not reorder hits in this step."
             )
@@ -189,6 +226,11 @@ def make_llm_deep_planner(model: Any, *, max_candidates: int = 16) -> DeepPlanne
                 for x in (obj.get("alias_extra") or [])
                 if str(x).strip()
             ]
+            traversal = [
+                str(x).strip()
+                for x in (obj.get("traversal_steps") or [])
+                if str(x).strip() in TRAVERSAL_STEPS
+            ]
             # Accept optional rerank_order if the model returns it in the same
             # JSON (API surface); facade still prefers a post-merge rerank().
             allowed = {
@@ -203,6 +245,7 @@ def make_llm_deep_planner(model: Any, *, max_candidates: int = 16) -> DeepPlanne
             return DeepPlan(
                 subqueries=subs[:8],
                 alias_extra=alias_extra[:16],
+                traversal_steps=list(dict.fromkeys(traversal))[:8],
                 rerank_order=rerank,
                 notes="llm_planner",
             )
