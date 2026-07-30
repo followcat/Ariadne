@@ -13,6 +13,7 @@ from .models import (
     TaskState,
     TaskSummary,
 )
+from .policy import resolve_task_mode
 from .store import SQLiteTaskStore
 from .verify import DeterministicVerifier
 from .semantic import SemanticVerifier
@@ -34,4 +35,5 @@ __all__ = [
     "TaskController",
     "TaskState",
     "TaskSummary",
+    "resolve_task_mode",
 ]
