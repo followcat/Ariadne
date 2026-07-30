@@ -122,7 +122,14 @@ def compose_agent(settings: Settings) -> Agent:
         model=settings.model,
     )
 
-    if settings.embedding_provider == "openai":
+    emb_pref = (getattr(settings, "embedding_provider", None) or "auto").strip().lower()
+    if emb_pref == "auto":
+        # Prefer real embeddings when host credentials exist; else hash offline.
+        if settings.api_key and settings.base_url:
+            emb_pref = "openai"
+        else:
+            emb_pref = "hash"
+    if emb_pref == "openai":
         embedder = OpenAIEmbeddingProvider(
             base_url=settings.base_url,
             api_key=settings.api_key,
@@ -138,15 +145,14 @@ def compose_agent(settings: Settings) -> Agent:
         from ..memory.llm_summary import make_llm_compressor
 
         summary_store.compressor = make_llm_compressor(model, max_chars=400, fallback=True)
-    # User-scope curated lives under ~/.ariadne (CLI) — cross-workspace durable prefs.
-    # Web hosts that rebind data_dir should pass an explicit user memory root via
-    # settings.user_memory_dir when available.
+    # User-scope curated + episodic under ~/.ariadne (CLI) or account memory (Web).
     user_memory_dir = getattr(settings, "user_memory_dir", None)
     if user_memory_dir is None:
         user_memory_dir = Path.home() / ".ariadne" / "memory"
     else:
         user_memory_dir = Path(user_memory_dir)
     user_memory_dir.mkdir(parents=True, exist_ok=True)
+    (user_memory_dir / "episodic").mkdir(parents=True, exist_ok=True)
     enable_projection = bool(getattr(settings, "enable_memory_projection", False))
     projection = None
     if enable_projection:
@@ -154,17 +160,46 @@ def compose_agent(settings: Settings) -> Agent:
             path=data_dir / "memory" / "projection_jobs.json",
             state_store=state_store,
         )
+    deep_planner = None
+    deep_mode = (getattr(settings, "memory_deep_planner", None) or "off").strip().lower()
+    if deep_mode == "llm":
+        from ..memory.deep_planner import make_llm_deep_planner
+
+        deep_planner = make_llm_deep_planner(model)
+    elif deep_mode == "local":
+        from ..memory.deep_planner import LocalSplitPlanner
+
+        deep_planner = LocalSplitPlanner()
     memory = MemoryFacade(
         transcript=transcript,
         curated=CuratedStore(path=data_dir / "memory" / "curated.json"),
         state=state_store,
         summaries=summary_store,
-        semantic=SemanticIndex(path=data_dir / "memory" / "semantic.json", embedder=embedder),
+        semantic=SemanticIndex(
+            path=data_dir / "memory" / "semantic.json",
+            embedder=embedder,
+            embedding_model_id=(
+                f"openai:{settings.embedding_model}"
+                if emb_pref == "openai"
+                else "hash:64"
+            ),
+        ),
         projection=projection,
         hybrid_semantic=True,
         user_id=getattr(settings, "user_id", None) or "local",
         user_curated=CuratedStore(path=user_memory_dir / "curated.json"),
+        user_episodic=SemanticIndex(
+            path=user_memory_dir / "episodic" / "semantic.json",
+            embedder=embedder,
+            embedding_model_id=(
+                f"openai:{settings.embedding_model}"
+                if emb_pref == "openai"
+                else "hash:64"
+            ),
+        ),
+        deep_planner=deep_planner,
         search_mode_default=getattr(settings, "memory_search_mode", None) or "auto",
+        workspace_key=str(settings.workspace.resolve()) if settings.workspace else "",
     )
 
     skill_dirs: list[Path] = []

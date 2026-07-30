@@ -54,7 +54,8 @@ class Settings:
     prefer_deferred_tools: bool = True
     toolbox_profile: str = "minimal"
     docker_image: str | None = None
-    embedding_provider: str = "hash"
+    # hash | openai | auto (auto → openai when api_key+base_url else hash)
+    embedding_provider: str = "auto"
     embedding_model: str = "text-embedding-3-small"
     idle_ttl_seconds: float = 600.0
     max_ttl_seconds: float = 3600.0
@@ -85,6 +86,8 @@ class Settings:
     user_memory_dir: Path | None = None
     # Default memory_search mode when tool omits mode: auto | fast | deep
     memory_search_mode: str = "auto"
+    # deep planner: off | local | llm
+    memory_deep_planner: str = "off"
     # L2 projection queue off by default (honest: no silent empty projector)
     enable_memory_projection: bool = False
 
@@ -193,7 +196,11 @@ def load_settings(
         raw = pick("ARIADNE_TOOL_LOOP_LIMIT", default="32")
         limit = max(int(raw or 32), 1)
     profile = toolbox_profile or pick("ARIADNE_TOOLBOX", default="minimal")
-    emb = embedding_provider or pick("ARIADNE_EMBEDDING_PROVIDER", default="hash")
+    emb = (
+        embedding_provider or pick("ARIADNE_EMBEDDING_PROVIDER", default="auto")
+    ).strip().lower()
+    if emb not in {"hash", "openai", "auto"}:
+        emb = "auto"
     emb_model = pick("ARIADNE_EMBEDDING_MODEL", default="text-embedding-3-small")
     img = docker_image or pick("ARIADNE_DOCKER_IMAGE", default="") or None
     idle = float(pick("ARIADNE_IDLE_TTL", default="600") or 600)
@@ -298,6 +305,9 @@ def load_settings(
         user_id=(pick("ARIADNE_USER_ID", default="local") or "local").strip() or "local",
         memory_search_mode=(
             pick("ARIADNE_MEMORY_SEARCH_MODE", default="auto") or "auto"
+        ).strip().lower(),
+        memory_deep_planner=(
+            pick("ARIADNE_MEMORY_DEEP_PLANNER", default="off") or "off"
         ).strip().lower(),
         enable_memory_projection=pick(
             "ARIADNE_ENABLE_MEMORY_PROJECTION", default="0"
