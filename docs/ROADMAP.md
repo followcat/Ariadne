@@ -310,8 +310,9 @@ Production-hardening backlog.
 
 Design: [design/memory-intelligence.md](design/memory-intelligence.md).
 
-**Status: functional personal-kernel vertical slice; reviewed correctness
-hardening complete; production/ranking hardening remains usage-driven work.**
+**Status: functional personal-kernel vertical slice; affinity and
+terminal-authority hardening landed, while goal identity, secret-boundary
+completeness, and journal migration remain pending.**
 
 - [x] Deterministic-first automatic turn projector with ambiguity-only optional LLM
 - [x] Typed preference supersession with temporal validity and evidence

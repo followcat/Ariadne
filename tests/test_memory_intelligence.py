@@ -14,6 +14,7 @@ from ariadne.memory.auto_capture import (
     AutomaticMemoryProjector,
     make_llm_memory_extractor,
 )
+from ariadne.memory.capture_journal import CaptureJournalStore
 from ariadne.memory.reflection import ReflectionStore
 from ariadne.memory.state import ConversationStateStore
 from ariadne.model.fake import FakeModel
@@ -705,6 +706,61 @@ def test_verified_goal_checks_can_complete_authoritative_goal(tmp_path: Path) ->
     assert goal["status_authority"] == "verified_check"
 
 
+def test_completed_goal_a_can_be_followed_by_distinct_active_goal_b(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="goal-sequence",
+        turn_id="t1",
+        user="目标是完成任务 A。",
+    )
+    _capture(
+        memory,
+        session_id="goal-sequence",
+        turn_id="t2",
+        user="继续",
+        verified_goal={
+            "status": "completed",
+            "task_id": "task-a",
+            "goal": "完成任务 A",
+            "summary": "任务 A 已验证完成",
+            "check_ids": ["check-a"],
+        },
+    )
+    report_b = _capture(
+        memory,
+        session_id="goal-sequence",
+        turn_id="t3",
+        user="新目标是完成任务 B。",
+    )
+
+    assert report_b["status"] == "used"
+    journal_b = memory.capture_journal.get(
+        workspace_key="",
+        session_id="goal-sequence",
+        turn_id="t3",
+    )
+    assert journal_b is not None and journal_b["status"] == "completed"
+    state = memory.state.get("goal-sequence")
+    pointer = state["entities"]["session:current_goal"]
+    assert pointer["type"] == "goal_pointer"
+    goal_b_id = pointer["attributes"]["goal_id"]["value"]
+    assert goal_b_id == "goal:t3"
+    goal_a = state["entities"]["goal:t1"]
+    goal_b = state["entities"][goal_b_id]
+    assert goal_a["status"] == "done"
+    assert goal_a["status_authority"] == "verified_check"
+    assert goal_b["status"] == "active"
+    assert goal_b["attributes"]["description"]["value"] == "完成任务 B"
+    episode_b = memory.episodes.for_turn(
+        session_id="goal-sequence",
+        turn_id="t3",
+    )
+    assert episode_b is not None and episode_b["status"] == "active"
+
+
 @pytest.mark.parametrize(
     "statement",
     [
@@ -1040,6 +1096,120 @@ def test_allowlisted_scalar_camel_case_secret_assignments_are_redacted(
     )
     assert secret not in persisted
     assert "***" in persisted
+
+
+@pytest.mark.parametrize(
+    ("payload", "secret"),
+    [
+        ("githubToken=GITHUBTOKEN123456", "GITHUBTOKEN123456"),
+        ("csrfToken=CSRFTOKEN123456", "CSRFTOKEN123456"),
+        ("awsSecretAccessKey=AWSSECRET123456", "AWSSECRET123456"),
+        ("consumerSecret=CONSUMERSECRET123456", "CONSUMERSECRET123456"),
+        (
+            "Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+            "QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+        ),
+        ("authorization=Token abcdefghijkl", "abcdefghijkl"),
+        ("Authorization: Bearer abcdef", "abcdef"),
+    ],
+)
+def test_generic_scalar_credentials_never_reach_persistent_memory(
+    tmp_path: Path,
+    payload: str,
+    secret: str,
+) -> None:
+    assert secret not in redact_text(payload)
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="generic-scalar-secret",
+        turn_id="t1",
+        user="继续",
+        tool_calls=[
+            {
+                "call_id": "generic-secret",
+                "name": "generic_secret_tool",
+                "arguments": {},
+                "output": {"status": payload},
+                "status": "completed",
+            }
+        ],
+    )
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "memory").rglob("*.json")
+    )
+    assert secret not in persisted
+
+
+def test_legacy_pending_capture_without_affinity_is_quarantined_once(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "shared" / "capture_journal.json"
+    journal_path.parent.mkdir(parents=True)
+    capture_id = CaptureJournalStore.capture_id(
+        workspace_key="/legacy/workspace",
+        session_id="legacy-session",
+        turn_id="legacy-turn",
+    )
+    journal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "records": {
+                    capture_id: {
+                        "capture_id": capture_id,
+                        "workspace_key": "/legacy/workspace",
+                        "session_id": "legacy-session",
+                        "turn_id": "legacy-turn",
+                        "input_digest": "legacy-digest",
+                        "status": "in_progress",
+                        "prepared": {"events": []},
+                        "stages": {},
+                        "report": {},
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    journal = CaptureJournalStore(journal_path)
+    raw = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 2
+    assert capture_id not in raw["records"]
+    quarantined = journal.list_quarantined()
+    assert len(quarantined) == 1
+    assert quarantined[0]["capture_id"] == capture_id
+    assert quarantined[0]["status"] == "migration_required"
+    assert quarantined[0]["migration_error_code"] == (
+        "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED"
+    )
+    assert journal.list_pending(workspace_key="/legacy/workspace") == []
+
+    memory = Memory.local(tmp_path / "memory")
+    memory.capture_journal = journal
+    memory.auto_capture.journal = journal
+    first = _capture(
+        memory,
+        session_id="new-session",
+        turn_id="new-turn-1",
+        user="继续",
+    )
+    second = _capture(
+        memory,
+        session_id="new-session",
+        turn_id="new-turn-2",
+        user="继续",
+    )
+    assert first["recovery_failures"] == []
+    assert second["recovery_failures"] == []
+    after = journal.list_quarantined()[0]
+    assert after["status"] == "migration_required"
+    assert int(after.get("resume_attempts") or 0) == 0
 
 
 def test_unredacted_traces_do_not_authorize_secret_persistence_in_memory(
