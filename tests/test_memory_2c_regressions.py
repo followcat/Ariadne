@@ -507,6 +507,91 @@ def test_empty_semantic_index_does_not_call_embedding_provider(tmp_path: Path) -
     assert embedder.calls == []
 
 
+def test_rerank_failure_keeps_deep_when_subqueries_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ariadne.memory.deep_planner import DeepRerankError
+
+    class FailRerankPlanner:
+        async def plan(self, **_kwargs: Any) -> DeepPlan:
+            return DeepPlan(subqueries=["new detail"], notes="llm_planner")
+
+        async def rerank(self, **_kwargs: Any) -> list[str] | None:
+            raise DeepRerankError("llm_rerank_error:TimeoutError")
+
+    mem = Memory.local(path=tmp_path / "memory", deep_planner=FailRerankPlanner())
+
+    async def search(**kwargs: Any) -> list[dict[str, Any]]:
+        if kwargs.get("query") == "new detail":
+            return [
+                {
+                    "session_id": "s1",
+                    "turn_id": "t2",
+                    "kind": "user",
+                    "snippet": "new",
+                    "score": 0.5,
+                }
+            ]
+        return [
+            {
+                "session_id": "s1",
+                "turn_id": "t1",
+                "kind": "user",
+                "snippet": "old",
+                "score": 0.9,
+            }
+        ]
+
+    monkeypatch.setattr(mem.semantic, "search_hybrid", search)
+    result = _run(
+        mem.memory_search(
+            query="q", session_id="s1", scope="session", mode="deep"
+        )
+    )
+    assert result["mode_used"] == "deep"
+    assert "deep:rerank_failed" in result["notes"]
+    assert "deep:rerank_fallback_score_order" in result["notes"]
+    assert "deep:fallback_fast" not in result["notes"]
+    assert {h["turn_id"] for h in result["hits"]} >= {"t1", "t2"}
+
+
+def test_llm_rerank_bad_shape_raises() -> None:
+    from ariadne.memory.deep_planner import DeepRerankError, make_llm_deep_planner
+
+    model = FakeModel(script=lambda _m, _t: {"content": "{}"})
+    planner = make_llm_deep_planner(model)
+    with pytest.raises(DeepRerankError) as ei:
+        _run(
+            planner.rerank(
+                query="q",
+                candidates=[
+                    {"session_id": "s1", "turn_id": "t1", "snippet": "x"}
+                ],
+            )
+        )
+    assert "bad_shape" in ei.value.notes
+
+
+def test_curated_migrate_skips_rewrite_when_current(tmp_path: Path) -> None:
+    from ariadne.memory.curated import CuratedStore
+
+    path = tmp_path / "curated.json"
+    store = CuratedStore(path=path)
+    store.apply(
+        action="add",
+        content="pref",
+        scope="user",
+        session_id="s1",
+        source_turn_id="t1",
+        source_session_id="s1",
+    )
+    mtime1 = path.stat().st_mtime_ns
+    # Reconstruct — schema already current → no rewrite
+    CuratedStore(path=path)
+    mtime2 = path.stat().st_mtime_ns
+    assert mtime2 == mtime1
+
+
 def test_openai_embedding_http_does_not_run_on_event_loop_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

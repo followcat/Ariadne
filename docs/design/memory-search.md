@@ -223,8 +223,11 @@ Allowed small-model jobs (normative target):
   2. Run each subquery via fast; merge candidates
   3. `rerank(final candidates)` → order over **merged** keys only
   4. **Rerank-only:** if `plan()` returns no subqueries, still run step 3
-- Rerank network/parse failures raise / surface notes (`deep:llm_rerank_*` +
-  `deep:fallback_fast`); legal “no reorder” returns `None` without error notes.
+- Rerank network/parse/bad-shape failures surface
+  `deep:llm_rerank_*` + `deep:rerank_failed` + `deep:rerank_fallback_score_order`
+  and keep score order. Legal no-op is `{"rerank_order":[]}` → `None` without
+  error notes. **Do not** label `fallback_fast` when decomp already changed
+  results (`mode_used` stays `deep`).
 - `mode_used=deep` **only** when the candidate **set** or **order** changed vs
   plain fast (or a successful rerank changed order). Multi-subquery no-ops stay
   `fast` + `deep:noop_unchanged`.

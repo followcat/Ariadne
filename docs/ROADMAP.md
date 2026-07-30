@@ -193,7 +193,8 @@ Shipped:
 - [x] Deep: `LocalSplitPlanner` + optional `ARIADNE_MEMORY_DEEP_PLANNER=llm`;
   two-phase **plan → subquery merge → rerank(final candidates)**; also
   **rerank-only** when decomp is empty; `mode_used=deep` only when candidates
-  or order actually change; failures demote to fast + notes
+  or order actually change; rerank failure keeps deep if decomp already
+  changed results (`deep:rerank_failed` + score-order fallback notes)
 - [x] Hit evidence: `source` ∈ `raw|summary|chunk|curated`; curated keeps
   `entry_id` + scope
 - [x] Tests: `test_memory_scopes_search`, `test_memory_2c_design_gaps`,
