@@ -23,13 +23,21 @@ def test_durable_preference_cross_session(tmp_path: Path) -> None:
 def test_curated_update_and_forget(tmp_path: Path) -> None:
     """Scenario: update replaces, forget removes — no resurrection."""
     memory = Memory.local(path=tmp_path / "mem")
-    memory.curated.apply(action="add", content="editor is vim", scope="user", session_id="s1")
+    added = memory.curated.apply(
+        action="add", content="editor is vim", scope="user", session_id="s1"
+    )
+    eid = str(added["entries"][0]["id"])
     memory.curated.apply(
-        action="update", content="editor is neovim", entry_ref="e1", scope="user", session_id="s1"
+        action="update",
+        content="editor is neovim",
+        entry_ref=eid,
+        scope="user",
+        session_id="s1",
     )
     entries = memory.get_curated(session_id="s1")["user"]
     assert [e["content"] for e in entries] == ["editor is neovim"]
-    memory.curated.apply(action="remove", entry_ref="e1", scope="user", session_id="s1")
+    assert entries[0]["id"] == eid  # stable id after update
+    memory.curated.apply(action="remove", entry_ref=eid, scope="user", session_id="s1")
     text, _ = memory.build_context(session_id="s1", query="editor")
     assert "vim" not in text
 
