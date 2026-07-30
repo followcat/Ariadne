@@ -311,6 +311,9 @@ def compose_agent(settings: Settings) -> Agent:
                 else None
             ),
         ),
+        task_mode_policy=(
+            getattr(settings, "task_mode_policy", None) or "auto"
+        ).strip().lower(),
         available_credentials=frozenset(available_credentials),
     )
     return Agent(

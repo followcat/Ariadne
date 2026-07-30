@@ -96,6 +96,8 @@ class Settings:
     enable_semantic_verifier: bool = False
     # Optional bounded advisory fan-out; delegates never receive capabilities.
     enable_controlled_delegation: bool = False
+    # Closed-loop task mode: off | on | auto (resume active task without --task)
+    task_mode_policy: str = "auto"
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -143,6 +145,7 @@ def load_settings(
     skill_plan_chars: int | None = None,
     tool_search_mode: str | None = None,
     summary_mode: str | None = None,
+    task_mode_policy: str | None = None,
     sandbox_profile: str | None = None,
     sandbox_network: str | None = None,
     sandbox_memory: str | None = None,
@@ -282,6 +285,17 @@ def load_settings(
     if max_tok > 128_000:
         max_tok = 128_000
 
+    task_pol = (
+        task_mode_policy or pick("ARIADNE_TASK_MODE_POLICY", default="auto") or "auto"
+    ).strip().lower()
+    if task_pol not in {"off", "on", "auto"}:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"unknown task_mode_policy: {task_pol!r} (off|on|auto)",
+            )
+        )
+
     return Settings(
         base_url=base_url,
         api_key=api_key,
@@ -332,6 +346,7 @@ def load_settings(
             "ARIADNE_ENABLE_CONTROLLED_DELEGATION", default="0"
         ).strip().lower()
         in {"1", "true", "yes", "on"},
+        task_mode_policy=task_pol,
         sandbox_profile=(
             sandbox_profile or pick("ARIADNE_SANDBOX_PROFILE", default="minimal")
         ).strip().lower(),

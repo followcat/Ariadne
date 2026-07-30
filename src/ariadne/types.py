@@ -144,6 +144,7 @@ TurnEventKind = Literal[
     "task_started",
     "task_replanned",
     "task_resumed",
+    "task_mode_resolved",
     "task_step_started",
     "task_check_completed",
     "task_needs_input",

@@ -200,7 +200,16 @@ def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
         "--task",
         action="store_true",
         default=b,
-        help="Use closed-loop task mode with explicit plan and verification",
+        help="Force closed-loop task mode for this run (overrides ARIADNE_TASK_MODE_POLICY)",
+    )
+    p.add_argument(
+        "--task-mode-policy",
+        choices=["off", "on", "auto"],
+        default=None,
+        help=(
+            "Task mode policy: off | on | auto "
+            "(default auto: resume active tasks without --task; env ARIADNE_TASK_MODE_POLICY)"
+        ),
     )
 
 
@@ -415,6 +424,7 @@ def _settings_from_args(args: argparse.Namespace, *, default_lifecycle: str | No
         skill_plan_chars=getattr(args, "skill_plan_chars", None),
         tool_search_mode=getattr(args, "tool_search_mode", None),
         summary_mode=getattr(args, "summary_mode", None),
+        task_mode_policy=getattr(args, "task_mode_policy", None),
     )
 
 

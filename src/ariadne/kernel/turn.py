@@ -27,6 +27,13 @@ from ..tasks.controller import (
     TaskController,
 )
 from ..tasks.models import TaskState, TaskSummary
+from ..tasks.policy import resolve_task_mode
+from ..tasks.protocol import (
+    control_call_id,
+    parse_control_arguments,
+    payload_has_tool,
+    require_sole_control_call,
+)
 from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry, dumps_tool_output
 from ..types import (
     Message,
@@ -212,6 +219,8 @@ class TurnApplication:
     # Completion budget per model call (default 8k; atelier often 16k).
     max_tokens: int = 8192
     task_controller: TaskController | None = None
+    # off | on | auto — see tasks.policy.resolve_task_mode
+    task_mode_policy: str = "auto"
     context_compiler: ContextCompiler = field(default_factory=ContextCompiler)
     memory_projector: ProjectorFn | None = None
     available_credentials: frozenset[str] = frozenset()
@@ -339,8 +348,23 @@ class TurnApplication:
                     {"direction": "in", "kind": finding.kind, "detail": finding.detail},
                 )
 
-        task_mode = bool((metadata or {}).get("task_mode", False))
         task_state: TaskState | None = None
+        active_probe = None
+        if self.task_controller is not None:
+            active_probe = self.task_controller.load_active(session_id)
+        task_mode, task_mode_reason = resolve_task_mode(
+            policy=self.task_mode_policy,
+            metadata=metadata,
+            has_active_task=active_probe is not None,
+        )
+        yield TurnEvent(
+            "task_mode_resolved",
+            {
+                "enabled": task_mode,
+                "reason": task_mode_reason,
+                "policy": self.task_mode_policy,
+            },
+        )
         if task_mode:
             if self.task_controller is None:
                 raise AriadneError(
@@ -349,17 +373,20 @@ class TurnApplication:
                         "task mode requires a configured TaskController",
                     )
                 )
-            task_state = self.task_controller.load_active(session_id)
+            task_state = active_probe
             if task_state is not None:
                 task_state = self.task_controller.prepare_resume(task_state)
                 if task_state.status == "needs_input":
-                    task_state = self.task_controller.continue_with_user_input(task_state, prompt)
+                    task_state = self.task_controller.continue_with_user_input(
+                        task_state, prompt
+                    )
                 yield TurnEvent(
                     "task_resumed",
                     {
                         "task_id": task_state.task_id,
                         "status": task_state.status,
                         "revision": task_state.revision,
+                        "task_mode_reason": task_mode_reason,
                     },
                 )
 
@@ -944,42 +971,24 @@ class TurnApplication:
                     evidence_parts.append(assistant.content)
                     ctx.evidence_text = "\n".join(evidence_parts)
 
-                if task_mode and any(
-                    str((call.get("function") or {}).get("name") or "")
-                    == SUBMIT_TASK_PLAN_NAME
-                    for call in tool_calls_payload
+                if task_mode and payload_has_tool(
+                    tool_calls_payload, SUBMIT_TASK_PLAN_NAME
                 ):
                     if self.task_controller is None:
                         raise AriadneError(
-                            app_error("ARIADNE_TASK_UNAVAILABLE", "TaskController is unavailable")
-                        )
-                    if task_state is not None or len(tool_calls_payload) != 1:
-                        raise AriadneError(
                             app_error(
-                                "ARIADNE_TASK_PROTOCOL_ERROR",
-                                "submit_task_plan must be the only call and is valid only before a task exists",
+                                "ARIADNE_TASK_UNAVAILABLE",
+                                "TaskController is unavailable",
                             )
                         )
-                    control_call = tool_calls_payload[0]
-                    control_id = str(control_call.get("id") or uuid.uuid4().hex)
-                    raw_control = (control_call.get("function") or {}).get("arguments") or "{}"
-                    try:
-                        control_args = (
-                            json.loads(raw_control)
-                            if isinstance(raw_control, str)
-                            else dict(raw_control)
-                        )
-                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                        raise AriadneError(
-                            app_error(
-                                "ARIADNE_TASK_INVALID",
-                                f"task plan arguments are not valid JSON: {exc}",
-                            )
-                        ) from exc
-                    if not isinstance(control_args, dict):
-                        raise AriadneError(
-                            app_error("ARIADNE_TASK_INVALID", "task plan must be an object")
-                        )
+                    control_call = require_sole_control_call(
+                        tool_calls_payload,
+                        name=SUBMIT_TASK_PLAN_NAME,
+                        allow_when_task_exists=False,
+                        task_exists=task_state is not None,
+                    )
+                    control_id = control_call_id(control_call)
+                    control_args = parse_control_arguments(control_call)
                     task_state = self.task_controller.create_from_plan(
                         session_id=session_id,
                         user_id=user_id,
@@ -1019,46 +1028,29 @@ class TurnApplication:
                             "goal": task_state.goal,
                             "step_count": len(task_state.steps),
                             "revision": task_state.revision,
+                            "task_mode_reason": task_mode_reason,
                         },
                     )
                     continue
 
-                if task_mode and any(
-                    str((call.get("function") or {}).get("name") or "")
-                    == REVISE_TASK_PLAN_NAME
-                    for call in tool_calls_payload
+                if task_mode and payload_has_tool(
+                    tool_calls_payload, REVISE_TASK_PLAN_NAME
                 ):
                     if self.task_controller is None or task_state is None:
                         raise AriadneError(
-                            app_error("ARIADNE_TASK_UNAVAILABLE", "TaskController is unavailable")
-                        )
-                    if len(tool_calls_payload) != 1:
-                        raise AriadneError(
                             app_error(
-                                "ARIADNE_TASK_PROTOCOL_ERROR",
-                                "revise_task_plan must be the only call in an exchange",
+                                "ARIADNE_TASK_UNAVAILABLE",
+                                "TaskController is unavailable",
                             )
                         )
-                    control_call = tool_calls_payload[0]
-                    control_id = str(control_call.get("id") or uuid.uuid4().hex)
-                    raw_control = (control_call.get("function") or {}).get("arguments") or "{}"
-                    try:
-                        control_args = (
-                            json.loads(raw_control)
-                            if isinstance(raw_control, str)
-                            else dict(raw_control)
-                        )
-                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                        raise AriadneError(
-                            app_error(
-                                "ARIADNE_TASK_INVALID",
-                                f"task revision arguments are not valid JSON: {exc}",
-                            )
-                        ) from exc
-                    if not isinstance(control_args, dict):
-                        raise AriadneError(
-                            app_error("ARIADNE_TASK_INVALID", "task revision must be an object")
-                        )
+                    control_call = require_sole_control_call(
+                        tool_calls_payload,
+                        name=REVISE_TASK_PLAN_NAME,
+                        allow_when_task_exists=True,
+                        task_exists=True,
+                    )
+                    control_id = control_call_id(control_call)
+                    control_args = parse_control_arguments(control_call)
                     task_state = self.task_controller.revise_from_plan(
                         task_state,
                         arguments=control_args,
