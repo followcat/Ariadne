@@ -92,6 +92,11 @@ Import rule:
 9. Return TurnResult + events
 ```
 
+**Closed-loop (Phase 14, design):** optional **task mode** inserts plan / step
+verify / replan around the tool loop — see
+[design/agent-closed-loop.md](design/agent-closed-loop.md). Default short turns
+remain the direct loop above.
+
 Only **TurnApplication** is the public use-case entry for execution. Internal helpers (model client, registries) are not second entries for hosts.
 
 ## 4. Core domain objects

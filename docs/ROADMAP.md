@@ -226,6 +226,46 @@ Still open / partial:
 - [x] Delivery: empty-reply recovery, thrash cap, max_tokens 8k / atelier ≥16k
 - [x] Tests: `test_atelier_*` + web atelier API
 
+### Phase 14 — Closed-loop execution (plan → act → verify → replan)
+Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
+
+**North star:** after each material action, verify with evidence; update the plan
+from evidence — not from “tool returned success.”
+
+**Status: design only** (implementation not started).
+
+#### 14a — Verify + TaskState (P0)
+- [ ] `TaskState` persistence (session-keyed JSON/SQLite) + resume re-check of
+  workspace fingerprint / assumptions
+- [ ] Step model: `preconditions`, `done_when`, `failure_policy`, retries
+- [ ] Deterministic checks: `command_exit`, `path_exists` / `path_absent`,
+  `file_contains` (more kinds later)
+- [ ] Task mode on TurnApplication (flag / policy); tool complete → verify step
+- [ ] Offline tests: fake model + file change + exit-code style verification
+
+#### 14b — Replan + tool metadata (P0/P1)
+- [ ] Structured replan with append-only `plan_revisions` (must cite evidence)
+- [ ] Goal-level checks; `needs_input` when blocked on user
+- [ ] ToolSpec optional: `side_effect_level`, `verification_hint`, richer
+  failure codes (one registry only)
+
+#### 14c — Cognitive state + Context Compiler (P1)
+- [ ] Opt-in evidence-bound L2 projector (no silent empty success)
+- [ ] Conflict / superseded / expired semantics for state fields
+- [ ] ContextCompiler: budgeted assembly + attribution traces (source, reason,
+  tokens, included|dropped)
+
+#### 14d — Skill feedback + user model (P1)
+- [ ] Skill outcome ledger → selection ranking (not auto body rewrite)
+- [ ] Skill patch proposal + user confirm + versioned user skills
+- [ ] Typed user model (preferences / goals / constraints) + host edit surface
+
+#### 14e — Stretch (P2)
+- [ ] Optional semantic verifier model (only when no deterministic oracle)
+- [ ] Host-scheduled proactive checks
+- [ ] Multimodal environment verification
+- [ ] Controlled multi-agent (only after single-agent loop is solid)
+
 ## Explicitly deferred forever (unless product changes)
 
 - Company Pack system (superseded by official optional plugins)

@@ -31,6 +31,12 @@ Host
 4. Loop limit always enforced.
 5. Every model exchange and tool call is traceable.
 
+## Closed-loop extension (design)
+
+Optional **task mode** wraps the model/tool loop with structured steps and
+deterministic verification. Tool success alone does not mark a step complete.
+See [agent-closed-loop.md](agent-closed-loop.md) and ROADMAP Phase 14.
+
 ## Failure mapping
 
 | Failure | Result |

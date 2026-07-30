@@ -202,5 +202,6 @@ Kernel does not require a hosted multi-tenant DB.
 | [design/memory-scopes.md](design/memory-scopes.md) | Personal **user / workspace / session** scopes, host layout, `user_id`, user episodic root, KNOWLEDGE boundary |
 | [design/memory-search.md](design/memory-search.md) | **Graded retrieval** — Retrieval modes, tool contract, as-of clocks, deep two-phase planner, config knobs |
 | [ROADMAP.md](ROADMAP.md) Phase 11b | Living checklist (S0–S2 done; S3/S4 partial) |
+| [design/agent-closed-loop.md](design/agent-closed-loop.md) | Plan/verify loop; opt-in L2 project; Context Compiler (Phase 14) |
 
 Normative product contract stays in this file; implementers follow the design notes above for scopes and search.
