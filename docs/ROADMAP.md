@@ -165,6 +165,23 @@ hosts and kernel code.
   `ariadne memory-worker --consolidate [--apply]`
 - [x] Persistent approval grants (`data_dir/grants.json`) for on-request mode
 
+### Phase 11b — Memory scopes + graded search (personal 2C)
+Design: [design/memory-scopes.md](design/memory-scopes.md),
+[design/memory-search.md](design/memory-search.md) (linked from [MEMORY.md](MEMORY.md)).
+
+- [x] **user / workspace / session** scope layout; host paths (CLI `~/.ariadne` +
+  workspace `.ariadne`; optional `user_curated` store)
+- [x] Stop silent `user_id` ignore; mismatch fastfail when facade is account-bound
+- [x] `memory_search` tool: `scope` + `mode=auto|fast|deep`; hits carry `turn_id` /
+  grounded snippets (no invented history)
+- [x] `mode=auto` upgrade heuristics; deep = local alias/split/rerank (optional LLM later)
+- [x] Honest L2: projection **off by default** (`enable_memory_projection` /
+  `Memory.local(enable_projection=True)`); layer status `disabled` when unset
+- [x] Curated stable UUID ids + `source_turn_id` (no renumber on delete)
+- [x] Turn summary input: user + assistant + truncated tool outcomes
+- [x] Skill digest pins on turn (`TurnResult.skill_pins` / `SkillEvent.content_digest`)
+- [x] Tests: `tests/test_memory_scopes_search.py` + acceptance id fixes
+
 ### Phase 12 — Docker-first hardened sandbox (Codex-aligned)
 - [x] Default `sandbox=docker`; `local`/`null` explicit escape; doctor checks
 - [x] Hardened `docker run` (cap-drop, network none, mem/cpu/pids, read-only rootfs)
