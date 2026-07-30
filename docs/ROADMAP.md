@@ -322,9 +322,9 @@ hardening complete; production/ranking hardening remains usage-driven work.**
 - [x] Structured Prospective memory triggers; host owns external scheduling
 - [x] Turn-level observability and grounded end-to-end tests
 - [x] Action-bound Reflection confirmation contracts; negative text cannot accept
-- [x] Goal/Episode terminal authority; Assistant assertions remain non-authoritative
-- [x] Independent structured-secret redaction at the long-lived Memory boundary
-- [x] Recoverable capture journal plus capture-scoped Store idempotency
+- [x] Host-owned Goal/Episode terminal authority; free-text user/Assistant and ordinary tool assertions remain nonterminal
+- [x] Independent structured-secret redaction, including camelCase keys and digest-only nested allowlist values
+- [x] Recoverable capture journal, capture-scoped Store idempotency, and bounded/fair next-turn pending recovery
 - [x] Nonterminal failure/retry Episode lifecycle and strict LLM capture protocol
 - [x] Windowed Episode hits, stable event ids, paged evidence, and total byte caps
 

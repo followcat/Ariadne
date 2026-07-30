@@ -1,7 +1,7 @@
 # Design: Memory Intelligence Vertical Slice
 
-Status: **functional vertical slice complete; memory correctness hardening
-substantially improved, but lifecycle recovery fixes remain pending**
+Status: **functional vertical slice; reviewed correctness hardening complete;
+production/ranking hardening pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -173,10 +173,12 @@ The personal default uses locked JSON stores under the memory root:
 - `prospective.json`
 - existing `user_model.json`
 
-Automatic capture emits an `auto_capture` `LayerReport` containing status,
-created ids, and a bounded error note. Reflection and prospective context each
-have their own layer report. All search results remain grounded in real turn
-and session ids.
+Automatic capture emits an `auto_capture` `LayerReport` containing current
+capture status, created ids, recovered capture ids, recovery counts, and a
+bounded error note. A failed pending recovery marks this layer failed but does
+not change the turn result. Reflection and prospective context each have their
+own layer report. All search results remain grounded in real turn and session
+ids.
 
 Personal defaults are configurable without changing the kernel contract:
 
