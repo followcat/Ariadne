@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import math
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -409,11 +410,36 @@ def _safe_tool_summary(value: Any) -> str:
             "passed",
             "failed",
         }
-        safe = {key: item for key, item in safe.items() if str(key) in allow}
+        summary: dict[str, Any] = {}
+        for key, item in safe.items():
+            key_text = str(key)
+            if key_text not in allow:
+                continue
+            if isinstance(item, (dict, list, tuple)):
+                summary[key_text] = "structured value retained by digest only"
+            elif isinstance(item, str):
+                summary[key_text] = (
+                    item
+                    if len(item) <= 160
+                    else f"text chars={len(item)} retained by digest only"
+                )
+            elif isinstance(item, bool) or item is None:
+                summary[key_text] = item
+            elif isinstance(item, int):
+                summary[key_text] = (
+                    item
+                    if len(str(item)) <= 64
+                    else "numeric value retained by digest only"
+                )
+            elif isinstance(item, float) and math.isfinite(item):
+                summary[key_text] = item
+            else:
+                summary[key_text] = "value retained by digest only"
         if isinstance(value, dict) and "error" in value:
-            safe["has_error"] = value.get("error") not in (None, "", False)
-        if not safe:
+            summary["has_error"] = value.get("error") not in (None, "", False)
+        if not summary:
             return "structured output retained by digest only"
+        safe = summary
     elif isinstance(safe, list):
         return f"list output count={len(safe)} retained by digest only"
     elif isinstance(safe, str):

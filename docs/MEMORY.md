@@ -129,8 +129,9 @@ contract. Free-text keyword matching does not authorize promotion.
 
 Episode search adds problem/attempt/observation/error/decision/outcome chains
 above the existing turn index. Failed attempts are nonterminal. Assistant
-self-reports remain `model_assertion`; only user-explicit, tool-observed, or
-verified-check terminal evidence may close an Episode or authoritative goal.
+self-reports and user free-text terminal phrases remain non-authoritative; in
+the current slice only closed `verified_check` evidence may close an Episode or
+authoritative goal.
 Deep search can traverse stored entities, relations, timelines, decisions, and
 outcomes, but always returns real turn citations. Search returns a bounded event
 window and stable event ids; `memory_expand_evidence` pages full stored events
@@ -142,8 +143,10 @@ workspace, query, file, tool, or event triggers match. See
 Automatic capture uses `capture_journal.json` to resume per-Store stages after
 failure. Store writes are turn-idempotent and completion is recorded only after
 all stages finish. Tool payloads are independently redacted at the Memory
-boundary; Episode records keep allowlisted status, digests, and evidence refs,
-not full arguments or outputs.
+boundary; camelCase/separated sensitive keys are normalized before matching.
+Episode records keep bounded scalar status fields, digests, and evidence refs;
+nested or oversized values are digest-only and full arguments/outputs are never
+stored.
 
 ## 5. Write API
 

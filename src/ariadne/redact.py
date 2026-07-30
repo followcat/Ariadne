@@ -27,6 +27,20 @@ _SECRET_KEY = re.compile(
 )
 
 
+def _normalize_key(value: Any) -> str:
+    """Normalize structured keys before matching secret components."""
+
+    text = str(value)
+    text = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", text)
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_").casefold()
+
+
+def _is_secret_key(value: Any) -> bool:
+    normalized = _normalize_key(value)
+    return bool(normalized and _SECRET_KEY.search(normalized))
+
+
 def redact_text(text: str) -> str:
     out = text
     for pattern, repl in _PATTERNS:
@@ -40,7 +54,7 @@ def redact_secrets(value: Any) -> Any:
         return redact_text(value)
     if isinstance(value, dict):
         return {
-            k: ("***" if _SECRET_KEY.search(str(k)) else redact_secrets(v))
+            k: ("***" if _is_secret_key(k) else redact_secrets(v))
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple)):

@@ -1,8 +1,7 @@
 # Design: Memory Intelligence Vertical Slice
 
 Status: **functional vertical slice complete; memory correctness hardening
-substantially improved, but secret-boundary and lifecycle recovery fixes remain
-pending**
+substantially improved, but lifecycle recovery fixes remain pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -85,10 +84,11 @@ with authority `verified_check` closes an Episode or sets the authoritative
 current goal to `done`; exact action-bound user confirmation is a future path.
 
 Tool arguments and outputs cross an independent Memory redaction boundary.
-Sensitive structured keys are removed, and Episodes retain an allowlisted
-status summary, payload digest, tool-call evidence reference, and no full raw
-payload. Disabling trace redaction never authorizes secret persistence in
-Memory.
+Sensitive structured keys are normalized across camelCase and separators
+before matching. Episodes retain only bounded scalar fields from the status
+allowlist; nested or oversized values become digest-only markers. Records keep
+payload digests and tool-call evidence references, never the full raw payload.
+Disabling trace redaction never authorizes secret persistence in Memory.
 
 The causal chain is represented by event order and explicit `reason` /
 `because` / `rejected_alternative` fields; it is not an unconstrained knowledge
