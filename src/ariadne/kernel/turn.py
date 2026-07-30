@@ -28,16 +28,15 @@ from ..tasks.controller import (
 )
 from ..tasks.models import TaskState, TaskSummary
 from ..tasks.policy import resolve_task_mode
-from ..tasks.protocol import (
-    control_call_id,
-    parse_control_arguments,
-    payload_has_tool,
-    require_sole_control_call,
-)
+from ..tasks.protocol import payload_has_tool
 from ..tasks.runtime import (
+    apply_revise_task_plan,
+    apply_submit_task_plan,
+    bootstrap_task_session,
     finalize_attempt,
     prepare_capability_exchange,
     resolve_final_answer_status,
+    select_task_tools_payload,
 )
 from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry, dumps_tool_output
 from ..types import (
@@ -378,22 +377,15 @@ class TurnApplication:
                         "task mode requires a configured TaskController",
                     )
                 )
-            task_state = active_probe
-            if task_state is not None:
-                task_state = self.task_controller.prepare_resume(task_state)
-                if task_state.status == "needs_input":
-                    task_state = self.task_controller.continue_with_user_input(
-                        task_state, prompt
-                    )
-                yield TurnEvent(
-                    "task_resumed",
-                    {
-                        "task_id": task_state.task_id,
-                        "status": task_state.status,
-                        "revision": task_state.revision,
-                        "task_mode_reason": task_mode_reason,
-                    },
-                )
+            boot = bootstrap_task_session(
+                controller=self.task_controller,
+                active=active_probe,
+                prompt=prompt,
+                task_mode_reason=task_mode_reason,
+            )
+            task_state = boot.state
+            for ev in boot.events:
+                yield ev
 
         sandbox_task: asyncio.Task[SandboxSession] | None = None
         if self.sandbox_prestart:
@@ -852,19 +844,13 @@ class TurnApplication:
 
         try:
             for loop_i in range(loop_limit):
-                if task_mode and task_state is None:
+                if task_mode:
                     # Planning is a kernel control exchange: capabilities remain
                     # unavailable until a valid, persisted plan exists.
-                    tools_payload = [SUBMIT_TASK_PLAN_TOOL]
-                elif task_mode and task_state is not None and task_state.replan_required:
-                    tools_payload = [REVISE_TASK_PLAN_TOOL]
-                elif task_mode and task_state is not None and task_state.status in {
-                    "needs_input",
-                    "completed",
-                    "failed",
-                    "cancelled",
-                }:
-                    tools_payload = None
+                    tools_payload = select_task_tools_payload(
+                        task_state=task_state,
+                        exposure_tools=exposure.request_tools or None,
+                    )
                 else:
                     tools_payload = exposure.request_tools or None
                 # Last loops: force a final answer, no more tools (stop endless fix loops).
@@ -986,56 +972,25 @@ class TurnApplication:
                                 "TaskController is unavailable",
                             )
                         )
-                    control_call = require_sole_control_call(
-                        tool_calls_payload,
-                        name=SUBMIT_TASK_PLAN_NAME,
-                        allow_when_task_exists=False,
-                        task_exists=task_state is not None,
-                    )
-                    control_id = control_call_id(control_call)
-                    control_args = parse_control_arguments(control_call)
-                    task_state = self.task_controller.create_from_plan(
+                    control = apply_submit_task_plan(
+                        controller=self.task_controller,
+                        tool_calls_payload=tool_calls_payload,
+                        task_state=task_state,
                         session_id=session_id,
                         user_id=user_id,
                         original_user_goal=prompt,
-                        arguments=control_args,
+                        task_mode_reason=task_mode_reason,
                     )
-                    append_required_context(
-                        {
-                            "role": "tool",
-                            "tool_call_id": control_id,
-                            "content": dumps_tool_output(
-                                {
-                                    "task_id": task_state.task_id,
-                                    "status": task_state.status,
-                                    "current_step_id": task_state.current_step_id,
-                                    "revision": task_state.revision,
-                                }
-                            ),
-                        },
-                        source=f"task_control_result:{control_id}",
-                        reason="persisted task-plan control result",
-                        trust="kernel_state",
-                    )
-                    append_required_context(
-                        {
-                            "role": "system",
-                            "content": self.task_controller.format_context(task_state),
-                        },
-                        source=f"task_state_revision:{task_state.revision}",
-                        reason="authoritative task state after plan submission",
-                        trust="kernel_state",
-                    )
-                    yield TurnEvent(
-                        "task_started",
-                        {
-                            "task_id": task_state.task_id,
-                            "goal": task_state.goal,
-                            "step_count": len(task_state.steps),
-                            "revision": task_state.revision,
-                            "task_mode_reason": task_mode_reason,
-                        },
-                    )
+                    task_state = control.state
+                    for app in control.appends:
+                        append_required_context(
+                            app.message,
+                            source=app.source,
+                            reason=app.reason,
+                            trust=app.trust,
+                        )
+                    for ev in control.events:
+                        yield ev
                     continue
 
                 if task_mode and payload_has_tool(
@@ -1048,52 +1003,21 @@ class TurnApplication:
                                 "TaskController is unavailable",
                             )
                         )
-                    control_call = require_sole_control_call(
-                        tool_calls_payload,
-                        name=REVISE_TASK_PLAN_NAME,
-                        allow_when_task_exists=True,
-                        task_exists=True,
+                    control = apply_revise_task_plan(
+                        controller=self.task_controller,
+                        tool_calls_payload=tool_calls_payload,
+                        task_state=task_state,
                     )
-                    control_id = control_call_id(control_call)
-                    control_args = parse_control_arguments(control_call)
-                    task_state = self.task_controller.revise_from_plan(
-                        task_state,
-                        arguments=control_args,
-                    )
-                    append_required_context(
-                        {
-                            "role": "tool",
-                            "tool_call_id": control_id,
-                            "content": dumps_tool_output(
-                                {
-                                    "task_id": task_state.task_id,
-                                    "revision": task_state.revision,
-                                    "plan_revision": len(task_state.plan_revisions),
-                                    "current_step_id": task_state.current_step_id,
-                                }
-                            ),
-                        },
-                        source=f"task_control_result:{control_id}",
-                        reason="persisted evidence-citing replan result",
-                        trust="kernel_state",
-                    )
-                    append_required_context(
-                        {
-                            "role": "system",
-                            "content": self.task_controller.format_context(task_state),
-                        },
-                        source=f"task_state_revision:{task_state.revision}",
-                        reason="authoritative task state after replan",
-                        trust="kernel_state",
-                    )
-                    yield TurnEvent(
-                        "task_replanned",
-                        {
-                            "task_id": task_state.task_id,
-                            "plan_revision": len(task_state.plan_revisions),
-                            "current_step_id": task_state.current_step_id,
-                        },
-                    )
+                    task_state = control.state
+                    for app in control.appends:
+                        append_required_context(
+                            app.message,
+                            source=app.source,
+                            reason=app.reason,
+                            trust=app.trust,
+                        )
+                    for ev in control.events:
+                        yield ev
                     continue
 
                 if not tool_calls_payload:

@@ -1,7 +1,8 @@
 """Task-mode attempt orchestration extracted from TurnApplication.
 
-Keeps capability-call classification, attempt start, and post-attempt
-verification event packaging out of the giant turn loop.
+Keeps capability-call classification, attempt start, plan/replan control
+exchanges, tools-payload selection, and post-attempt verification packaging
+out of the giant turn loop.
 """
 
 from __future__ import annotations
@@ -11,10 +12,22 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import AriadneError, app_error
-from ..tools.registry import ToolRegistry
+from ..tools.registry import ToolRegistry, dumps_tool_output
 from ..types import ToolCallTrace, TurnEvent
-from .controller import TaskAttemptOutcome, TaskController
+from .controller import (
+    REVISE_TASK_PLAN_NAME,
+    REVISE_TASK_PLAN_TOOL,
+    SUBMIT_TASK_PLAN_NAME,
+    SUBMIT_TASK_PLAN_TOOL,
+    TaskAttemptOutcome,
+    TaskController,
+)
 from .models import TaskState
+from .protocol import (
+    control_call_id,
+    parse_control_arguments,
+    require_sole_control_call,
+)
 
 # Capabilities that may accompany a material call without counting as the
 # single material action (discovery / skill load).
@@ -25,6 +38,11 @@ TASK_META_CAPABILITIES = frozenset(
         "adopt_skill",
         "tool_search",
     }
+)
+
+# Terminal / waiting statuses: model must not call capabilities.
+_TASK_NO_TOOLS_STATUSES = frozenset(
+    {"needs_input", "completed", "failed", "cancelled"}
 )
 
 
@@ -47,12 +65,214 @@ class AttemptFinalizeResult:
     context_system_text: str = ""
 
 
+@dataclass(slots=True)
+class ContextAppend:
+    """One required message to append after a control exchange."""
+
+    message: dict[str, Any]
+    source: str
+    reason: str
+    trust: str
+
+
+@dataclass(slots=True)
+class ControlExchangeResult:
+    """Result of submit_task_plan / revise_task_plan handling."""
+
+    state: TaskState
+    appends: list[ContextAppend] = field(default_factory=list)
+    events: list[TurnEvent] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class TaskBootstrapResult:
+    """Active-task resume + optional needs_input continue."""
+
+    state: TaskState | None
+    events: list[TurnEvent] = field(default_factory=list)
+
+
 def _parse_effect_args(raw: Any) -> dict[str, Any]:
     try:
         args = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     return args if isinstance(args, dict) else {}
+
+
+def select_task_tools_payload(
+    *,
+    task_state: TaskState | None,
+    exposure_tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Choose which tools the model may see this exchange in task mode.
+
+    - No plan yet → only ``submit_task_plan``
+    - Replan required → only ``revise_task_plan``
+    - Terminal / needs_input → no tools (force a natural-language reply)
+    - Otherwise → normal exposure tools
+    """
+    if task_state is None:
+        return [SUBMIT_TASK_PLAN_TOOL]
+    if task_state.replan_required:
+        return [REVISE_TASK_PLAN_TOOL]
+    if task_state.status in _TASK_NO_TOOLS_STATUSES:
+        return None
+    return exposure_tools
+
+
+def bootstrap_task_session(
+    *,
+    controller: TaskController,
+    active: TaskState | None,
+    prompt: str,
+    task_mode_reason: str,
+) -> TaskBootstrapResult:
+    """Prepare resume / continue_with_user_input when task mode is on."""
+    if active is None:
+        return TaskBootstrapResult(state=None)
+    state = controller.prepare_resume(active)
+    if state.status == "needs_input":
+        state = controller.continue_with_user_input(state, prompt)
+    return TaskBootstrapResult(
+        state=state,
+        events=[
+            TurnEvent(
+                "task_resumed",
+                {
+                    "task_id": state.task_id,
+                    "status": state.status,
+                    "revision": state.revision,
+                    "task_mode_reason": task_mode_reason,
+                },
+            )
+        ],
+    )
+
+
+def apply_submit_task_plan(
+    *,
+    controller: TaskController,
+    tool_calls_payload: list[dict[str, Any]],
+    task_state: TaskState | None,
+    session_id: str,
+    user_id: str,
+    original_user_goal: str,
+    task_mode_reason: str,
+) -> ControlExchangeResult:
+    """Validate sole submit_task_plan call, persist plan, package context + event."""
+    control_call = require_sole_control_call(
+        tool_calls_payload,
+        name=SUBMIT_TASK_PLAN_NAME,
+        allow_when_task_exists=False,
+        task_exists=task_state is not None,
+    )
+    control_id = control_call_id(control_call)
+    control_args = parse_control_arguments(control_call)
+    state = controller.create_from_plan(
+        session_id=session_id,
+        user_id=user_id,
+        original_user_goal=original_user_goal,
+        arguments=control_args,
+    )
+    appends = [
+        ContextAppend(
+            message={
+                "role": "tool",
+                "tool_call_id": control_id,
+                "content": dumps_tool_output(
+                    {
+                        "task_id": state.task_id,
+                        "status": state.status,
+                        "current_step_id": state.current_step_id,
+                        "revision": state.revision,
+                    }
+                ),
+            },
+            source=f"task_control_result:{control_id}",
+            reason="persisted task-plan control result",
+            trust="kernel_state",
+        ),
+        ContextAppend(
+            message={
+                "role": "system",
+                "content": controller.format_context(state),
+            },
+            source=f"task_state_revision:{state.revision}",
+            reason="authoritative task state after plan submission",
+            trust="kernel_state",
+        ),
+    ]
+    events = [
+        TurnEvent(
+            "task_started",
+            {
+                "task_id": state.task_id,
+                "goal": state.goal,
+                "step_count": len(state.steps),
+                "revision": state.revision,
+                "task_mode_reason": task_mode_reason,
+            },
+        )
+    ]
+    return ControlExchangeResult(state=state, appends=appends, events=events)
+
+
+def apply_revise_task_plan(
+    *,
+    controller: TaskController,
+    tool_calls_payload: list[dict[str, Any]],
+    task_state: TaskState,
+) -> ControlExchangeResult:
+    """Validate sole revise_task_plan call, replan, package context + event."""
+    control_call = require_sole_control_call(
+        tool_calls_payload,
+        name=REVISE_TASK_PLAN_NAME,
+        allow_when_task_exists=True,
+        task_exists=True,
+    )
+    control_id = control_call_id(control_call)
+    control_args = parse_control_arguments(control_call)
+    state = controller.revise_from_plan(task_state, arguments=control_args)
+    appends = [
+        ContextAppend(
+            message={
+                "role": "tool",
+                "tool_call_id": control_id,
+                "content": dumps_tool_output(
+                    {
+                        "task_id": state.task_id,
+                        "revision": state.revision,
+                        "plan_revision": len(state.plan_revisions),
+                        "current_step_id": state.current_step_id,
+                    }
+                ),
+            },
+            source=f"task_control_result:{control_id}",
+            reason="persisted evidence-citing replan result",
+            trust="kernel_state",
+        ),
+        ContextAppend(
+            message={
+                "role": "system",
+                "content": controller.format_context(state),
+            },
+            source=f"task_state_revision:{state.revision}",
+            reason="authoritative task state after replan",
+            trust="kernel_state",
+        ),
+    ]
+    events = [
+        TurnEvent(
+            "task_replanned",
+            {
+                "task_id": state.task_id,
+                "plan_revision": len(state.plan_revisions),
+                "current_step_id": state.current_step_id,
+            },
+        )
+    ]
+    return ControlExchangeResult(state=state, appends=appends, events=events)
 
 
 def prepare_capability_exchange(
