@@ -167,7 +167,9 @@ class SemanticIndex:
         if self.embedder is None:
             return 0
         data = self._read()
-        pending_meta: list[tuple[str, str, str, str]] = []  # sid, tid, kind, text
+        # Key by identity + text so re-indexed turns do not get stale vectors.
+        pending_meta: list[tuple[str, str, str, str, str]] = []
+        # (sid, tid, kind, text, seq)
         model_id = self.embedding_model_id
         for chunk in data.get("chunks") or []:
             if session_id and chunk.get("session_id") != session_id:
@@ -181,16 +183,17 @@ class SemanticIndex:
                     str(chunk.get("turn_id") or ""),
                     str(chunk.get("kind") or ""),
                     text,
+                    str(chunk.get("seq") or ""),
                 )
             )
             if len(pending_meta) >= limit:
                 break
         if not pending_meta:
             return 0
-        vectors = await self.embedder.embed([t for *_, t in pending_meta])
+        vectors = await self.embedder.embed([t for *_, t, _seq in pending_meta])
         by_key = {
-            (sid, tid, kind): vec
-            for (sid, tid, kind, _), vec in zip(pending_meta, vectors)
+            (sid, tid, kind, text, seq): vec
+            for (sid, tid, kind, text, seq), vec in zip(pending_meta, vectors)
         }
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
@@ -199,6 +202,8 @@ class SemanticIndex:
                     str(chunk.get("session_id") or ""),
                     str(chunk.get("turn_id") or ""),
                     str(chunk.get("kind") or ""),
+                    str(chunk.get("text") or ""),
+                    str(chunk.get("seq") or ""),
                 )
                 if key in by_key:
                     chunk["embedding"] = by_key[key]

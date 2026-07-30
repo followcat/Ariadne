@@ -200,7 +200,12 @@ def load_settings(
         embedding_provider or pick("ARIADNE_EMBEDDING_PROVIDER", default="hash")
     ).strip().lower()
     if emb not in {"hash", "openai", "auto"}:
-        emb = "hash"
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"unknown embedding provider: {emb!r} (hash|openai|auto)",
+            )
+        )
     emb_model = pick("ARIADNE_EMBEDDING_MODEL", default="text-embedding-3-small")
     img = docker_image or pick("ARIADNE_DOCKER_IMAGE", default="") or None
     idle = float(pick("ARIADNE_IDLE_TTL", default="600") or 600)
