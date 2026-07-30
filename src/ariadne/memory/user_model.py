@@ -94,6 +94,7 @@ class UserModelStore:
         expected_revision: int | None = None,
         change_reason: str = "",
         evidence: list[dict[str, Any]] | None = None,
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         self._validate(
             entry_type=entry_type,
@@ -112,6 +113,20 @@ class UserModelStore:
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             nonlocal eid
             entries = data.setdefault("entries", {})
+            idempotency = data.setdefault("idempotency_keys", {})
+            scoped_key = (idempotency_key or "").strip()
+            if scoped_key and scoped_key in idempotency:
+                replay = entries.get(idempotency[scoped_key])
+                if replay is None:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_USER_MODEL_INVALID",
+                            "idempotency key points to a missing user-model entry",
+                        )
+                    )
+                result.update(copy.deepcopy(replay))
+                result["idempotent_replay"] = True
+                return data
             logical_matches = [
                 row
                 for row in entries.values()
@@ -203,7 +218,11 @@ class UserModelStore:
                 "history": history,
             }
             entries[eid] = row
+            if scoped_key:
+                idempotency[scoped_key] = eid
             result.update(copy.deepcopy(row))
+            if scoped_key:
+                result["idempotent_replay"] = False
             return data
 
         locked_update_json(self.path, mut, default={"schema_version": 1, "entries": {}})
@@ -223,6 +242,7 @@ class UserModelStore:
         source_turn_id: str = "",
         change_reason: str = "",
         evidence: list[dict[str, Any]] | None = None,
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Atomically supersede the one active logical key, or create it."""
 
@@ -238,6 +258,7 @@ class UserModelStore:
             source_turn_id=source_turn_id,
             change_reason=change_reason,
             evidence=evidence,
+            idempotency_key=idempotency_key,
         )
 
     def expire(

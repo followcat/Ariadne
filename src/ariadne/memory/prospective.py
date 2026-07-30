@@ -38,7 +38,12 @@ class ProspectiveMemoryStore:
 
     @staticmethod
     def _empty() -> dict[str, Any]:
-        return {"schema_version": 1, "entries": {}, "idempotency_keys": {}}
+        return {
+            "schema_version": 1,
+            "entries": {},
+            "idempotency_keys": {},
+            "match_idempotency_keys": {},
+        }
 
     def _read(self) -> dict[str, Any]:
         data = locked_read_json(self.path, default=self._empty())
@@ -216,11 +221,28 @@ class ProspectiveMemoryStore:
                 return False
         return True
 
-    def match(self, *, context: dict[str, Any]) -> list[dict[str, Any]]:
+    def match(
+        self, *, context: dict[str, Any], idempotency_key: str = ""
+    ) -> list[dict[str, Any]]:
         triggered: list[dict[str, Any]] = []
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
-            for row in (data.get("entries") or {}).values():
+            entries = data.setdefault("entries", {})
+            match_keys = data.setdefault("match_idempotency_keys", {})
+            scoped_key = (idempotency_key or "").strip()
+            if scoped_key and scoped_key in match_keys:
+                for entry_id in match_keys[scoped_key]:
+                    row = entries.get(entry_id)
+                    if row is None:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_PROSPECTIVE_INVALID",
+                                "match idempotency key points to a missing entry",
+                            )
+                        )
+                    triggered.append(copy.deepcopy(row))
+                return data
+            for row in entries.values():
                 if row.get("status") != "pending":
                     continue
                 if not self._matches(dict(row.get("trigger") or {}), context):
@@ -233,6 +255,10 @@ class ProspectiveMemoryStore:
                 ).hexdigest()[:16]
                 row["trigger_context_digest"] = digest
                 triggered.append(copy.deepcopy(row))
+            if scoped_key:
+                match_keys[scoped_key] = [
+                    str(row.get("entry_id") or "") for row in triggered
+                ]
             return data
 
         locked_update_json(self.path, mut, default=self._empty())

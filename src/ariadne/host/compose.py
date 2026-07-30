@@ -9,6 +9,7 @@ from ..errors import AriadneError, app_error
 from ..kernel.turn import TurnApplication
 from ..memory.curated import CuratedStore
 from ..memory.auto_capture import AutomaticMemoryProjector, make_llm_memory_extractor
+from ..memory.capture_journal import CaptureJournalStore
 from ..memory.embeddings import HashEmbeddingProvider, OpenAIEmbeddingProvider
 from ..memory.episodes import EpisodeStore
 from ..memory.facade import MemoryFacade
@@ -180,6 +181,9 @@ def compose_agent(settings: Settings) -> Agent:
 
         deep_planner = LocalSplitPlanner()
     episodes = EpisodeStore(path=user_memory_dir / "episodes.json")
+    capture_journal = CaptureJournalStore(
+        path=user_memory_dir / "capture_journal.json"
+    )
     reflection = ReflectionStore(
         path=user_memory_dir / "reflection.json",
         min_distinct_sessions=int(
@@ -198,6 +202,7 @@ def compose_agent(settings: Settings) -> Agent:
         auto_capture = AutomaticMemoryProjector(
             episodes=episodes,
             user_model=user_model,
+            journal=capture_journal,
             state=state_store,
             reflection=reflection,
             prospective=prospective,
@@ -235,6 +240,7 @@ def compose_agent(settings: Settings) -> Agent:
         workspace_key=str(settings.workspace.resolve()) if settings.workspace else "",
         user_model=user_model,
         episodes=episodes,
+        capture_journal=capture_journal,
         auto_capture=auto_capture,
         reflection=reflection,
         prospective=prospective,

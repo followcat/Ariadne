@@ -27,6 +27,10 @@ ATTRIBUTE_AUTHORITIES = {
     "tool_observed": 1,
     "user_explicit": 2,
 }
+STATUS_AUTHORITIES = {
+    **ATTRIBUTE_AUTHORITIES,
+    "verified_check": 3,
+}
 ATTRIBUTE_MEMORY_TYPES = {"fact", "preference", "goal", "hypothesis"}
 ATTRIBUTE_STATUSES = {"active", "superseded", "expired"}
 
@@ -173,7 +177,11 @@ class ConversationStateStore:
         for eid, ent in entities.items():
             status = ent.get("status") or "active"
             aliases = ", ".join(ent.get("aliases") or []) or "-"
-            lines.append(f"- {eid} ({ent.get('type') or 'generic'}) status={status} aliases=[{aliases}]")
+            status_authority = ent.get("status_authority") or "model_inferred"
+            lines.append(
+                f"- {eid} ({ent.get('type') or 'generic'}) status={status} "
+                f"status_authority={status_authority} aliases=[{aliases}]"
+            )
             attrs = ent.get("attributes") or {}
             for key, payload in attrs.items():
                 if isinstance(payload, dict):
@@ -250,6 +258,16 @@ class ConversationStateStore:
                         app_error(
                             "ARIADNE_INVALID_TOOL_ARGS",
                             f"unknown attribute authority: {authority}",
+                            op=name,
+                        )
+                    )
+            if name == "set_status":
+                authority = str(op.get("authority") or "model_inferred")
+                if authority not in STATUS_AUTHORITIES:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            f"unknown status authority: {authority}",
                             op=name,
                         )
                     )
@@ -518,6 +536,10 @@ class ConversationStateStore:
                 eid, {"type": "generic", "aliases": [], "attributes": {}, "status": "active"}
             )
             ent["status"] = str(op.get("status") or "active")
+            ent["status_authority"] = str(
+                op.get("authority") or "model_inferred"
+            )
+            ent["status_source_turn_id"] = source_turn_id
         elif name == "ensure_collection":
             cname = str(op["name"])
             collections.setdefault(cname, {"members": []})

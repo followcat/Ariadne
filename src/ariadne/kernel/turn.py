@@ -14,6 +14,7 @@ from ..errors import AriadneError, app_error
 from ..memory.facade import MemoryFacade
 from ..memory.projection import ProjectorFn
 from ..model.base import ModelPort
+from ..redact import redact_secrets
 from ..guardrails import scan_input, scan_output
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.port import SandboxBackend, SandboxSession
@@ -1076,7 +1077,7 @@ class TurnApplication:
                     )
                     # L1: widen summary input — user + assistant conclusion + truncated tools
                     tool_blob = "\n".join(
-                        f"{c.name}: {json.dumps(c.output, ensure_ascii=False)[:300]}"
+                        f"{c.name}: {json.dumps(redact_secrets(c.output), ensure_ascii=False)[:300]}"
                         for c in tool_calls
                         if c.status == "completed"
                     )
@@ -1131,12 +1132,33 @@ class TurnApplication:
                     capture = getattr(self.memory, "capture_turn", None)
                     if callable(capture):
                         try:
+                            verified_goal = None
+                            if task_state is not None and task_state.status == "completed":
+                                required_check_ids = {
+                                    check.check_id
+                                    for check in task_state.goal_checks
+                                    if check.required
+                                }
+                                passed_check_ids = {
+                                    result.check_id
+                                    for result in task_state.goal_check_results
+                                    if result.status == "pass"
+                                }
+                                if required_check_ids and required_check_ids <= passed_check_ids:
+                                    verified_goal = {
+                                        "status": "completed",
+                                        "task_id": task_state.task_id,
+                                        "goal": task_state.goal,
+                                        "summary": f"verified goal completed: {task_state.goal}",
+                                        "check_ids": sorted(required_check_ids),
+                                    }
                             capture_report = await capture(
                                 session_id=session_id,
                                 turn_id=turn_id,
                                 user_text=prompt,
                                 assistant_text=text,
                                 tool_calls=tool_calls,
+                                verified_goal=verified_goal,
                             )
                             capture_status = str(
                                 capture_report.get("status") or "skipped"
@@ -1146,7 +1168,13 @@ class TurnApplication:
                                 "skipped",
                                 "disabled",
                             }:
-                                capture_status = "skipped"
+                                raise AriadneError(
+                                    app_error(
+                                        "ARIADNE_MEMORY_CAPTURE_PROTOCOL",
+                                        "automatic memory capture returned an unknown status",
+                                        status=capture_status,
+                                    )
+                                )
                             capture_ids = [
                                 str(item)
                                 for key in (
@@ -1175,10 +1203,15 @@ class TurnApplication:
                                 notes=capture_notes,
                             )
                         except Exception as exc:  # noqa: BLE001 - fail visible, non-fatal
+                            capture_error_note = (
+                                f"{exc.error.code}: {exc.error.message}"
+                                if isinstance(exc, AriadneError)
+                                else f"{type(exc).__name__}: {exc}"
+                            )
                             capture_layer = LayerReport(
                                 name="auto_capture",
                                 status="failed",
-                                notes=f"{type(exc).__name__}: {exc}"[:200],
+                                notes=capture_error_note[:200],
                             )
                         memory_summary.layers.append(capture_layer)
                         yield TurnEvent(

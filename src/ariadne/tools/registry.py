@@ -653,6 +653,70 @@ def build_default_registry(
         )
     )
 
+    async def memory_expand_evidence_tool(
+        args: dict[str, Any], ctx: ToolContext
+    ) -> dict[str, Any]:
+        if ctx.memory is None:
+            raise AriadneError(
+                app_error("ARIADNE_CONFIG_INVALID", "memory facade not configured")
+            )
+        expand = getattr(ctx.memory, "expand_episode_evidence", None)
+        if not callable(expand):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "episode evidence expansion is not available on facade",
+                )
+            )
+        return expand(
+            episode_id=str(args.get("episode_id") or ""),
+            session_id=ctx.session_id,
+            scope=str(args.get("scope") or "session"),
+            after_event_id=str(args.get("after_event_id") or ""),
+            limit=int(args.get("limit") or 8),
+            before_turn_id=(
+                str(args.get("before_turn_id"))
+                if args.get("before_turn_id") not in (None, "")
+                else None
+            ),
+            user_id=getattr(ctx, "user_id", None),
+        )
+
+    registry.register(
+        ToolSpec(
+            name="memory_expand_evidence",
+            catalog_description="page through stored episode evidence",
+            title="Expand memory evidence",
+            kind="tool",
+            description=(
+                "Read a bounded page of full stored Episode events after memory_search. "
+                "Use the episode_id and stable event IDs returned by search; continue with "
+                "next_after_event_id while has_more=true. Each page has a host-enforced total "
+                "UTF-8 byte cap and cannot read outside the requested memory scope."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "episode_id": {"type": "string"},
+                    "scope": {
+                        "type": "string",
+                        "enum": ["session", "workspace", "user"],
+                    },
+                    "after_event_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 16},
+                    "before_turn_id": {"type": "string"},
+                },
+                "required": ["episode_id", "scope"],
+                "additionalProperties": False,
+            },
+            handler=memory_expand_evidence_tool,
+            tool_exposure="named_deferred",
+            side_effect_level="read",
+            network_access="none",
+            idempotent=True,
+        )
+    )
+
     async def memory_reflection_tool(
         args: dict[str, Any], ctx: ToolContext
     ) -> dict[str, Any]:
@@ -663,24 +727,46 @@ def build_default_registry(
         action = str(args.get("action") or "list").strip().lower()
         if action == "list":
             status = str(args.get("status") or "").strip() or None
-            return {"candidates": ctx.memory.reflection.list(status=status)}
+            return {
+                "candidates": ctx.memory.reflection.list_with_confirmations(
+                    session_id=ctx.session_id,
+                    status=status,
+                )
+            }
         if action in {"accept", "reject"}:
-            user_text = str(getattr(ctx, "user_text", "") or "").casefold()
-            markers = (
-                ("接受", "同意", "确认", "设为长期", "记住这个", "accept", "approve", "confirm")
-                if action == "accept"
-                else ("拒绝", "不同意", "不要设", "reject", "decline")
+            candidate_id = str(args.get("candidate_id") or "").strip()
+            confirmation_token = str(args.get("confirmation_token") or "").strip()
+            contract = ctx.memory.reflection.confirmation_contract(
+                candidate_id=candidate_id,
+                action=action,
+                session_id=ctx.session_id,
             )
-            if not any(marker in user_text for marker in markers):
+            expected_token = ctx.memory.reflection.confirmation_token(
+                candidate_id=candidate_id,
+                action=action,
+                session_id=ctx.session_id,
+            )
+            # This is deliberately an exact, action-specific contract. Free
+            # text substring matching makes "不同意接受" look affirmative and
+            # lets the model choose an action the user did not authorize.
+            user_contract = " ".join(
+                str(getattr(ctx, "user_text", "") or "").strip().split()
+            )
+            if confirmation_token != expected_token or user_contract != contract:
                 raise AriadneError(
                     app_error(
                         "ARIADNE_TOOL_DENIED",
-                        "reflection decisions require explicit confirmation in the current user message",
+                        "reflection decision requires the exact candidate/action confirmation contract in the current user message",
+                        candidate_id=candidate_id,
+                        action=action,
                     )
                 )
             return ctx.memory.reflection.decide(
-                candidate_id=str(args.get("candidate_id") or ""),
+                candidate_id=candidate_id,
                 action=action,
+                confirmation_token=confirmation_token,
+                confirmation_session_id=ctx.session_id,
+                confirmation_turn_id=ctx.turn_id,
                 user_model=getattr(ctx.memory, "user_model", None),
                 workspace_key=str(getattr(ctx.memory, "workspace_key", "") or ""),
                 session_id=ctx.session_id,
@@ -697,7 +783,9 @@ def build_default_registry(
             catalog_description="review cross-session memory suggestions",
             description=(
                 "List, accept, or reject evidence-backed cross-session pattern suggestions. "
-                "Inferred preferences never become active until accept is explicitly requested."
+                "Inferred preferences never become active until the user replies with exactly "
+                "the candidate/action confirmation_contract returned by list. For accept/reject, "
+                "copy its trailing token into confirmation_token; free-text consent is invalid."
             ),
             parameters={
                 "type": "object",
@@ -707,6 +795,7 @@ def build_default_registry(
                         "enum": ["list", "accept", "reject"],
                     },
                     "candidate_id": {"type": "string"},
+                    "confirmation_token": {"type": "string"},
                     "status": {
                         "type": "string",
                         "enum": ["pending", "accepted", "rejected"],

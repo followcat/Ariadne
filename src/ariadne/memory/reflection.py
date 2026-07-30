@@ -34,7 +34,12 @@ class ReflectionStore:
 
     @staticmethod
     def _empty() -> dict[str, Any]:
-        return {"schema_version": 1, "signals": {}, "candidates": {}}
+        return {
+            "schema_version": 1,
+            "signals": {},
+            "candidates": {},
+            "idempotency_keys": {},
+        }
 
     def _read(self) -> dict[str, Any]:
         data = locked_read_json(self.path, default=self._empty())
@@ -50,6 +55,7 @@ class ReflectionStore:
         session_id: str,
         turn_id: str,
         signals: list[dict[str, Any]],
+        idempotency_key: str = "",
     ) -> list[dict[str, Any]]:
         sid = (session_id or "").strip()
         tid = (turn_id or "").strip()
@@ -65,6 +71,20 @@ class ReflectionStore:
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             ledger = data.setdefault("signals", {})
             candidates = data.setdefault("candidates", {})
+            keys = data.setdefault("idempotency_keys", {})
+            scoped_key = (idempotency_key or "").strip()
+            if scoped_key and scoped_key in keys:
+                for candidate_id in keys[scoped_key]:
+                    row = candidates.get(candidate_id)
+                    if row is None:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_REFLECTION_INVALID",
+                                "idempotency key points to a missing reflection candidate",
+                            )
+                        )
+                    created_or_updated.append(copy.deepcopy(row))
+                return data
             for signal in signals:
                 if signal.get("explicit_durable"):
                     continue
@@ -132,6 +152,12 @@ class ReflectionStore:
                 }
                 candidates[candidate_id] = row
                 created_or_updated.append(copy.deepcopy(row))
+            if scoped_key:
+                keys[scoped_key] = [
+                    str(row.get("candidate_id") or "")
+                    for row in created_or_updated
+                    if row.get("candidate_id")
+                ]
             return data
 
         locked_update_json(self.path, mut, default=self._empty())
@@ -150,11 +176,67 @@ class ReflectionStore:
         rows.sort(key=lambda row: float(row.get("updated_at") or 0), reverse=True)
         return rows
 
+    @staticmethod
+    def confirmation_token(
+        *, candidate_id: str, action: str, session_id: str
+    ) -> str:
+        action_n = (action or "").strip().lower()
+        if action_n not in {"accept", "reject"}:
+            raise AriadneError(
+                app_error("ARIADNE_REFLECTION_INVALID", "action must be accept|reject")
+            )
+        candidate = (candidate_id or "").strip()
+        session = (session_id or "").strip()
+        if not candidate or not session:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_REFLECTION_CONFIRMATION_REQUIRED",
+                    "reflection confirmation requires candidate and session identity",
+                )
+            )
+        digest = hashlib.sha256(
+            f"reflection-confirm-v1\x1f{session}\x1f{candidate}\x1f{action_n}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:24]
+        return f"rc-{digest}"
+
+    def confirmation_contract(
+        self, *, candidate_id: str, action: str, session_id: str
+    ) -> str:
+        token = self.confirmation_token(
+            candidate_id=candidate_id,
+            action=action,
+            session_id=session_id,
+        )
+        return f"confirm reflection {action.strip().lower()} {candidate_id.strip()} {token}"
+
+    def list_with_confirmations(
+        self, *, session_id: str, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        rows = self.list(status=status)
+        for row in rows:
+            if row.get("status") != "pending":
+                continue
+            candidate_id = str(row.get("candidate_id") or "")
+            row["confirmation_contracts"] = {
+                action: self.confirmation_contract(
+                    candidate_id=candidate_id,
+                    action=action,
+                    session_id=session_id,
+                )
+                for action in ("accept", "reject")
+            }
+        return rows
+
     def decide(
         self,
         *,
         candidate_id: str,
         action: str,
+        confirmation_token: str,
+        confirmation_session_id: str,
+        confirmation_turn_id: str,
         user_model: UserModelStore | None = None,
         workspace_key: str = "",
         session_id: str = "",
@@ -173,6 +255,30 @@ class ReflectionStore:
                 app_error(
                     "ARIADNE_REFLECTION_NOT_FOUND",
                     f"reflection candidate not found: {candidate_id}",
+                )
+            )
+        confirmation_turn = (confirmation_turn_id or "").strip()
+        if (session_id or "").strip() != (confirmation_session_id or "").strip():
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_REFLECTION_CONFIRMATION_REQUIRED",
+                    "reflection confirmation is bound to a different session",
+                    candidate_id=candidate_id,
+                    action=action_n,
+                )
+            )
+        expected_token = self.confirmation_token(
+            candidate_id=candidate_id,
+            action=action_n,
+            session_id=confirmation_session_id,
+        )
+        if not confirmation_turn or confirmation_token != expected_token:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_REFLECTION_CONFIRMATION_REQUIRED",
+                    "reflection decision confirmation is missing or does not match this action",
+                    candidate_id=candidate_id,
+                    action=action_n,
                 )
             )
         if candidate.get("status") != "pending":
@@ -198,6 +304,7 @@ class ReflectionStore:
                 session_id=session_id if scope == "session" else "",
                 change_reason=f"accepted reflection {candidate_id}",
                 evidence=list(candidate.get("evidence") or []),
+                idempotency_key=f"reflection:{candidate_id}:accept",
             )
 
         result: dict[str, Any] = {}
@@ -210,6 +317,14 @@ class ReflectionStore:
                 )
             row["status"] = "accepted" if action_n == "accept" else "rejected"
             row["decided_at"] = time.time()
+            row["confirmation"] = {
+                "action": action_n,
+                "session_id": confirmation_session_id,
+                "turn_id": confirmation_turn,
+                "token_digest": hashlib.sha256(
+                    confirmation_token.encode("utf-8")
+                ).hexdigest()[:16],
+            }
             if promoted is not None:
                 row["promoted_entry_id"] = promoted.get("entry_id")
             result.update(copy.deepcopy(row))
@@ -218,14 +333,16 @@ class ReflectionStore:
         locked_update_json(self.path, mut, default=self._empty())
         return result
 
-    def render_pending(self) -> tuple[str, int]:
-        rows = self.list(status="pending")
+    def render_pending(self, *, session_id: str) -> tuple[str, int]:
+        rows = self.list_with_confirmations(session_id=session_id, status="pending")
         if not rows:
             return "", 0
         lines = ["[REFLECTION_CANDIDATES: USER CONFIRMATION REQUIRED]"]
         for row in rows[:12]:
             lines.append(
                 f"- {row['candidate_id']}: observed {row['key']}={row['value']!r} "
-                f"across {row['session_count']} sessions. Ask before accepting."
+                f"across {row['session_count']} sessions. Ask the user to reply with exactly "
+                f"one contract: accept={row['confirmation_contracts']['accept']!r}; "
+                f"reject={row['confirmation_contracts']['reject']!r}."
             )
         return "\n".join(lines), len(rows)

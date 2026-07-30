@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from typing import Any
 from ..errors import AriadneError, app_error
 from ..types import LayerReport, MemoryContext, MemoryContextSummary
 from .curated import CuratedStore
+from .capture_journal import CaptureJournalStore
 from .deep_planner import DeepPlan, DeepPlanner, DeepRerankError, LocalSplitPlanner
 from .embeddings import HashEmbeddingProvider
 from .episodes import EpisodeStore
@@ -29,6 +31,8 @@ STATE_DELTA_CHAR_CAP = 2000
 # design/memory-search.md: hard cap; over-cap is validation error (not silent clamp)
 SEARCH_LIMIT_MAX = 32
 SEARCH_LIMIT_DEFAULT = 8
+SEARCH_QUERY_CHARS_MAX = 2000
+SEARCH_RESPONSE_BYTES_MAX = 64_000
 
 
 _VAGUE_DEIXIS = re.compile(
@@ -65,6 +69,7 @@ class MemoryFacade:
     # Higher-level, evidence-bound memory intelligence. These extend rather
     # than replace the existing turn semantic index.
     episodes: EpisodeStore | None = None
+    capture_journal: CaptureJournalStore | None = None
     auto_capture: Any | None = None
     reflection: ReflectionStore | None = None
     prospective: ProspectiveMemoryStore | None = None
@@ -90,6 +95,7 @@ class MemoryFacade:
         user_text: str,
         assistant_text: str,
         tool_calls: list[Any] | None = None,
+        verified_goal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.auto_capture is None:
             return {"status": "disabled"}
@@ -100,6 +106,7 @@ class MemoryFacade:
             user_text=user_text,
             assistant_text=assistant_text,
             tool_calls=tool_calls or [],
+            verified_goal=verified_goal,
         )
 
     def _append_cognitive_context(
@@ -114,7 +121,7 @@ class MemoryFacade:
             layers.append(LayerReport(name="reflection", status="disabled"))
         else:
             try:
-                text, count = self.reflection.render_pending()
+                text, count = self.reflection.render_pending(session_id=session_id)
                 text, note = self._apply_budget("reflection", text)
                 if text:
                     blocks.append(text)
@@ -404,6 +411,13 @@ class MemoryFacade:
             raise AriadneError(
                 app_error("ARIADNE_INVALID_TOOL_ARGS", "query is required")
             )
+        if len(q) > SEARCH_QUERY_CHARS_MAX:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    f"query exceeds {SEARCH_QUERY_CHARS_MAX} characters",
+                )
+            )
         scope_n = (scope or "session").strip().lower()
         if scope_n not in {"session", "workspace", "user"}:
             raise AriadneError(
@@ -578,9 +592,12 @@ class MemoryFacade:
                 for field in (
                     "episode_id",
                     "related_turn_ids",
+                    "event_ids",
+                    "matched_event_ids",
                     "event_chain",
                     "citations",
                     "traversal_steps",
+                    "evidence_page",
                 ):
                     if episode_hit.get(field):
                         enriched[field] = episode_hit.get(field)
@@ -801,9 +818,12 @@ class MemoryFacade:
             for field in (
                 "episode_id",
                 "related_turn_ids",
+                "event_ids",
+                "matched_event_ids",
                 "event_chain",
                 "citations",
                 "traversal_steps",
+                "evidence_page",
             ):
                 if h.get(field) is not None:
                     normalized_hit[field] = h.get(field)
@@ -812,6 +832,58 @@ class MemoryFacade:
             notes.append("empty")
         return self._pack_search_result(
             mode_used=mode_used, hits=out_hits, notes=notes, scope=scope_n, query=q
+        )
+
+    def expand_episode_evidence(
+        self,
+        *,
+        episode_id: str,
+        session_id: str,
+        scope: str = "session",
+        after_event_id: str = "",
+        limit: int = 8,
+        before_turn_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.resolve_user_id(user_id)
+        if self.episodes is None or not self.episode_search:
+            raise AriadneError(
+                app_error("ARIADNE_CONFIG_INVALID", "episode memory is not configured")
+            )
+        episode = (episode_id or "").strip()
+        if not episode:
+            raise AriadneError(
+                app_error("ARIADNE_INVALID_TOOL_ARGS", "episode_id is required")
+            )
+        scope_n = (scope or "session").strip().lower()
+        if scope_n not in {"session", "workspace", "user"}:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    "scope must be session|workspace|user",
+                )
+            )
+        try:
+            page_limit = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise AriadneError(
+                app_error("ARIADNE_INVALID_TOOL_ARGS", "limit must be an integer")
+            ) from exc
+        cutoff = str(before_turn_id).strip() if before_turn_id else ""
+        before_ts, allowed, _notes = self._resolve_as_of(
+            session_id=session_id,
+            before_turn_id=cutoff or None,
+            scope=scope_n,
+        )
+        return self.episodes.expand_evidence(
+            episode_id=episode,
+            scope=scope_n,
+            session_id=session_id,
+            workspace_key=self.workspace_key,
+            after_event_id=after_event_id,
+            limit=page_limit,
+            allowed_turn_ids=allowed,
+            before_ts=before_ts,
         )
 
     def _pack_search_result(
@@ -829,13 +901,70 @@ class MemoryFacade:
             if n and n not in seen_n:
                 seen_n.add(n)
                 notes_u.append(n)
-        return {
+        packed_hits: list[dict[str, Any]] = []
+        omitted_hits = 0
+        base = {
             "mode_used": mode_used,
-            "hits": hits,
+            "hits": packed_hits,
             "notes": "; ".join(notes_u) if notes_u else "",
             "scope": scope,
             "query": query,
+            "budget": {
+                "max_bytes": SEARCH_RESPONSE_BYTES_MAX,
+                "returned_bytes": 0,
+                "truncated": False,
+                "omitted_hits": 0,
+            },
         }
+        for index, hit in enumerate(hits):
+            probe = {**base, "hits": [*packed_hits, hit]}
+            size = len(
+                json.dumps(probe, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            )
+            if size > SEARCH_RESPONSE_BYTES_MAX:
+                omitted_hits = len(hits) - index
+                break
+            packed_hits.append(hit)
+        if omitted_hits:
+            base["notes"] = "; ".join(
+                [note for note in (base["notes"], "response_budget_truncated") if note]
+            )
+            base["budget"]["truncated"] = True
+            base["budget"]["omitted_hits"] = omitted_hits
+        while True:
+            for _ in range(2):
+                base["budget"]["returned_bytes"] = len(
+                    json.dumps(base, ensure_ascii=False, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                )
+            if int(base["budget"]["returned_bytes"]) <= SEARCH_RESPONSE_BYTES_MAX:
+                break
+            if not packed_hits:
+                break
+            packed_hits.pop()
+            omitted_hits += 1
+            base["budget"]["truncated"] = True
+            base["budget"]["omitted_hits"] = omitted_hits
+            if "response_budget_truncated" not in base["notes"]:
+                base["notes"] = "; ".join(
+                    [
+                        note
+                        for note in (base["notes"], "response_budget_truncated")
+                        if note
+                    ]
+                )
+        if int(base["budget"]["returned_bytes"]) > SEARCH_RESPONSE_BYTES_MAX:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_EVIDENCE_BUDGET",
+                    "memory search metadata exceeds the response byte budget",
+                    max_bytes=SEARCH_RESPONSE_BYTES_MAX,
+                )
+            )
+        return base
 
     def _resolve_as_of(
         self,
@@ -1493,12 +1622,14 @@ class Memory(MemoryFacade):
         from .auto_capture import AutomaticMemoryProjector
 
         episodes = EpisodeStore(path=root / "episodes.json")
+        capture_journal = CaptureJournalStore(path=root / "capture_journal.json")
         reflection = ReflectionStore(path=root / "reflection.json")
         prospective = ProspectiveMemoryStore(path=root / "prospective.json")
         user_model = UserModelStore(path=root / "user_model.json")
         auto_capture = AutomaticMemoryProjector(
             episodes=episodes,
             user_model=user_model,
+            journal=capture_journal,
             state=state,
             reflection=reflection,
             prospective=prospective,
@@ -1515,6 +1646,7 @@ class Memory(MemoryFacade):
             user_episodic=user_episodic,
             user_model=user_model,
             episodes=episodes,
+            capture_journal=capture_journal,
             auto_capture=auto_capture,
             reflection=reflection,
             prospective=prospective,

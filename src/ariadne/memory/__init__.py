@@ -1,4 +1,5 @@
 from .auto_capture import AutomaticMemoryProjector
+from .capture_journal import CaptureJournalStore
 from .episodes import EpisodeStore, EvidenceRef
 from .facade import Memory, MemoryFacade
 from .projection import ProjectionWorker
@@ -12,6 +13,7 @@ __all__ = [
     "Memory",
     "MemoryFacade",
     "AutomaticMemoryProjector",
+    "CaptureJournalStore",
     "EpisodeStore",
     "EvidenceRef",
     "MemoryWorker",

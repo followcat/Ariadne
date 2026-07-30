@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -17,6 +18,7 @@ EPISODE_EVENT_TYPES = {
     "hypothesis",
     "attempt",
     "observation",
+    "error",
     "decision",
     "outcome",
     "preference_change",
@@ -35,6 +37,10 @@ TRAVERSAL_STEPS = {
 
 _ASCII = re.compile(r"[a-z0-9_+.-]{2,}")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
+
+EPISODE_SEARCH_WINDOW_RADIUS = 3
+EPISODE_EXPAND_LIMIT_MAX = 16
+EPISODE_EXPAND_BYTES_MAX = 16_000
 
 
 def _tokens(text: str) -> set[str]:
@@ -182,20 +188,7 @@ class EpisodeStore:
             active = data.setdefault("active_by_session", {})
             episode_id = str(active.get(session_key) or "")
             episode = episodes.get(episode_id) if episode_id else None
-            # A concluded episode receives a fresh goal/problem as a new episode.
-            starts_new_work = any(
-                str(event.get("type")) in {"goal", "problem"} for event in events
-            )
-            has_conclusion = bool(
-                episode
-                and any(
-                    str(event.get("type")) == "outcome"
-                    for event in episode.get("events") or []
-                )
-            )
-            if episode is None or episode.get("status") != "active" or (
-                starts_new_work and has_conclusion
-            ):
+            if episode is None or episode.get("status") != "active":
                 if len(episodes) >= self.max_episodes:
                     raise AriadneError(
                         app_error("ARIADNE_EPISODE_CAPACITY", "episode capacity exceeded")
@@ -215,6 +208,7 @@ class EpisodeStore:
                     "workspace_key": workspace_key or "",
                     "goal": "",
                     "observations": [],
+                    "errors": [],
                     "attempts": [],
                     "decisions": [],
                     "outcomes": [],
@@ -258,6 +252,7 @@ class EpisodeStore:
                         episode["title"] = content[:200]
                 bucket = {
                     "observation": "observations",
+                    "error": "errors",
                     "attempt": "attempts",
                     "decision": "decisions",
                     "outcome": "outcomes",
@@ -299,15 +294,38 @@ class EpisodeStore:
         return visible
 
     @staticmethod
+    def _event_window(
+        events: list[dict[str, Any]],
+        anchors: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not events:
+            return []
+        anchor_ids = {
+            str(event.get("event_id") or "") for event in anchors if event.get("event_id")
+        }
+        indices = [
+            index
+            for index, event in enumerate(events)
+            if str(event.get("event_id") or "") in anchor_ids
+        ]
+        anchor = indices[-1] if indices else len(events) - 1
+        start = max(0, anchor - EPISODE_SEARCH_WINDOW_RADIUS)
+        stop = min(len(events), anchor + EPISODE_SEARCH_WINDOW_RADIUS + 1)
+        return events[start:stop]
+
+    @staticmethod
     def _hit(
         episode: dict[str, Any],
         events: list[dict[str, Any]],
         *,
         score: float,
         traversal_steps: list[str] | None = None,
+        all_events: list[dict[str, Any]] | None = None,
+        matched_events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         if not events:
             return None
+        visible_events = list(all_events or events)
         representative = events[-1]
         citations: list[dict[str, Any]] = []
         seen_refs: set[tuple[str, str, str, str]] = set()
@@ -349,14 +367,32 @@ class EpisodeStore:
             "snippet": snippet,
             "kind": "episode",
             "related_turn_ids": list(
-                dict.fromkeys(str(event.get("turn_id") or "") for event in events)
+                dict.fromkeys(
+                    str(event.get("turn_id") or "") for event in visible_events
+                )
             ),
+            "event_ids": [
+                str(event.get("event_id") or "")
+                for event in visible_events
+                if event.get("event_id")
+            ],
+            "matched_event_ids": [
+                str(event.get("event_id") or "")
+                for event in (matched_events or events)
+                if event.get("event_id")
+            ],
             "event_chain": chain,
             "citations": citations,
             "traversal_steps": list(traversal_steps or []),
             "evidence": {
                 "source": "episode",
                 "episode_id": episode.get("episode_id"),
+            },
+            "evidence_page": {
+                "returned_events": len(events),
+                "total_events": len(visible_events),
+                "has_more": len(events) < len(visible_events),
+                "expand_tool": "memory_expand_evidence",
             },
         }
 
@@ -415,11 +451,13 @@ class EpisodeStore:
                 matched.append(event)
             if not matched:
                 continue
-            # Return the complete visible chain so causes/outcomes remain coherent.
+            window = self._event_window(events, matched)
             hit = self._hit(
                 episode,
-                events,
+                window,
                 score=score / max(len(q_tokens), 1),
+                all_events=events,
+                matched_events=matched,
             )
             if hit is not None:
                 hits.append(hit)
@@ -582,11 +620,23 @@ class EpisodeStore:
                 expanded_events.sort(key=lambda event: float(event.get("ts") or 0))
                 if not expanded_events:
                     expanded_events = events
+            anchors = list(expanded_events)
+            if "locate_outcome" in normalized:
+                anchors = [
+                    event for event in expanded_events if event.get("type") == "outcome"
+                ]
+            elif "locate_decision" in normalized:
+                anchors = [
+                    event for event in expanded_events if event.get("type") == "decision"
+                ]
+            window = self._event_window(expanded_events, anchors)
             hit = self._hit(
                 episode,
-                expanded_events,
+                window,
                 score=max(0.1, entity_score + token_score / max(len(_tokens(query)), 1)),
                 traversal_steps=normalized,
+                all_events=expanded_events,
+                matched_events=anchors,
             )
             if hit is not None:
                 by_episode[str(episode.get("episode_id") or "")] = hit
@@ -599,6 +649,116 @@ class EpisodeStore:
             out.append(hit)
         out.sort(key=lambda row: -float(row.get("score") or 0))
         return out[: max(1, limit)]
+
+    def expand_evidence(
+        self,
+        *,
+        episode_id: str,
+        scope: str,
+        session_id: str,
+        workspace_key: str,
+        after_event_id: str = "",
+        limit: int = 8,
+        allowed_turn_ids: set[str] | None = None,
+        before_ts: float | None = None,
+    ) -> dict[str, Any]:
+        if limit < 1 or limit > EPISODE_EXPAND_LIMIT_MAX:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    f"evidence page limit must be 1..{EPISODE_EXPAND_LIMIT_MAX}",
+                )
+            )
+        episode = (self._read().get("episodes") or {}).get(episode_id)
+        if not isinstance(episode, dict):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_EPISODE_NOT_FOUND",
+                    f"episode not found: {episode_id}",
+                )
+            )
+        if scope == "session" and episode.get("session_id") != session_id:
+            raise AriadneError(
+                app_error("ARIADNE_EPISODE_NOT_FOUND", "episode is outside session scope")
+            )
+        if (
+            scope == "workspace"
+            and episode.get("workspace_key") != workspace_key
+        ) or (
+            scope == "session"
+            and workspace_key
+            and episode.get("workspace_key") != workspace_key
+        ):
+            raise AriadneError(
+                app_error("ARIADNE_EPISODE_NOT_FOUND", "episode is outside workspace scope")
+            )
+        events = self._visible_events(
+            episode,
+            allowed_turn_ids=(
+                allowed_turn_ids if episode.get("session_id") == session_id else None
+            ),
+            before_ts=before_ts,
+        )
+        start = 0
+        cursor = (after_event_id or "").strip()
+        if cursor:
+            ids = [str(event.get("event_id") or "") for event in events]
+            if cursor not in ids:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_EPISODE_EVENT_NOT_FOUND",
+                        "evidence cursor does not identify a visible event",
+                        episode_id=episode_id,
+                        event_id=cursor,
+                    )
+                )
+            start = ids.index(cursor) + 1
+
+        page: list[dict[str, Any]] = []
+        candidate_events = events[start : start + limit]
+        for event in candidate_events:
+            proposed = [*page, copy.deepcopy(event)]
+            probe = {
+                "episode_id": episode_id,
+                "events": proposed,
+                "has_more": start + len(proposed) < len(events),
+                "next_after_event_id": str(proposed[-1].get("event_id") or ""),
+                "max_bytes": EPISODE_EXPAND_BYTES_MAX,
+                "returned_bytes": EPISODE_EXPAND_BYTES_MAX,
+            }
+            if len(
+                json.dumps(probe, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ) > EPISODE_EXPAND_BYTES_MAX:
+                break
+            page = proposed
+        if candidate_events and not page:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_EVIDENCE_BUDGET",
+                    "one episode event exceeds the evidence page byte budget",
+                    episode_id=episode_id,
+                    max_bytes=EPISODE_EXPAND_BYTES_MAX,
+                )
+            )
+        has_more = start + len(page) < len(events)
+        next_cursor = str(page[-1].get("event_id") or "") if page else cursor
+        response = {
+            "episode_id": episode_id,
+            "events": page,
+            "has_more": has_more,
+            "next_after_event_id": next_cursor if has_more else "",
+            "max_bytes": EPISODE_EXPAND_BYTES_MAX,
+        }
+        response["returned_bytes"] = 0
+        for _ in range(2):
+            response["returned_bytes"] = len(
+                json.dumps(
+                    response, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+            )
+        return response
 
     def list(self, *, session_id: str | None = None) -> list[dict[str, Any]]:
         rows = []
