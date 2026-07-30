@@ -2,11 +2,11 @@
 
 Scopes: ``user`` | ``workspace`` | ``session`` (design/memory-scopes.md).
 IDs are stable UUIDs; delete does **not** renumber remaining entries.
+Shared user curated uses fcntl-locked RMW (multi session/workspace safe).
 """
 
 from __future__ import annotations
 
-import json
 import re
 import time
 import uuid
@@ -15,10 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import AriadneError, app_error
+from .json_file import locked_read_json, locked_update_json
 
 ENTRY_LIMIT = 24
 ENTRY_CHAR_LIMIT = 600
 SCOPES = frozenset({"user", "workspace", "session"})
+_EMPTY = {"user": [], "workspace": [], "session": {}}
 
 
 @dataclass
@@ -30,30 +32,27 @@ class CuratedStore:
     def __post_init__(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
-            self._write({"user": [], "workspace": [], "session": {}})
+            locked_update_json(self.path, lambda d: d, default=dict(_EMPTY))
         else:
             self._migrate_if_needed()
 
     def _migrate_if_needed(self) -> None:
-        data = self._read()
-        changed = False
-        if "workspace" not in data:
-            data["workspace"] = []
-            changed = True
-        for scope_key in ("user", "workspace"):
-            items = list(data.get(scope_key) or [])
-            new_items, ch = self._stabilize_entries(items)
-            if ch:
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            if not isinstance(data, dict):
+                data = dict(_EMPTY)
+            if "workspace" not in data:
+                data["workspace"] = []
+            for scope_key in ("user", "workspace"):
+                items = list(data.get(scope_key) or [])
+                new_items, _ = self._stabilize_entries(items)
                 data[scope_key] = new_items
-                changed = True
-        sessions = data.setdefault("session", {})
-        for sid, items in list(sessions.items()):
-            new_items, ch = self._stabilize_entries(list(items or []))
-            if ch:
+            sessions = data.setdefault("session", {})
+            for sid, items in list(sessions.items()):
+                new_items, _ = self._stabilize_entries(list(items or []))
                 sessions[sid] = new_items
-                changed = True
-        if changed:
-            self._write(data)
+            return data
+
+        locked_update_json(self.path, mut, default=dict(_EMPTY))
 
     @staticmethod
     def _stabilize_entries(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
@@ -62,7 +61,6 @@ class CuratedStore:
         for item in entries:
             row = dict(item)
             eid = str(row.get("id") or "").strip()
-            # Legacy e1, e2 renumbering scheme → stable id once
             if not eid or re.fullmatch(r"e\d+", eid):
                 row["id"] = uuid.uuid4().hex[:12]
                 changed = True
@@ -70,7 +68,6 @@ class CuratedStore:
                 row["source_turn_id"] = ""
                 changed = True
             if "source_session_id" not in row:
-                # Do not invent a session; leave empty until a write stamps it.
                 row["source_session_id"] = ""
                 changed = True
             if "updated_at" not in row:
@@ -80,12 +77,13 @@ class CuratedStore:
         return out, changed
 
     def _read(self) -> dict[str, Any]:
-        return json.loads(self.path.read_text(encoding="utf-8"))
-
-    def _write(self, data: dict[str, Any]) -> None:
-        self.path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        data = locked_read_json(self.path, default=dict(_EMPTY))
+        if not isinstance(data, dict):
+            return dict(_EMPTY)
+        data.setdefault("user", [])
+        data.setdefault("workspace", [])
+        data.setdefault("session", {})
+        return data
 
     def _entries(
         self, data: dict[str, Any], *, scope: str, session_id: str
@@ -161,9 +159,9 @@ class CuratedStore:
                     "action must be add|update|remove|read",
                 )
             )
-        data = self._read()
-        entries = self._entries(data, scope=scope, session_id=session_id)
         if action == "read":
+            data = self._read()
+            entries = self._entries(data, scope=scope, session_id=session_id)
             return {
                 "action": "read",
                 "scope": scope,
@@ -171,6 +169,7 @@ class CuratedStore:
                 "entry_count": len(entries),
                 "entry_limit": self.entry_limit,
             }
+
         clean = (content or "").strip()
         if action in {"add", "update"}:
             if not clean:
@@ -185,54 +184,73 @@ class CuratedStore:
                         entry_char_limit=self.entry_char_limit,
                     )
                 )
-        if action == "add":
-            if len(entries) >= self.entry_limit:
-                raise AriadneError(
-                    app_error(
-                        "ARIADNE_INVALID_TOOL_ARGS",
-                        f"curated memory full ({self.entry_limit})",
-                        entry_limit=self.entry_limit,
-                        entry_count=len(entries),
+
+        result: dict[str, Any] = {}
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            nonlocal result
+            if not isinstance(data, dict):
+                data = dict(_EMPTY)
+            data.setdefault("user", [])
+            data.setdefault("workspace", [])
+            data.setdefault("session", {})
+            entries = self._entries(data, scope=scope, session_id=session_id)
+            if action == "add":
+                if len(entries) >= self.entry_limit:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_INVALID_TOOL_ARGS",
+                            f"curated memory full ({self.entry_limit})",
+                            entry_limit=self.entry_limit,
+                            entry_count=len(entries),
+                        )
                     )
+                entries.append(
+                    {
+                        "id": uuid.uuid4().hex[:12],
+                        "content": clean,
+                        "source_turn_id": (source_turn_id or "").strip(),
+                        "source_session_id": (
+                            source_session_id or session_id or ""
+                        ).strip(),
+                        "updated_at": time.time(),
+                    }
                 )
-            entries.append(
-                {
-                    "id": uuid.uuid4().hex[:12],
+            elif action == "update":
+                idx = self._resolve_ref(entries, entry_ref)
+                prev = entries[idx]
+                entries[idx] = {
+                    "id": prev["id"],
                     "content": clean,
-                    "source_turn_id": (source_turn_id or "").strip(),
-                    "source_session_id": (source_session_id or session_id or "").strip(),
+                    "source_turn_id": (
+                        source_turn_id or prev.get("source_turn_id") or ""
+                    ),
+                    "source_session_id": (
+                        source_session_id
+                        or prev.get("source_session_id")
+                        or session_id
+                        or ""
+                    ),
                     "updated_at": time.time(),
                 }
+            elif action == "remove":
+                idx = self._resolve_ref(entries, entry_ref or clean)
+                entries.pop(idx)
+            self._set_entries(
+                data, scope=scope, session_id=session_id, entries=entries
             )
-        elif action == "update":
-            idx = self._resolve_ref(entries, entry_ref)
-            prev = entries[idx]
-            entries[idx] = {
-                "id": prev["id"],
-                "content": clean,
-                "source_turn_id": (source_turn_id or prev.get("source_turn_id") or ""),
-                "source_session_id": (
-                    source_session_id
-                    or prev.get("source_session_id")
-                    or session_id
-                    or ""
-                ),
-                "updated_at": time.time(),
+            result = {
+                "action": action,
+                "scope": scope,
+                "entries": entries,
+                "entry_count": len(entries),
+                "entry_limit": self.entry_limit,
+                "message": f"curated memory {action} ok",
             }
-        elif action == "remove":
-            idx = self._resolve_ref(entries, entry_ref or clean)
-            entries.pop(idx)
-        # Stable IDs: do not renumber after delete
-        self._set_entries(data, scope=scope, session_id=session_id, entries=entries)
-        self._write(data)
-        return {
-            "action": action,
-            "scope": scope,
-            "entries": entries,
-            "entry_count": len(entries),
-            "entry_limit": self.entry_limit,
-            "message": f"curated memory {action} ok",
-        }
+            return data
+
+        locked_update_json(self.path, mut, default=dict(_EMPTY))
+        return result
 
     def _resolve_ref(self, entries: list[dict[str, Any]], ref: str) -> int:
         token = (ref or "").strip().lower()
@@ -240,7 +258,6 @@ class CuratedStore:
             raise AriadneError(
                 app_error("ARIADNE_INVALID_TOOL_ARGS", "entry_ref is required")
             )
-        # 1-based index still accepted for ergonomics
         if token.isdigit():
             idx = int(token) - 1
             if 0 <= idx < len(entries):
