@@ -1,6 +1,6 @@
 # Design: Closed-Loop Agent Execution (Personal / 2C)
 
-Status: **active delivery** (Phase 14a implemented; later phases pending)
+Status: **active delivery** (Phases 14a–b implemented; later phases pending)
 Audience: implementers  
 Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [turn-lifecycle.md](turn-lifecycle.md),
 [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
@@ -440,9 +440,10 @@ Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 
 ### Phase 14b — Replan + tool metadata (P0/P1)
 
-- [ ] Structured replan with `plan_revisions`  
-- [ ] ToolSpec `side_effect_level`, `verification_hint`, richer errors  
-- [ ] Goal-level checks + `needs_input` when blocked  
+- [x] Structured evidence-citing replan with append-only `plan_revisions`
+- [x] ToolSpec side effect/network/idempotency/verification/failure metadata
+- [x] Metadata-driven approval and enforced `required_credentials`
+- [x] Goal-level checks + `needs_input` when blocked
 
 ### Phase 14c — Projector + Context Compiler (P1)
 

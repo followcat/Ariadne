@@ -68,6 +68,19 @@ class GitLabPlugin:
                     "additionalProperties": False,
                 },
                 handler=gitlab_request,
+                required_credentials=("gitlab.token",),
+                side_effect_level="unknown",
+                side_effect_resolver=lambda args: (
+                    "read"
+                    if str(args.get("method") or "GET").upper() in {"GET", "HEAD"}
+                    else (
+                        "destructive"
+                        if str(args.get("method") or "GET").upper() == "DELETE"
+                        else "write"
+                    )
+                ),
+                network_access="outbound",
+                idempotent=None,
             ),
             ToolSpec(
                 name="gitlab_list_merge_requests",
@@ -87,6 +100,10 @@ class GitLabPlugin:
                     "additionalProperties": False,
                 },
                 handler=gitlab_list_merge_requests,
+                required_credentials=("gitlab.token",),
+                side_effect_level="read",
+                network_access="outbound",
+                idempotent=True,
             ),
         ]
 

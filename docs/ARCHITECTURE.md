@@ -93,7 +93,7 @@ Import rule:
 ```
 
 **Closed-loop (Phase 14):** optional **task mode** inserts persisted plan / step
-verification around the tool loop (14a shipped; evidence-bound replan is next) — see
+verification and evidence-bound replan around the tool loop (14a–b shipped) — see
 [design/agent-closed-loop.md](design/agent-closed-loop.md). Default short turns
 remain the direct loop above.
 

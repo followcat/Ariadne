@@ -17,7 +17,13 @@ from ..redact import redact_secrets
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.port import SandboxBackend, SandboxSession
 from ..skills.store import SkillStore
-from ..tasks.controller import SUBMIT_TASK_PLAN_NAME, SUBMIT_TASK_PLAN_TOOL, TaskController
+from ..tasks.controller import (
+    REVISE_TASK_PLAN_NAME,
+    REVISE_TASK_PLAN_TOOL,
+    SUBMIT_TASK_PLAN_NAME,
+    SUBMIT_TASK_PLAN_TOOL,
+    TaskController,
+)
 from ..tasks.models import TaskState, TaskSummary
 from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry, dumps_tool_output
 from ..types import (
@@ -204,6 +210,7 @@ class TurnApplication:
     # Completion budget per model call (default 8k; atelier often 16k).
     max_tokens: int = 8192
     task_controller: TaskController | None = None
+    available_credentials: frozenset[str] = frozenset()
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -561,6 +568,7 @@ class TurnApplication:
             approval_hook=self.approval_hook,
             runtime_agent=self.runtime_agent,
             user_id=user_id,
+            available_credentials=self.available_credentials,
         )
 
         # Inspect-only thrash: many reads without writes → nudge then force wrap-up.
@@ -581,6 +589,8 @@ class TurnApplication:
                     # Planning is a kernel control exchange: capabilities remain
                     # unavailable until a valid, persisted plan exists.
                     tools_payload = [SUBMIT_TASK_PLAN_TOOL]
+                elif task_mode and task_state is not None and task_state.replan_required:
+                    tools_payload = [REVISE_TASK_PLAN_TOOL]
                 elif task_mode and task_state is not None and task_state.status in {
                     "needs_input",
                     "completed",
@@ -761,6 +771,76 @@ class TurnApplication:
                     )
                     continue
 
+                if task_mode and any(
+                    str((call.get("function") or {}).get("name") or "")
+                    == REVISE_TASK_PLAN_NAME
+                    for call in tool_calls_payload
+                ):
+                    if self.task_controller is None or task_state is None:
+                        raise AriadneError(
+                            app_error("ARIADNE_TASK_UNAVAILABLE", "TaskController is unavailable")
+                        )
+                    if len(tool_calls_payload) != 1:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TASK_PROTOCOL_ERROR",
+                                "revise_task_plan must be the only call in an exchange",
+                            )
+                        )
+                    control_call = tool_calls_payload[0]
+                    control_id = str(control_call.get("id") or uuid.uuid4().hex)
+                    raw_control = (control_call.get("function") or {}).get("arguments") or "{}"
+                    try:
+                        control_args = (
+                            json.loads(raw_control)
+                            if isinstance(raw_control, str)
+                            else dict(raw_control)
+                        )
+                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TASK_INVALID",
+                                f"task revision arguments are not valid JSON: {exc}",
+                            )
+                        ) from exc
+                    if not isinstance(control_args, dict):
+                        raise AriadneError(
+                            app_error("ARIADNE_TASK_INVALID", "task revision must be an object")
+                        )
+                    task_state = self.task_controller.revise_from_plan(
+                        task_state,
+                        arguments=control_args,
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": control_id,
+                            "content": dumps_tool_output(
+                                {
+                                    "task_id": task_state.task_id,
+                                    "revision": task_state.revision,
+                                    "plan_revision": len(task_state.plan_revisions),
+                                    "current_step_id": task_state.current_step_id,
+                                }
+                            ),
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": self.task_controller.format_context(task_state),
+                        }
+                    )
+                    yield TurnEvent(
+                        "task_replanned",
+                        {
+                            "task_id": task_state.task_id,
+                            "plan_revision": len(task_state.plan_revisions),
+                            "current_step_id": task_state.current_step_id,
+                        },
+                    )
+                    continue
+
                 if not tool_calls_payload:
                     text = (assistant.content or "").strip()
                     if not text:
@@ -916,6 +996,7 @@ class TurnApplication:
 
                 task_attempt_id = ""
                 task_attempt_spec = None
+                task_attempt_effect = "unknown"
                 if task_mode:
                     if self.task_controller is None or task_state is None:
                         raise AriadneError(
@@ -929,10 +1010,28 @@ class TurnApplication:
                         for call in tool_calls_payload
                     ]
                     material_specs = []
-                    for capability_name in capability_names:
+                    for capability_name, capability_call in zip(
+                        capability_names, tool_calls_payload, strict=True
+                    ):
                         spec = self.tools.get(capability_name)
-                        if spec is None or spec.side_effect_level not in {"none", "read"}:
-                            material_specs.append(spec)
+                        raw_effect_args = (
+                            (capability_call.get("function") or {}).get("arguments") or "{}"
+                        )
+                        try:
+                            effect_args = (
+                                json.loads(raw_effect_args)
+                                if isinstance(raw_effect_args, str)
+                                else dict(raw_effect_args)
+                            )
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            effect_args = {}
+                        effect = (
+                            spec.effect_for(effect_args)
+                            if spec is not None and isinstance(effect_args, dict)
+                            else "unknown"
+                        )
+                        if effect not in {"none", "read"}:
+                            material_specs.append((spec, effect))
                     if len(material_specs) > 1:
                         raise AriadneError(
                             app_error(
@@ -942,7 +1041,7 @@ class TurnApplication:
                             )
                         )
                     if material_specs:
-                        task_attempt_spec = material_specs[0]
+                        task_attempt_spec, task_attempt_effect = material_specs[0]
                         task_state, task_step, task_attempt_id = self.task_controller.start_attempt(
                             task_state
                         )
@@ -1119,6 +1218,7 @@ class TurnApplication:
                         task_state,
                         traces=exchange_traces,
                         spec=task_attempt_spec,
+                        effect_level=task_attempt_effect,
                         attempt_id=task_attempt_id,
                     )
                     task_state = outcome.state

@@ -239,7 +239,13 @@ def compose_agent(settings: Settings) -> Agent:
     store_paths.append(Path(plugin_root) / "plugins.json")
     for store_path in store_paths:
         plugin_configs.update(PluginStore(store_path).enabled())
+    available_credentials: set[str] = set()
     for plugin_name, plugin_config in plugin_configs.items():
+        available_credentials.update(
+            f"{plugin_name}.{key}"
+            for key, value in plugin_config.items()
+            if str(value or "").strip()
+        )
         for spec in build_plugin_tools(plugin_name, plugin_config):
             tools.register(spec)
 
@@ -283,6 +289,7 @@ def compose_agent(settings: Settings) -> Agent:
             store=SQLiteTaskStore(data_dir / "tasks.sqlite3"),
             verifier=DeterministicVerifier(settings.workspace),
         ),
+        available_credentials=frozenset(available_credentials),
     )
     return Agent(
         turn_app=turn_app,

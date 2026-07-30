@@ -232,7 +232,7 @@ Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
 **North star:** after each material action, verify with evidence; update the plan
 from evidence — not from “tool returned success.”
 
-**Status: 14a shipped; 14b–e pending.**
+**Status: 14a–b shipped; 14c–e pending.**
 
 #### 14a — Verify + TaskState (P0)
 - [x] `TaskState` persistence (local SQLite, task identity + active session
@@ -250,10 +250,12 @@ from evidence — not from “tool returned success.”
 - [x] Offline tests: fake model + file change + exit-code style verification
 
 #### 14b — Replan + tool metadata (P0/P1)
-- [ ] Structured replan with append-only `plan_revisions` (must cite evidence)
-- [ ] Goal-level checks; `needs_input` when blocked on user
-- [ ] ToolSpec optional: `side_effect_level`, `verification_hint`, richer
+- [x] Structured replan with append-only `plan_revisions` (must cite evidence)
+- [x] Goal-level checks; `needs_input` when blocked on user
+- [x] ToolSpec optional: `side_effect_level`, `network_access`, idempotency,
+  `verification_hint`, richer
   failure codes (one registry only)
+- [x] Approval consumes effect metadata; required credentials fail closed
 
 #### 14c — Cognitive state + Context Compiler (P1)
 - [ ] Opt-in evidence-bound L2 projector (no silent empty success)

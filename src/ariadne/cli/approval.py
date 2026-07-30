@@ -17,7 +17,7 @@ from typing import Any, Callable
 from . import ui
 from .grants import GrantStore
 
-# tools that mutate the filesystem / run commands / mutate user skills
+# Legacy display/export list; policy decisions use ToolSpec effect metadata.
 WRITE_TOOLS = {"sandbox_exec", "sandbox_write_file", "sandbox_edit_file", "skill_manage"}
 
 ConfirmFn = Callable[[str], bool]
@@ -39,7 +39,7 @@ def make_approval_hook(
     confirm: ConfirmFn | None = None,
     grant_store: GrantStore | None = None,
     session_id: str = "",
-) -> Callable[[str, dict[str, Any]], bool] | None:
+) -> Callable[[str, dict[str, Any], dict[str, Any]], bool] | None:
     """Build the approval hook for a mode. confirm defaults to rich prompt."""
     if mode == "auto":
         return None
@@ -61,11 +61,18 @@ def make_approval_hook(
                 ui.print_info("no input available — denied by default")
                 return False
 
-    def hook(name: str, args: dict[str, Any]) -> bool:
-        if name not in WRITE_TOOLS:
+    def hook(
+        name: str,
+        args: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        effect = str((metadata or {}).get("side_effect_level") or "unknown")
+        if effect in {"none", "read"}:
             return True
         if mode == "readonly":
-            ui.print_info(f"denied (readonly): {name} {_describe(name, args)}")
+            ui.print_info(
+                f"denied (readonly, effect={effect}): {name} {_describe(name, args)}"
+            )
             return False
 
         # Reuse durable grant for same fingerprint (approved or executed, not expired)
@@ -80,7 +87,10 @@ def make_approval_hook(
                 ui.print_info(f"approved (grant {str(existing['id'])[:8]}…): {name}")
                 return True
 
-        ui.console.print(f"[yellow]approval requested[/] [bold]{name}[/] {_describe(name, args)}")
+        ui.console.print(
+            f"[yellow]approval requested[/] [bold]{name}[/] "
+            f"effect={effect} {_describe(name, args)}"
+        )
         grant: dict[str, Any] | None = None
         if grant_store is not None:
             grant = grant_store.create_pending(

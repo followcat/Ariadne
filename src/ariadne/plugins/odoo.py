@@ -101,6 +101,10 @@ class OdooPlugin:
                     "additionalProperties": False,
                 },
                 handler=odoo_search_read,
+                required_credentials=("odoo.login", "odoo.password"),
+                side_effect_level="read",
+                network_access="outbound",
+                idempotent=True,
             ),
             ToolSpec(
                 name="odoo_execute",
@@ -118,6 +122,10 @@ class OdooPlugin:
                     "additionalProperties": False,
                 },
                 handler=odoo_execute,
+                required_credentials=("odoo.login", "odoo.password"),
+                side_effect_level="unknown",
+                network_access="outbound",
+                idempotent=None,
             ),
         ]
 

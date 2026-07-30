@@ -13,7 +13,7 @@ from ..errors import AriadneError, app_error
 from ..tools.registry import ToolSpec
 from ..types import ToolCallTrace
 from .fingerprint import workspace_fingerprint
-from .models import EvidenceRef, Observation, OpenQuestion, Step, TaskState
+from .models import EvidenceRef, Observation, OpenQuestion, PlanRevision, Step, TaskState
 from .store import SQLiteTaskStore
 from .verify import DeterministicVerifier
 
@@ -61,6 +61,10 @@ SUBMIT_TASK_PLAN_TOOL: dict[str, Any] = {
                         },
                     },
                 },
+                "goal_checks": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/check"},
+                },
             },
             "$defs": {
                 "check": {
@@ -77,6 +81,37 @@ SUBMIT_TASK_PLAN_TOOL: dict[str, Any] = {
                     },
                 }
             },
+        },
+    },
+}
+
+REVISE_TASK_PLAN_NAME = "revise_task_plan"
+REVISE_TASK_PLAN_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": REVISE_TASK_PLAN_NAME,
+        "description": (
+            "Replace the unverified remainder of a task after verification failure. "
+            "The revision must cite evidence IDs supplied by TASK_STATE."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["reason", "evidence_ids", "steps"],
+            "properties": {
+                "reason": {"type": "string", "minLength": 1},
+                "evidence_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": True,
+                    "items": {"type": "string"},
+                },
+                "steps": SUBMIT_TASK_PLAN_TOOL["function"]["parameters"]["properties"]["steps"],
+                "goal_checks": SUBMIT_TASK_PLAN_TOOL["function"]["parameters"]["properties"][
+                    "goal_checks"
+                ],
+            },
+            "$defs": SUBMIT_TASK_PLAN_TOOL["function"]["parameters"]["$defs"],
         },
     },
 }
@@ -137,10 +172,84 @@ class TaskController:
             user_id=user_id,
             goal=str(arguments.get("goal") or ""),
             steps=raw_steps,
-            goal_checks=[],
+            goal_checks=list(arguments.get("goal_checks") or []),
             workspace_fingerprint=workspace_fingerprint(self.workspace),
         )
         return self.store.save(state, expected_revision=0)
+
+    def revise_from_plan(self, state: TaskState, *, arguments: dict[str, Any]) -> TaskState:
+        if not state.replan_required:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_PROTOCOL_ERROR",
+                    "revise_task_plan is only valid when evidence requires a replan",
+                )
+            )
+        try:
+            Draft202012Validator(
+                REVISE_TASK_PLAN_TOOL["function"]["parameters"]
+            ).validate(arguments)
+        except ValidationError as exc:
+            path = ".".join(str(part) for part in exc.absolute_path)
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_INVALID",
+                    f"task revision failed JSON Schema validation: {exc.message}",
+                    path=path,
+                )
+            ) from exc
+        requested_ids = [str(value) for value in arguments.get("evidence_ids", [])]
+        available = {evidence.evidence_id: evidence for evidence in state.replan_evidence}
+        missing = sorted(set(requested_ids) - available.keys())
+        if missing:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TASK_REPLAN_EVIDENCE_INVALID",
+                    "task revision cited evidence not present in the failed observation",
+                    missing=missing,
+                    available=sorted(available),
+                )
+            )
+        previous_revision = state.revision
+        prior_ids = [
+            step.step_id for step in state.steps if step.status in {"pending", "running", "failed"}
+        ]
+        for step in state.steps:
+            if step.status in {"pending", "running"}:
+                step.status = "skipped"
+        new_steps = [Step.from_plan(value) for value in arguments["steps"]]
+        state.steps.extend(new_steps)
+        state.current_step_id = new_steps[0].step_id
+        if "goal_checks" in arguments:
+            state.goal_checks = [
+                # The model cannot supply IDs; kernel allocates them.
+                check
+                for raw in arguments.get("goal_checks", [])
+                for check in [self._check_from_plan(raw)]
+            ]
+            state.goal_check_results.clear()
+        evidence = [available[evidence_id] for evidence_id in requested_ids]
+        state.plan_revisions.append(
+            PlanRevision(
+                revision=len(state.plan_revisions) + 1,
+                reason=str(arguments["reason"]).strip(),
+                evidence=evidence,
+                prior_step_ids=prior_ids,
+                new_step_ids=[step.step_id for step in new_steps],
+            )
+        )
+        state.replan_required = False
+        state.replan_reason = ""
+        state.replan_evidence.clear()
+        state.open_questions.clear()
+        state.status = "active"
+        return self.store.save(state, expected_revision=previous_revision)
+
+    @staticmethod
+    def _check_from_plan(value: dict[str, Any]):
+        from .models import Check
+
+        return Check.from_plan(value)
 
     def prepare_resume(self, state: TaskState) -> TaskState:
         previous_revision = state.revision
@@ -170,7 +279,36 @@ class TaskController:
             }
             if required and all(result.status == "pass" for result in required.values()):
                 step.status = "verified"
-                self._advance(state)
+                has_more_steps = self._advance(state)
+                if not has_more_steps and not state.goal_checks:
+                    state.status = "completed"
+            changed = True
+        if state.status == "active" and state.current_step is None and state.goal_checks:
+            state.goal_check_results = self.verifier.run_many(
+                state.goal_checks,
+                traces=[],
+                attempt_id=f"{state.task_id}:goal:resume",
+                resume=True,
+            )
+            required_goal_results = [
+                result
+                for result in state.goal_check_results
+                if next(
+                    check for check in state.goal_checks if check.check_id == result.check_id
+                ).required
+            ]
+            if not required_goal_results or all(
+                result.status == "pass" for result in required_goal_results
+            ):
+                state.status = "completed"
+            else:
+                state.status = "needs_input"
+                state.open_questions = [
+                    OpenQuestion(
+                        question_id=f"question_{uuid.uuid4().hex[:12]}",
+                        prompt="Goal checks require fresh evidence after resume.",
+                    )
+                ]
             changed = True
         if changed:
             self.store.save(state, expected_revision=previous_revision)
@@ -260,6 +398,7 @@ class TaskController:
         *,
         traces: Iterable[ToolCallTrace],
         spec: ToolSpec | None,
+        effect_level: str = "unknown",
         attempt_id: str,
     ) -> TaskAttemptOutcome:
         step = state.current_step
@@ -303,18 +442,54 @@ class TaskController:
         safe_retry = bool(
             spec is not None
             and (
-                spec.side_effect_level in {"none", "read"}
+                effect_level in {"none", "read"}
                 or spec.idempotent is True
             )
         )
         if all_required:
             step.status = "verified"
-            self._advance(state)
+            has_more_steps = self._advance(state)
+            if not has_more_steps:
+                state.goal_check_results = self.verifier.run_many(
+                    state.goal_checks,
+                    traces=trace_list,
+                    attempt_id=f"{attempt_id}:goal",
+                )
+                required_goal_results = [
+                    result
+                    for result in state.goal_check_results
+                    if next(
+                        check for check in state.goal_checks if check.check_id == result.check_id
+                    ).required
+                ]
+                goal_verified = not required_goal_results or all(
+                    result.status == "pass" for result in required_goal_results
+                )
+                if goal_verified:
+                    state.status = "completed"
+                else:
+                    state.status = "needs_input"
+                    state.open_questions = [
+                        OpenQuestion(
+                            question_id=f"question_{uuid.uuid4().hex[:12]}",
+                            prompt="All steps ran, but the goal checks were not verified.",
+                        )
+                    ]
         else:
             has_error = any(result.status == "error" for result in required_results)
             retry_available = step.attempt <= step.max_retries and safe_retry
             if step.failure_policy == "retry" and retry_available and not has_error:
                 step.status = "running"
+            elif step.failure_policy == "replan" and not has_error:
+                step.status = "failed"
+                state.status = "active"
+                state.replan_required = True
+                state.replan_reason = "Required done_when checks did not pass."
+                state.replan_evidence = [
+                    evidence
+                    for result in required_results
+                    for evidence in result.evidence
+                ] or list(step.evidence[-len(trace_list) :])
             elif step.failure_policy == "abort":
                 step.status = "failed"
                 state.status = "failed"
@@ -361,14 +536,15 @@ class TaskController:
         return self.store.save(state, expected_revision=previous_revision)
 
     @staticmethod
-    def _advance(state: TaskState) -> None:
+    def _advance(state: TaskState) -> bool:
         next_step = next((step for step in state.steps if step.status == "pending"), None)
         if next_step is None:
             state.current_step_id = None
-            state.status = "completed"
+            return False
         else:
             state.current_step_id = next_step.step_id
             state.status = "active"
+            return True
 
     @staticmethod
     def format_context(state: TaskState) -> str:
@@ -396,6 +572,21 @@ class TaskController:
                 for item in state.steps
             ],
             "open_questions": [q.prompt for q in state.open_questions],
+            "replan": (
+                {
+                    "required": True,
+                    "reason": state.replan_reason,
+                    "evidence_ids": [
+                        evidence.evidence_id for evidence in state.replan_evidence
+                    ],
+                }
+                if state.replan_required
+                else {"required": False}
+            ),
+            "goal_checks": [
+                {"check_id": check.check_id, "kind": check.kind, "spec": check.spec}
+                for check in state.goal_checks
+            ],
         }
         return (
             "[TASK_STATE authoritative]\n"

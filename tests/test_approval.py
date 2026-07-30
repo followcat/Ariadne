@@ -48,7 +48,7 @@ def _app(tmp_path: Path, *, hook) -> TurnApplication:
 
 
 def test_denied_tool_becomes_error_result_not_turn_failure(tmp_path: Path) -> None:
-    app = _app(tmp_path, hook=lambda name, args: False)
+    app = _app(tmp_path, hook=lambda name, args, metadata: False)
 
     async def run():
         return await app.run(prompt="make a file", session_id="s1")
@@ -62,7 +62,7 @@ def test_denied_tool_becomes_error_result_not_turn_failure(tmp_path: Path) -> No
 
 
 def test_allowed_hook_lets_tool_run(tmp_path: Path) -> None:
-    app = _app(tmp_path, hook=lambda name, args: True)
+    app = _app(tmp_path, hook=lambda name, args, metadata: True)
     result = asyncio.run(app.run(prompt="make a file", session_id="s1"))
     assert result.status == "completed"
     assert result.tool_calls[0].status == "completed"
@@ -73,19 +73,19 @@ def test_readonly_mode_denies_writes_allows_reads() -> None:
     hook = make_approval_hook("readonly")
     assert hook is not None
     for name in WRITE_TOOLS:
-        assert hook(name, {}) is False, name
+        assert hook(name, {}, {"side_effect_level": "write"}) is False, name
     for name in ("sandbox_read_file", "memory", "conversation_state", "search_skills", "tool_search"):
-        assert hook(name, {}) is True, name
+        assert hook(name, {}, {"side_effect_level": "read"}) is True, name
 
 
 def test_on_request_asks_and_honors_answer() -> None:
     answers = iter([True, False])
     hook = make_approval_hook("on-request", confirm=lambda q: next(answers))
     assert hook is not None
-    assert hook("sandbox_exec", {"cmd": "rm x"}) is True
-    assert hook("sandbox_edit_file", {"path": "a"}) is False
+    assert hook("sandbox_exec", {"cmd": "rm x"}, {"side_effect_level": "unknown"}) is True
+    assert hook("sandbox_edit_file", {"path": "a"}, {"side_effect_level": "write"}) is False
     # reads never ask
-    assert hook("sandbox_read_file", {}) is True
+    assert hook("sandbox_read_file", {}, {"side_effect_level": "read"}) is True
 
 
 def test_auto_mode_has_no_hook() -> None:
@@ -109,7 +109,7 @@ def test_registry_invoke_checks_hook() -> None:
         session_id="s",
         turn_id="t",
         sandbox=None,
-        approval_hook=lambda name, args: False,
+        approval_hook=lambda name, args, metadata: False,
     )
 
     async def run() -> None:
@@ -121,3 +121,18 @@ def test_registry_invoke_checks_hook() -> None:
             raise AssertionError("expected denial")
 
     asyncio.run(run())
+
+
+def test_approval_uses_dynamic_effect_metadata() -> None:
+    seen: list[str] = []
+
+    def confirm(question: str) -> bool:
+        seen.append(question)
+        return True
+
+    hook = make_approval_hook("on-request", confirm=confirm)
+    assert hook is not None
+    assert hook("generic_request", {"method": "GET"}, {"side_effect_level": "read"})
+    assert not seen
+    assert hook("generic_request", {"method": "POST"}, {"side_effect_level": "write"})
+    assert len(seen) == 1

@@ -374,12 +374,16 @@ class TaskState:
     revision: int = 0
     status: TaskStatus = "active"
     goal_checks: list[Check] = field(default_factory=list)
+    goal_check_results: list[CheckResult] = field(default_factory=list)
     current_step_id: str | None = None
     last_observation: Observation | None = None
     open_questions: list[OpenQuestion] = field(default_factory=list)
     workspace_fingerprint: str = ""
     assumptions: list[Assumption] = field(default_factory=list)
     plan_revisions: list[PlanRevision] = field(default_factory=list)
+    replan_required: bool = False
+    replan_reason: str = ""
+    replan_evidence: list[EvidenceRef] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -428,6 +432,7 @@ class TaskState:
             "status": self.status,
             "goal": self.goal,
             "goal_checks": [asdict(v) for v in self.goal_checks],
+            "goal_check_results": [result.to_dict() for result in self.goal_check_results],
             "steps": [v.to_dict() for v in self.steps],
             "current_step_id": self.current_step_id,
             "last_observation": asdict(self.last_observation) if self.last_observation else None,
@@ -435,6 +440,9 @@ class TaskState:
             "workspace_fingerprint": self.workspace_fingerprint,
             "assumptions": [asdict(v) for v in self.assumptions],
             "plan_revisions": [asdict(v) for v in self.plan_revisions],
+            "replan_required": self.replan_required,
+            "replan_reason": self.replan_reason,
+            "replan_evidence": [asdict(v) for v in self.replan_evidence],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -467,6 +475,9 @@ class TaskState:
             revision=int(value.get("revision") or 0),
             status=cast(TaskStatus, status),
             goal_checks=[Check.from_dict(v) for v in value.get("goal_checks", [])],
+            goal_check_results=[
+                CheckResult.from_dict(v) for v in value.get("goal_check_results", [])
+            ],
             current_step_id=(str(value["current_step_id"]) if value.get("current_step_id") else None),
             last_observation=(
                 Observation.from_dict(raw_observation)
@@ -477,6 +488,11 @@ class TaskState:
             workspace_fingerprint=str(value.get("workspace_fingerprint") or ""),
             assumptions=[Assumption.from_dict(v) for v in value.get("assumptions", [])],
             plan_revisions=[PlanRevision.from_dict(v) for v in value.get("plan_revisions", [])],
+            replan_required=bool(value.get("replan_required", False)),
+            replan_reason=str(value.get("replan_reason") or ""),
+            replan_evidence=[
+                EvidenceRef.from_dict(v) for v in value.get("replan_evidence", [])
+            ],
             created_at=float(value.get("created_at") or 0.0),
             updated_at=float(value.get("updated_at") or 0.0),
         )
@@ -502,6 +518,7 @@ class TaskSummary:
     revision: int
     verified_steps: int
     total_steps: int
+    plan_revisions: int
 
     @classmethod
     def from_state(cls, state: TaskState) -> "TaskSummary":
@@ -513,4 +530,5 @@ class TaskSummary:
             revision=state.revision,
             verified_steps=sum(step.status == "verified" for step in state.steps),
             total_steps=len(state.steps),
+            plan_revisions=len(state.plan_revisions),
         )

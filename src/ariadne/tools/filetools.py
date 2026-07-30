@@ -180,6 +180,10 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "additionalProperties": False,
             },
             handler=sandbox_read_file,
+            side_effect_level="read",
+            network_access="none",
+            idempotent=True,
+            effects=("reads one sandbox file",),
         )
     )
     registry.register(
@@ -201,6 +205,11 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "additionalProperties": False,
             },
             handler=sandbox_write_file,
+            side_effect_level="write",
+            network_access="none",
+            idempotent=True,
+            verification_hint=("path_exists", "file_contains"),
+            effects=("overwrites one sandbox file",),
         )
     )
     registry.register(
@@ -223,6 +232,12 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "additionalProperties": False,
             },
             handler=sandbox_edit_file,
+            side_effect_level="write",
+            network_access="none",
+            idempotent=False,
+            verification_hint=("file_contains",),
+            preconditions=("old_string matches exactly once",),
+            effects=("replaces one exact string occurrence",),
         )
     )
     registry.register(
@@ -240,6 +255,9 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "additionalProperties": False,
             },
             handler=sandbox_list_dir,
+            side_effect_level="read",
+            network_access="none",
+            idempotent=True,
         )
     )
     registry.register(
@@ -257,5 +275,10 @@ def register_file_tools(registry: ToolRegistry) -> None:
                 "additionalProperties": False,
             },
             handler=sandbox_delete_file,
+            side_effect_level="destructive",
+            network_access="none",
+            idempotent=True,
+            verification_hint=("path_absent",),
+            effects=("deletes one sandbox file",),
         )
     )

@@ -26,7 +26,11 @@ class CapabilitySpec:
     exposed_to_llm: bool = True
     tool_exposure: Literal["eager", "named_deferred", "hidden"] = "eager"
     required_credentials: tuple[str, ...] = ()
-    # personal v1 may ignore credentials entirely
+    side_effect_level: Literal["none", "read", "write", "destructive", "unknown"]
+    network_access: Literal["none", "outbound", "unknown"]
+    idempotent: bool | None
+    failure_codes: tuple[str, ...] = ()
+    verification_hint: tuple[str, ...] = ()
 ```
 
 Layering rule (critical):
@@ -48,6 +52,8 @@ Responsibilities:
 - filter visibility for a session
 - build `ToolExposureState` for a turn
 - resolve handlers by name
+- validate arguments with Draft 2020-12 JSON Schema at runtime
+- fail closed when `required_credentials` are absent
 
 There is no second registry for “native”, “plugin”, or “benchmark” tools.
 
@@ -115,6 +121,11 @@ Rules:
 2. Unknown tool → structured error (optionally return error tool result vs fail turn; choose one policy and document it; default **error tool result once, then allow model recovery**, but never invent a handler).
 3. Parallel tool calls: allow only when handlers are side-effect safe; otherwise sequential.
 4. Traces store args/outputs with redaction hooks for secrets.
+5. Approval consumes ToolSpec effect metadata, not a hard-coded tool-name list.
+6. Missing effect metadata means `unknown`, never safe. Dynamic tools resolve
+   effects from validated arguments (for example GET=read, DELETE=destructive).
+7. Task mode accepts at most one material capability call per model exchange
+   and verifies it before another material call.
 
 ## 5. Builtin tools (personal kernel candidates)
 

@@ -17,9 +17,10 @@ ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[Any]]
 ToolExposure = Literal["eager", "named_deferred", "hidden"]
 SideEffectLevel = Literal["none", "read", "write", "destructive", "unknown"]
 NetworkAccess = Literal["none", "outbound", "unknown"]
+SideEffectResolver = Callable[[dict[str, Any]], SideEffectLevel]
 # host-side approval: called with (tool_name, arguments) before dispatch;
 # False denies the invocation (SANDBOX.md: confirmation stays a host concern)
-ApprovalHook = Callable[[str, dict[str, Any]], bool]
+ApprovalHook = Callable[[str, dict[str, Any], dict[str, Any]], bool]
 
 
 @dataclass(slots=True)
@@ -35,6 +36,7 @@ class ToolContext:
     approval_hook: ApprovalHook | None = None
     runtime_agent: Any | None = None  # sandbox.runtime_agent.RuntimeAgent
     user_id: str | None = None
+    available_credentials: frozenset[str] = frozenset()
 
 
 @dataclass(slots=True)
@@ -67,6 +69,7 @@ class ToolSpec:
     verification_hint: tuple[str, ...] = ()
     preconditions: tuple[str, ...] = ()
     effects: tuple[str, ...] = ()
+    side_effect_resolver: SideEffectResolver | None = None
 
     def catalog_phrase(self) -> str:
         """Short discovery phrase (docs CapabilitySpec.description)."""
@@ -90,6 +93,31 @@ class ToolSpec:
 
     def schema_chars(self) -> int:
         return len(json.dumps(self.tool_schema(), ensure_ascii=False, separators=(",", ":")))
+
+    def effect_for(self, arguments: dict[str, Any]) -> SideEffectLevel:
+        effect = (
+            self.side_effect_resolver(arguments)
+            if self.side_effect_resolver is not None
+            else self.side_effect_level
+        )
+        if effect not in {"none", "read", "write", "destructive", "unknown"}:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    f"tool {self.name!r} returned invalid side-effect metadata: {effect!r}",
+                    name=self.name,
+                )
+            )
+        return effect
+
+    def approval_metadata(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "side_effect_level": self.effect_for(arguments),
+            "network_access": self.network_access,
+            "idempotent": self.idempotent,
+            "required_credentials": list(self.required_credentials),
+            "verification_hint": list(self.verification_hint),
+        }
 
 
 # Public alias aligned with TOOLCALL / ARCHITECTURE naming.
@@ -155,7 +183,14 @@ class ToolRegistry:
             phrase = spec.catalog_phrase()
             marker = " (deferred)" if spec.tool_exposure == "named_deferred" else ""
             title = f" [{spec.title}]" if spec.title and spec.title != spec.name else ""
-            lines.append(f"- {spec.name}: {phrase}{marker}{title}")
+            idempotency = (
+                "yes" if spec.idempotent is True else "no" if spec.idempotent is False else "unknown"
+            )
+            planning = (
+                f" effect={spec.side_effect_level} network={spec.network_access} "
+                f"idempotent={idempotency}"
+            )
+            lines.append(f"- {spec.name}: {phrase}{marker}{title};{planning}")
         return "\n".join(lines)
 
     def schema_cost_report(self, *, prefer_deferred: bool = True) -> dict[str, Any]:
@@ -325,7 +360,21 @@ class ToolRegistry:
                     )
                 )
         self.validate_arguments(name, arguments)
-        if ctx.approval_hook is not None and not ctx.approval_hook(name, arguments):
+        missing_credentials = sorted(
+            set(spec.required_credentials) - set(ctx.available_credentials)
+        )
+        if missing_credentials:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_TOOL_CREDENTIALS_MISSING",
+                    f"tool {name!r} is missing required credentials",
+                    name=name,
+                    missing=missing_credentials,
+                )
+            )
+        if ctx.approval_hook is not None and not ctx.approval_hook(
+            name, arguments, spec.approval_metadata(arguments)
+        ):
             raise AriadneError(
                 app_error(
                     "ARIADNE_TOOL_DENIED",
@@ -399,6 +448,11 @@ def build_default_registry(
             handler=sandbox_exec,
             title="Sandbox exec",
             kind="tool",
+            side_effect_level="unknown",
+            network_access="none",
+            idempotent=None,
+            failure_codes=("ARIADNE_SANDBOX_DISABLED", "ARIADNE_TOOL_FAILED"),
+            verification_hint=("command_exit",),
         )
     )
 
@@ -463,6 +517,13 @@ def build_default_registry(
             handler=web_fetch,
             title="Web fetch",
             kind="tool",
+            side_effect_level="read",
+            side_effect_resolver=lambda args: (
+                "read" if str(args.get("method") or "GET").upper() in {"GET", "HEAD"} else "write"
+            ),
+            network_access="outbound",
+            idempotent=None,
+            failure_codes=("ARIADNE_TOOL_DENIED", "ARIADNE_TOOL_FAILED"),
         )
     )
 
@@ -518,6 +579,12 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=memory_tool,
+            side_effect_level="unknown",
+            side_effect_resolver=lambda args: (
+                "read" if str(args.get("action") or "read") == "read" else "write"
+            ),
+            network_access="none",
+            idempotent=None,
         )
     )
 
@@ -574,6 +641,9 @@ def build_default_registry(
                 "additionalProperties": False,
             },
             handler=memory_search_tool,
+            side_effect_level="read",
+            network_access="none",
+            idempotent=True,
         )
     )
 
@@ -680,6 +750,12 @@ def build_default_registry(
             tool_exposure="named_deferred",
             title="Conversation state",
             kind="tool",
+            side_effect_level="unknown",
+            side_effect_resolver=lambda args: (
+                "read" if str(args.get("action") or "read") == "read" else "write"
+            ),
+            network_access="none",
+            idempotent=None,
         )
     )
 
@@ -736,6 +812,9 @@ def build_default_registry(
             handler=search_skills,
             title="Search skills",
             kind="tool",
+            side_effect_level="read",
+            network_access="none",
+            idempotent=True,
         )
     )
 
@@ -833,6 +912,9 @@ def build_default_registry(
             handler=load_skill,
             title="Load skill",
             kind="tool",
+            side_effect_level="read",
+            network_access="none",
+            idempotent=True,
         )
     )
 
@@ -872,6 +954,13 @@ def build_default_registry(
             handler=skill_manage,
             tool_exposure="named_deferred",
             title="Skill manage",
+            side_effect_level="write",
+            side_effect_resolver=lambda args: (
+                "destructive" if str(args.get("action") or "") == "delete" else "write"
+            ),
+            network_access="none",
+            idempotent=False,
+            verification_hint=("path_exists",),
         )
     )
 
@@ -919,6 +1008,9 @@ def build_default_registry(
             handler=tool_search,
             title="Tool search",
             kind="tool",
+            side_effect_level="none",
+            network_access="none",
+            idempotent=True,
         )
     )
 
@@ -941,6 +1033,9 @@ def build_default_registry(
                 tool_exposure="named_deferred",
                 title="Echo note",
                 kind="tool",
+                side_effect_level="none",
+                network_access="none",
+                idempotent=True,
             )
         )
 

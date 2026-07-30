@@ -137,6 +137,7 @@ TurnEventKind = Literal[
     "skill_event",
     "memory_layer",
     "task_started",
+    "task_replanned",
     "task_resumed",
     "task_step_started",
     "task_check_completed",
