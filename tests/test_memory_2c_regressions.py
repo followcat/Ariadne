@@ -29,37 +29,55 @@ def _run(coro: Any) -> Any:
 def test_llm_deep_planner_reads_standard_model_exchange() -> None:
     """The host's real ModelPort returns ModelExchange, not a content dict."""
 
-    model = FakeModel(
-        script=lambda _messages, _tools: {
+    calls: list[str] = []
+
+    def script(messages: list[dict[str, Any]], _tools: Any) -> dict[str, Any]:
+        content = " ".join(str(m.get("content") or "") for m in messages)
+        # Phase marker: rerank system prompt starts with "Rerank memory"
+        if content.lstrip().startswith("Rerank memory"):
+            calls.append("rerank")
+            return {
+                "content": json.dumps({"rerank_order": ["s1:t1", "s1:t2"]})
+            }
+        calls.append("plan")
+        return {
             "content": json.dumps(
                 {
                     "subqueries": ["alpha migration", "beta rollback"],
                     "alias_extra": ["project-blue"],
-                    "rerank_order": ["s1:t1"],
                 }
             )
         }
-    )
+
+    model = FakeModel(script=script)
     planner = make_llm_deep_planner(model)
+    candidates = [
+        {
+            "session_id": "s1",
+            "turn_id": "t1",
+            "snippet": "alpha was migrated before beta",
+        },
+        {
+            "session_id": "s1",
+            "turn_id": "t2",
+            "snippet": "beta rollback notes",
+        },
+    ]
 
     plan = _run(
         planner.plan(
             query="compare alpha migration and beta rollback",
             aliases=[],
-            candidates=[
-                {
-                    "session_id": "s1",
-                    "turn_id": "t1",
-                    "snippet": "alpha was migrated before beta",
-                }
-            ],
+            candidates=candidates,
         )
     )
+    order = _run(planner.rerank(query="compare", candidates=candidates))
 
     assert plan.notes == "llm_planner"
     assert plan.subqueries == ["alpha migration", "beta rollback"]
     assert plan.alias_extra == ["project-blue"]
-    assert plan.rerank_order == ["s1:t1"]
+    assert order == ["s1:t1", "s1:t2"]
+    assert calls == ["plan", "rerank"]
 
 
 def test_deep_rerank_sees_candidates_added_by_subqueries(
@@ -69,7 +87,8 @@ def test_deep_rerank_sees_candidates_added_by_subqueries(
 
     class TwoStagePlanner:
         def __init__(self) -> None:
-            self.candidate_calls: list[set[str]] = []
+            self.plan_calls: list[set[str]] = []
+            self.rerank_calls: list[set[str]] = []
 
         async def plan(
             self,
@@ -83,16 +102,25 @@ def test_deep_rerank_sees_candidates_added_by_subqueries(
                 f"{candidate['session_id']}:{candidate['turn_id']}"
                 for candidate in candidates
             }
-            self.candidate_calls.append(keys)
-            if len(self.candidate_calls) == 1:
-                return DeepPlan(
-                    subqueries=["newly recalled detail"],
-                    notes="decompose",
-                )
+            self.plan_calls.append(keys)
             return DeepPlan(
-                rerank_order=["s1:new-turn", "s1:initial-turn"],
-                notes="rerank",
+                subqueries=["newly recalled detail"],
+                notes="decompose",
             )
+
+        async def rerank(
+            self,
+            *,
+            query: str,
+            candidates: list[dict[str, Any]],
+        ) -> list[str] | None:
+            _ = query
+            keys = {
+                f"{candidate['session_id']}:{candidate['turn_id']}"
+                for candidate in candidates
+            }
+            self.rerank_calls.append(keys)
+            return ["s1:new-turn", "s1:initial-turn"]
 
     planner = TwoStagePlanner()
     mem = Memory.local(path=tmp_path / "memory", deep_planner=planner)
@@ -128,7 +156,7 @@ def test_deep_rerank_sees_candidates_added_by_subqueries(
         )
     )
 
-    assert planner.candidate_calls[-1] == {
+    assert planner.rerank_calls[-1] == {
         "s1:initial-turn",
         "s1:new-turn",
     }
@@ -170,6 +198,66 @@ def test_user_curated_hit_honors_before_turn_clock(tmp_path: Path) -> None:
     )
 
     assert all(hit["turn_id"] != "t2" for hit in result["hits"])
+
+
+def test_curated_asof_excludes_post_cutoff_write_on_old_source_turn(
+    tmp_path: Path,
+) -> None:
+    """Curated updated_at after cutoff must not leak even if source turn is old."""
+    import time
+
+    mem = Memory.local(path=tmp_path / "memory")
+    mem.semantic.index_turn(
+        session_id="s1",
+        turn_id="t1",
+        user_text="older context",
+        assistant_text="",
+        ts=100.0,
+    )
+    mem.semantic.index_turn(
+        session_id="s1",
+        turn_id="t2",
+        user_text="cutoff turn",
+        assistant_text="",
+        ts=200.0,
+    )
+    if mem.user_episodic is not None:
+        mem.user_episodic.index_turn(
+            session_id="s1",
+            turn_id="t1",
+            user_text="older context",
+            assistant_text="",
+            ts=100.0,
+        )
+        mem.user_episodic.index_turn(
+            session_id="s1",
+            turn_id="t2",
+            user_text="cutoff turn",
+            assistant_text="",
+            ts=200.0,
+        )
+    # Write curated after cutoff wall time
+    time.sleep(0.01)
+    mem.apply_curated(
+        action="add",
+        content="post-cutoff curated on old source",
+        scope="user",
+        session_id="s1",
+        source_turn_id="t1",
+    )
+
+    result = _run(
+        mem.memory_search(
+            query="post-cutoff curated",
+            session_id="s1",
+            scope="user",
+            mode="fast",
+            before_turn_id="t2",
+        )
+    )
+    assert all(
+        "post-cutoff" not in str(h.get("snippet") or "") for h in result["hits"]
+    )
 
 
 def test_curated_hit_is_not_reported_as_nonexistent_summary(tmp_path: Path) -> None:

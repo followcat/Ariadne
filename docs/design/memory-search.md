@@ -109,8 +109,10 @@ does not pick another user’s store.
       "score": 0.0,
       "snippet": "grounded excerpt from store",
       "evidence": {
-        "source": "raw | summary | chunk",
+        "source": "raw | summary | chunk | curated",
         "chunk_id": "optional",
+        "entry_id": "optional — required when source=curated",
+        "scope": "optional — curated scope when source=curated",
         "char_range": null
       }
     }
