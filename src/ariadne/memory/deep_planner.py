@@ -27,6 +27,14 @@ class DeepPlan:
     notes: str = ""
 
 
+class DeepRerankError(Exception):
+    """Raised when LLM/network/parse fails during rerank (not a no-op decision)."""
+
+    def __init__(self, notes: str) -> None:
+        super().__init__(notes)
+        self.notes = notes
+
+
 class DeepPlanner(Protocol):
     async def plan(
         self,
@@ -229,14 +237,17 @@ def make_llm_deep_planner(model: Any, *, max_candidates: int = 16) -> DeepPlanne
             ]
             try:
                 body = await _model_complete(model, messages)
-            except Exception:  # noqa: BLE001
-                return None
+            except Exception as exc:  # noqa: BLE001
+                raise DeepRerankError(
+                    f"llm_rerank_error:{type(exc).__name__}"
+                ) from exc
             obj = _parse_json_object(body)
             if obj is None:
-                return None
+                raise DeepRerankError("llm_rerank_parse_error")
             allowed = set(allowed_keys)
             rerank_raw = obj.get("rerank_order")
             if not isinstance(rerank_raw, list):
+                # Model chose not to reorder (or malformed) — treat as no-op
                 return None
             order = [str(k) for k in rerank_raw if str(k) in allowed]
             return order or None

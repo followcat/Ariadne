@@ -9,7 +9,7 @@ from typing import Any
 from ..errors import AriadneError, app_error
 from ..types import LayerReport, MemoryContext, MemoryContextSummary
 from .curated import CuratedStore
-from .deep_planner import DeepPlan, DeepPlanner, LocalSplitPlanner
+from .deep_planner import DeepPlan, DeepPlanner, DeepRerankError, LocalSplitPlanner
 from .embeddings import HashEmbeddingProvider
 from .projection import ProjectionWorker
 from .semantic import SemanticIndex
@@ -480,9 +480,8 @@ class MemoryFacade:
                 merged_h: dict[str, dict[str, Any]] = {
                     f"{h.get('session_id')}:{h.get('turn_id')}": h for h in hits
                 }
-                ran_subqueries = False
+                ran_subqueries = bool(subqs)
                 for part in subqs:
-                    ran_subqueries = True
                     sub = await _fast(part, expand=expand or None)
                     for hit in sub:
                         key = f"{hit.get('session_id')}:{hit.get('turn_id')}"
@@ -493,36 +492,26 @@ class MemoryFacade:
                             merged_h[key] = hit
                 deep_hits = list(merged_h.values())
                 deep_hits.sort(key=lambda x: -float(x.get("score") or 0))
-                # Phase 2: always try rerank on final candidates when deep path
-                rerank_order: list[str] | None = None
-                rerank_fn = getattr(planner, "rerank", None)
-                if callable(rerank_fn):
-                    try:
-                        rerank_order = await rerank_fn(
-                            query=q, candidates=deep_hits
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        notes.append(f"deep:rerank_error:{type(exc).__name__}")
-                        rerank_order = None
-                if rerank_order is None and not callable(rerank_fn):
-                    # Planners that only implement plan() (second call = rerank)
-                    try:
-                        plan2 = await planner.plan(
-                            query=q,
-                            aliases=expand,
-                            candidates=deep_hits,
-                        )
-                        rerank_order = plan2.rerank_order
-                        if plan2.notes:
-                            notes.append(f"deep:phase2:{plan2.notes}")
-                    except Exception as exc:  # noqa: BLE001
-                        notes.append(
-                            f"deep:rerank_plan_error:{type(exc).__name__}"
-                        )
-                final_order_before = [
+                order_after_sub = [
                     f"{h.get('session_id')}:{h.get('turn_id')}" for h in deep_hits
                 ]
+                set_changed = set(order_after_sub) != set(seed_keys)
+                order_changed_sub = order_after_sub != seed_order
+                # Phase 2: require DeepPlanner.rerank (no plan-only compatibility)
+                rerank_order: list[str] | None = None
                 did_rerank = False
+                try:
+                    rerank_order = await planner.rerank(
+                        query=q, candidates=deep_hits
+                    )
+                except DeepRerankError as exc:
+                    notes.append(f"deep:{exc.notes}")
+                    notes.append("deep:fallback_fast")
+                    rerank_order = None
+                except Exception as exc:  # noqa: BLE001
+                    notes.append(f"deep:rerank_error:{type(exc).__name__}")
+                    notes.append("deep:fallback_fast")
+                    rerank_order = None
                 if rerank_order:
                     order = {k: i for i, k in enumerate(rerank_order)}
                     deep_hits.sort(
@@ -538,7 +527,7 @@ class MemoryFacade:
                         f"{h.get('session_id')}:{h.get('turn_id')}"
                         for h in deep_hits
                     ]
-                    did_rerank = final_order != final_order_before
+                    did_rerank = final_order != order_after_sub
                     if did_rerank:
                         notes.append("deep:rerank")
                 hits = deep_hits[:lim]
@@ -547,21 +536,21 @@ class MemoryFacade:
                 ]
                 set_changed = set(final_keys) != set(seed_keys)
                 order_changed = final_keys != seed_order[: len(final_keys)]
-                # Honest mode_used: only deep when decomp/rerank changed something
-                if ran_subqueries and (set_changed or len(subqs) > 1):
+                # Honest mode_used: only deep when set/order actually changed
+                if set_changed or order_changed or did_rerank:
                     mode_used = "deep"
-                    if self.deep_planner is None:
+                    if ran_subqueries and self.deep_planner is None:
                         notes.append("deep:local_query_split")
                         notes.append("deep:no_llm_planner")
-                elif did_rerank or (rerank_order and order_changed):
-                    mode_used = "deep"
-                    notes.append("deep:rerank_only")
-                elif ran_subqueries and not set_changed and not order_changed:
+                    if did_rerank and not ran_subqueries:
+                        notes.append("deep:rerank_only")
+                    elif did_rerank and not set_changed and order_changed:
+                        notes.append("deep:rerank")
+                else:
                     mode_used = "fast"
-                    notes.append("deep:noop_unchanged")
-                elif not subqs and not did_rerank:
-                    mode_used = "fast"
-                    if plan.notes and "local_noop" not in plan.notes:
+                    if ran_subqueries:
+                        notes.append("deep:noop_unchanged")
+                    elif plan.notes and "local_noop" not in (plan.notes or ""):
                         notes.append("deep:no_work")
 
         # Normalize hit evidence — require real turn_id; no curated: synthetic ids
@@ -705,14 +694,18 @@ class MemoryFacade:
                 continue
             if allowed_turn_ids is not None and src_turn not in allowed_turn_ids:
                 continue
+            # Strict as-of for curated:
+            # - With before_ts: require updated_at < before_ts AND source-turn clock
+            # - Without before_ts (legacy transcript-order only): cannot prove
+            #   write time vs cutoff → exclude all curated for this search.
+            if before_turn_id and before_ts is None:
+                continue
             if before_ts is not None:
-                # Entry must not have been written/updated at or after the cutoff.
                 updated_at = item.get("updated_at")
                 if updated_at is None or float(updated_at) >= float(before_ts):
                     continue
                 clock = self._lookup_turn_clock(src_turn, session_id=src_session)
                 if clock is None:
-                    # Cannot prove source turn is before cutoff → exclude
                     continue
                 if float(clock[0]) >= float(before_ts):
                     continue
