@@ -168,30 +168,29 @@ def test_memory_search_user_scope_curated(tmp_path: Path) -> None:
     )
     assert result["hits"]
     assert "Asia/Shanghai" in result["hits"][0]["snippet"]
-    assert result["hits"][0]["evidence"]["source"] == "curated"
     assert result["hits"][0]["turn_id"] == "t-pref"
-    assert "curated_only" in result["notes"]
-    assert "user_wide_episodic_index=not_implemented" in result["notes"]
+    assert result["hits"][0]["session_id"]
+    assert result["hits"][0]["evidence"]["source"] in {"raw", "summary", "chunk"}
 
 
-def test_user_scope_hit_without_source_turn_uses_entry_id(tmp_path: Path) -> None:
+def test_user_scope_hit_without_source_turn_is_dropped(tmp_path: Path) -> None:
+    """Curated without source_turn_id must not appear as synthetic curated: ids."""
     mem = Memory.local(path=tmp_path / "mem")
-    added = mem.apply_curated(
+    mem.apply_curated(
         action="add",
         content="favorite editor is helix",
         scope="user",
         session_id="s1",
         source_turn_id="",
     )
-    eid = added["entries"][0]["id"]
     result = asyncio.run(
         mem.memory_search(
             query="helix editor", session_id="s1", scope="user", mode="fast"
         )
     )
-    assert result["hits"]
-    assert result["hits"][0]["turn_id"] == f"curated:{eid}"
-    assert result["hits"][0]["evidence"]["entry_id"] == eid
+    assert all(not str(h["turn_id"]).startswith("curated:") for h in result["hits"])
+    # No provenance → no curated hit
+    assert not any("helix" in str(h.get("snippet") or "").lower() for h in result["hits"])
 
 
 def test_limit_over_max_validation_error(tmp_path: Path) -> None:
