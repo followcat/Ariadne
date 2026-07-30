@@ -10,11 +10,14 @@ import pytest
 from ariadne.errors import AriadneError
 from ariadne.kernel.turn import TurnApplication
 from ariadne.memory import EvidenceRef, Memory
-from ariadne.memory.auto_capture import make_llm_memory_extractor
+from ariadne.memory.auto_capture import (
+    AutomaticMemoryProjector,
+    make_llm_memory_extractor,
+)
 from ariadne.memory.reflection import ReflectionStore
 from ariadne.memory.state import ConversationStateStore
 from ariadne.model.fake import FakeModel
-from ariadne.redact import redact_secrets
+from ariadne.redact import redact_secrets, redact_text
 from ariadne.sandbox.local import LocalWorkdirSandbox
 from ariadne.skills.store import SkillStore
 from ariadne.tools.registry import ToolContext, ToolSpec, build_default_registry
@@ -809,6 +812,88 @@ def test_model_facing_state_tool_cannot_supply_evidence_authority_or_terminal_st
     )
 
 
+def test_verified_goal_cannot_be_reactivated_by_model_facing_state_tool(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="verified-reactivation",
+        turn_id="t1",
+        user="目标是完成安全检查。",
+    )
+    _capture(
+        memory,
+        session_id="verified-reactivation",
+        turn_id="t2",
+        user="继续",
+        verified_goal={
+            "status": "completed",
+            "task_id": "task-security",
+            "goal": "完成安全检查",
+            "summary": "安全检查已验证通过",
+            "check_ids": ["security-check"],
+        },
+    )
+    registry = build_default_registry(memory=memory, skills=SkillStore({}))
+    ctx = ToolContext(
+        session_id="verified-reactivation",
+        turn_id="t3",
+        sandbox=None,
+        memory=memory,
+        user_text="谢谢",
+        evidence_text="谢谢",
+        observed_evidence_text="谢谢",
+    )
+
+    with pytest.raises(AriadneError) as model_write:
+        _run(
+            registry.invoke(
+                "conversation_state",
+                {
+                    "action": "apply",
+                    "operations": [
+                        {
+                            "op": "set_status",
+                            "entity_id": "session:current_goal",
+                            "status": "active",
+                            "evidence_quote": "谢谢",
+                        }
+                    ],
+                },
+                ctx,
+            )
+        )
+    assert model_write.value.error.code == "ARIADNE_TOOL_DENIED"
+
+    with pytest.raises(AriadneError) as lower_authority:
+        memory.state.apply_ops(
+            session_id="verified-reactivation",
+            source_turn_id="t3",
+            evidence_text="谢谢",
+            operations=[
+                {
+                    "op": "set_status",
+                    "entity_id": "session:current_goal",
+                    "status": "active",
+                    "authority": "user_explicit",
+                    "evidence_quote": "谢谢",
+                }
+            ],
+        )
+    assert lower_authority.value.error.code == "ARIADNE_MEMORY_CONFLICT"
+    goal = memory.state.get("verified-reactivation")["entities"][
+        "session:current_goal"
+    ]
+    assert goal["status"] == "done"
+    assert goal["status_authority"] == "verified_check"
+    episode = memory.episodes.for_turn(
+        session_id="verified-reactivation",
+        turn_id="t2",
+    )
+    assert episode is not None and episode["status"] == "completed"
+
+
 def test_structured_tool_secrets_are_redacted_before_episode_persistence(
     tmp_path: Path,
 ) -> None:
@@ -908,6 +993,46 @@ def test_camel_case_and_nested_allowlisted_tool_secrets_are_digest_only(
         event for event in episode["events"] if event["type"] == "observation"
     )
     assert "retained by digest only" in observation["content"]
+
+
+@pytest.mark.parametrize(
+    ("field", "assignment", "secret"),
+    [
+        ("status", "authToken=AUTHTOKEN123456", "AUTHTOKEN123456"),
+        ("path", "sessionToken: SESSIONTOKEN123456", "SESSIONTOKEN123456"),
+        ("changed", "secretKey=SECRETKEY123456", "SECRETKEY123456"),
+    ],
+)
+def test_allowlisted_scalar_camel_case_secret_assignments_are_redacted(
+    tmp_path: Path,
+    field: str,
+    assignment: str,
+    secret: str,
+) -> None:
+    assert secret not in redact_text(assignment)
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id=f"scalar-secret-{field}",
+        turn_id="t1",
+        user="继续",
+        tool_calls=[
+            {
+                "call_id": f"scalar-secret-{field}",
+                "name": "scalar_secret_tool",
+                "arguments": {},
+                "output": {field: assignment},
+                "status": "completed",
+            }
+        ],
+    )
+
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "memory").rglob("*.json")
+    )
+    assert secret not in persisted
+    assert "***" in persisted
 
 
 def test_unredacted_traces_do_not_authorize_secret_persistence_in_memory(
@@ -1120,6 +1245,165 @@ def test_next_turn_automatically_resumes_pending_capture_journal(
         if row["key"] == "review_order"
     )
     assert candidate["session_count"] == 3
+
+
+def test_pending_capture_recovery_is_scoped_to_its_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = Memory.local(tmp_path / "shared-user-memory")
+    state_a = ConversationStateStore(tmp_path / "workspace-a" / "state.json")
+    state_b = ConversationStateStore(tmp_path / "workspace-b" / "state.json")
+    projector_a = AutomaticMemoryProjector(
+        episodes=shared.episodes,
+        user_model=shared.user_model,
+        journal=shared.capture_journal,
+        state=state_a,
+        reflection=shared.reflection,
+        prospective=shared.prospective,
+    )
+    projector_b = AutomaticMemoryProjector(
+        episodes=shared.episodes,
+        user_model=shared.user_model,
+        journal=shared.capture_journal,
+        state=state_b,
+        reflection=shared.reflection,
+        prospective=shared.prospective,
+    )
+    original = ConversationStateStore.apply_ops
+    injected = {"failed": False}
+
+    def fail_state_a_once(self: ConversationStateStore, **kwargs: Any) -> dict[str, Any]:
+        if self is state_a and not injected["failed"]:
+            injected["failed"] = True
+            raise RuntimeError("workspace A state failure")
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(ConversationStateStore, "apply_ops", fail_state_a_once)
+    with pytest.raises(RuntimeError, match="workspace A state failure"):
+        _run(
+            projector_a.capture_turn(
+                session_id="session-a",
+                turn_id="t1",
+                workspace_key="/workspace/a",
+                user_text="目标是修复 A。",
+                assistant_text="好的。",
+            )
+        )
+
+    pending = shared.capture_journal.get(
+        workspace_key="/workspace/a",
+        session_id="session-a",
+        turn_id="t1",
+    )
+    assert pending is not None and pending["status"] == "in_progress"
+    report_b = _run(
+        projector_b.capture_turn(
+            session_id="session-b",
+            turn_id="t1",
+            workspace_key="/workspace/b",
+            user_text="继续",
+            assistant_text="好的。",
+        )
+    )
+    assert report_b["recovered_capture_ids"] == []
+    assert "session-a" not in (state_b._read().get("documents") or {})
+    pending = shared.capture_journal.get(
+        workspace_key="/workspace/a",
+        session_id="session-a",
+        turn_id="t1",
+    )
+    assert pending is not None and pending["status"] == "in_progress"
+
+    report_a = _run(
+        projector_a.capture_turn(
+            session_id="session-a",
+            turn_id="t2",
+            workspace_key="/workspace/a",
+            user_text="继续",
+            assistant_text="好的。",
+        )
+    )
+    assert pending["capture_id"] in report_a["recovered_capture_ids"]
+    assert (
+        state_a.get("session-a")["entities"]["session:current_goal"][
+            "attributes"
+        ]["description"]["value"]
+        == "修复 A"
+    )
+    assert "session-a" not in (state_b._read().get("documents") or {})
+
+
+def test_pending_capture_recovery_validates_state_store_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = Memory.local(tmp_path / "shared-user-memory")
+    state_original = ConversationStateStore(tmp_path / "original" / "state.json")
+    state_reconfigured = ConversationStateStore(
+        tmp_path / "reconfigured" / "state.json"
+    )
+    original_projector = AutomaticMemoryProjector(
+        episodes=shared.episodes,
+        user_model=shared.user_model,
+        journal=shared.capture_journal,
+        state=state_original,
+        reflection=shared.reflection,
+        prospective=shared.prospective,
+    )
+    reconfigured_projector = AutomaticMemoryProjector(
+        episodes=shared.episodes,
+        user_model=shared.user_model,
+        journal=shared.capture_journal,
+        state=state_reconfigured,
+        reflection=shared.reflection,
+        prospective=shared.prospective,
+    )
+    original_apply = ConversationStateStore.apply_ops
+    injected = {"failed": False}
+
+    def fail_original_once(self: ConversationStateStore, **kwargs: Any) -> dict[str, Any]:
+        if self is state_original and not injected["failed"]:
+            injected["failed"] = True
+            raise RuntimeError("original state failure")
+        return original_apply(self, **kwargs)
+
+    monkeypatch.setattr(ConversationStateStore, "apply_ops", fail_original_once)
+    with pytest.raises(RuntimeError, match="original state failure"):
+        _run(
+            original_projector.capture_turn(
+                session_id="affinity-session",
+                turn_id="t1",
+                workspace_key="/same/workspace",
+                user_text="目标是修复 affinity。",
+                assistant_text="好的。",
+            )
+        )
+
+    report = _run(
+        reconfigured_projector.capture_turn(
+            session_id="other-session",
+            turn_id="t2",
+            workspace_key="/same/workspace",
+            user_text="继续",
+            assistant_text="好的。",
+        )
+    )
+    assert report["status"] == "failed"
+    assert report["recovered_capture_ids"] == []
+    assert report["recovery_failures"][0]["error_code"] == (
+        "ARIADNE_MEMORY_CAPTURE_AFFINITY"
+    )
+    assert "affinity-session" not in (
+        state_reconfigured._read().get("documents") or {}
+    )
+    pending = shared.capture_journal.get(
+        workspace_key="/same/workspace",
+        session_id="affinity-session",
+        turn_id="t1",
+    )
+    assert pending is not None and pending["status"] == "in_progress"
+    assert pending["resume_attempts"] == 1
 
 
 def test_capture_journal_failed_resume_rotates_pending_records(
