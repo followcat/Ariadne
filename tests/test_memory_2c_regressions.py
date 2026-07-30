@@ -592,6 +592,56 @@ def test_curated_migrate_skips_rewrite_when_current(tmp_path: Path) -> None:
     assert mtime2 == mtime1
 
 
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        {"workspace": [], "session": {}},
+        {"user": [], "workspace": []},
+    ],
+    ids=["missing-user", "missing-session"],
+)
+def test_curated_migrate_persists_missing_top_level_containers(
+    tmp_path: Path, legacy: dict[str, Any]
+) -> None:
+    from ariadne.memory.curated import CuratedStore
+
+    path = tmp_path / "curated.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    CuratedStore(path=path)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "user": [],
+        "workspace": [],
+        "session": {},
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "legacy"),
+    [
+        ("user", {"user": {}, "workspace": [], "session": {}}),
+        ("workspace", {"user": [], "workspace": {}, "session": {}}),
+        ("session", {"user": [], "workspace": [], "session": []}),
+    ],
+)
+def test_curated_migrate_rejects_wrong_top_level_container_types(
+    tmp_path: Path, field: str, legacy: dict[str, Any]
+) -> None:
+    from ariadne.errors import AriadneError
+    from ariadne.memory.curated import CuratedStore
+
+    path = tmp_path / "curated.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    with pytest.raises(AriadneError) as exc_info:
+        CuratedStore(path=path)
+
+    assert exc_info.value.error.code == "ARIADNE_CONFIG_INVALID"
+    assert exc_info.value.error.details["field"] == field
+    assert json.loads(path.read_text(encoding="utf-8")) == legacy
+
+
 def test_openai_embedding_http_does_not_run_on_event_loop_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

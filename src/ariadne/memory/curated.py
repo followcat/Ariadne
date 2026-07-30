@@ -56,13 +56,18 @@ class CuratedStore:
     def _migration_needed(self, data: Any) -> bool:
         if not isinstance(data, dict):
             return True
-        if "workspace" not in data:
-            return True
+        for scope_key, container_type in (
+            ("user", list),
+            ("workspace", list),
+            ("session", dict),
+        ):
+            if not isinstance(data.get(scope_key), container_type):
+                return True
         for scope_key in ("user", "workspace"):
-            for item in data.get(scope_key) or []:
+            for item in data[scope_key]:
                 if self._entry_needs_stabilize(item):
                     return True
-        for items in (data.get("session") or {}).values():
+        for items in data["session"].values():
             for item in items or []:
                 if self._entry_needs_stabilize(item):
                     return True
@@ -83,23 +88,41 @@ class CuratedStore:
     def _apply_migration(self, data: Any) -> tuple[dict[str, Any], bool]:
         changed = False
         if not isinstance(data, dict):
-            return _empty_store(), True
-        if "workspace" not in data:
-            data["workspace"] = []
-            changed = True
+            self._raise_invalid_schema("root", "object")
+        for scope_key, container_type, empty in (
+            ("user", list, list),
+            ("workspace", list, list),
+            ("session", dict, dict),
+        ):
+            if scope_key not in data:
+                data[scope_key] = empty()
+                changed = True
+            elif not isinstance(data[scope_key], container_type):
+                self._raise_invalid_schema(scope_key, container_type.__name__)
         for scope_key in ("user", "workspace"):
-            items = list(data.get(scope_key) or [])
+            items = list(data[scope_key])
             new_items, ch = self._stabilize_entries(items)
             if ch:
                 data[scope_key] = new_items
                 changed = True
-        sessions = data.setdefault("session", {})
+        sessions = data["session"]
         for sid, items in list(sessions.items()):
             new_items, ch = self._stabilize_entries(list(items or []))
             if ch:
                 sessions[sid] = new_items
                 changed = True
         return data, changed
+
+    def _raise_invalid_schema(self, field: str, expected: str) -> None:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"invalid curated memory schema: {field} must be {expected}",
+                path=str(self.path),
+                field=field,
+                expected=expected,
+            )
+        )
 
     @staticmethod
     def _stabilize_entries(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
