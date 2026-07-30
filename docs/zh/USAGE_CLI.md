@@ -159,7 +159,10 @@ ariadne --task-mode-policy auto run "继续"
 | `on` | 始终 task 模式 |
 | `off` | 除非本轮强制 `task_mode=true`，否则不用 task 模式 |
 
-每轮会发事件 **`task_mode_resolved`**：`{enabled, reason, policy}`。  
+每轮会发事件 **`task_mode_resolved`**：`{enabled, reason, policy}`。
+
+离线半集成：`tests/test_closed_loop_semi_e2e.py`。可选真模型：
+`ARIADNE_LIVE_CLOSED_LOOP=1 uv run pytest tests/test_closed_loop_live.py`。  
 以下能力默认 **关闭**（需显式环境变量打开）：
 
 | 环境变量 | 默认 |

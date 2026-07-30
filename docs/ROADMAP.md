@@ -249,7 +249,10 @@ Hardening already delivered: fail-closed Web approval, read-only task attempts,
 immutable goal binding, worker fencing/idempotency, skill attempt attribution,
 context char accounting, bounded verifier reads, required oracles, locked
 projection apply, hash-chained task revision events, **task_mode_resolved**
-traces, protocol helpers extracted from turn. Remaining gates: see design
+traces, protocol + attempt runtime extracted from turn (`tasks/runtime.py`:
+tools payload, plan/replan control, capability attempt finalize), semi-e2e
+FakeModel path, Web task banner, optional live e2e
+(`ARIADNE_LIVE_CLOSED_LOOP=1`). Remaining gates: see design
 Production-hardening backlog.
 
 #### 14a — Verify + TaskState (P0)

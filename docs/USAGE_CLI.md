@@ -171,7 +171,10 @@ ariadne --task-mode-policy auto run "continue"
 | `on` | Always task mode |
 | `off` | Never, unless this turn forces `task_mode=true` |
 
-Every turn emits event **`task_mode_resolved`** `{enabled, reason, policy}`.  
+Every turn emits event **`task_mode_resolved`** `{enabled, reason, policy}`.
+
+Offline semi-e2e: `tests/test_closed_loop_semi_e2e.py`. Optional live model:
+`ARIADNE_LIVE_CLOSED_LOOP=1 uv run pytest tests/test_closed_loop_live.py`.  
 Stretch features stay **off** unless opted in:
 
 | Env | Default |
