@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,15 @@ class ConversationStateStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self._write({"documents": {}})
+
+    @property
+    def store_identity(self) -> str:
+        """Stable opaque identity used to fence cross-store journal replay."""
+
+        digest = hashlib.sha256(
+            str(self.path.resolve()).encode("utf-8")
+        ).hexdigest()
+        return f"conversation-state-v1:{digest}"
 
     def _read(self) -> dict[str, Any]:
         data = locked_read_json(self.path, default={"documents": {}})

@@ -911,14 +911,41 @@ class AutomaticMemoryProjector:
             ],
         }
 
-    def _resume_record(self, record: dict[str, Any]) -> dict[str, Any]:
+    def _state_store_identity(self) -> str:
+        if self.state is None:
+            return "conversation-state:none"
+        return self.state.store_identity
+
+    def _resume_record(
+        self,
+        record: dict[str, Any],
+        *,
+        workspace_key: str,
+        state_store_identity: str,
+    ) -> dict[str, Any]:
         """Finish one journal record from its durable prepared plan only."""
 
+        capture_id = str(record.get("capture_id") or "")
+        if str(record.get("workspace_key") or "") != workspace_key:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_CAPTURE_AFFINITY",
+                    "pending capture belongs to another workspace",
+                    capture_id=capture_id,
+                )
+            )
+        if record.get("state_store_identity") != state_store_identity:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_CAPTURE_AFFINITY",
+                    "pending capture belongs to another state store",
+                    capture_id=capture_id,
+                )
+            )
         if record.get("status") == "completed":
             report = dict(record.get("report") or {})
             report["idempotent_replay"] = True
             return report
-        capture_id = str(record.get("capture_id") or "")
         session_id = str(record.get("session_id") or "")
         turn_id = str(record.get("turn_id") or "")
         workspace_key = str(record.get("workspace_key") or "")
@@ -1056,14 +1083,24 @@ class AutomaticMemoryProjector:
         }
         return self.journal.complete(capture_id=capture_id, report=report)
 
-    def resume_pending(self, *, limit: int | None = None) -> dict[str, Any]:
+    def resume_pending(
+        self, *, workspace_key: str, limit: int | None = None
+    ) -> dict[str, Any]:
         recovered: list[str] = []
         failures: list[dict[str, str]] = []
         batch_limit = self.resume_batch_size if limit is None else limit
-        for record in self.journal.list_pending(limit=batch_limit):
+        state_store_identity = self._state_store_identity()
+        for record in self.journal.list_pending(
+            workspace_key=workspace_key,
+            limit=batch_limit,
+        ):
             capture_id = str(record.get("capture_id") or "")
             try:
-                self._resume_record(record)
+                self._resume_record(
+                    record,
+                    workspace_key=workspace_key,
+                    state_store_identity=state_store_identity,
+                )
                 recovered.append(capture_id)
             except Exception as exc:  # noqa: BLE001 - persisted and reported
                 error_code = (
@@ -1119,7 +1156,8 @@ class AutomaticMemoryProjector:
         tool_calls: list[Any] | None = None,
         verified_goal: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        recovery = self.resume_pending()
+        state_store_identity = self._state_store_identity()
+        recovery = self.resume_pending(workspace_key=workspace_key)
         calls = list(tool_calls or [])
         digest_payload = {
             "user_text": redact_text(user_text),
@@ -1149,9 +1187,14 @@ class AutomaticMemoryProjector:
             session_id=session_id,
             turn_id=turn_id,
             input_digest=input_digest,
+            state_store_identity=state_store_identity,
             prepared=prepared,
         )
-        report = self._resume_record(record)
+        report = self._resume_record(
+            record,
+            workspace_key=workspace_key,
+            state_store_identity=state_store_identity,
+        )
         return self._with_recovery(report, recovery)
 
 

@@ -61,9 +61,12 @@ turn-scoped journal records `user_model`, `state`, `episode`, `reflection`, and
 idempotency key. Only after all stages are durable does the journal write its
 completion marker. This is recoverable consistency, not a claim that multiple
 JSON files form one ACID transaction. Before each new capture, the projector
-resumes a bounded batch ordered by the oldest recovery timestamp. Failures are
-persisted with attempt metadata and rotate behind other pending records. They
-mark the Memory layer failed without blocking capture of the current turn.
+resumes a bounded batch for the active `workspace_key`, ordered by the oldest
+recovery timestamp. Each record is also fenced to an opaque StateStore identity
+so a shared user journal cannot replay L2 state into a different workspace
+store. Affinity mismatches and other failures are persisted with attempt
+metadata and rotate behind other pending records. They mark the Memory layer
+failed without blocking capture of the current turn.
 
 ## 2. Episode and causal memory
 

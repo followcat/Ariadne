@@ -1417,10 +1417,11 @@ def test_capture_journal_failed_resume_rotates_pending_records(
             session_id=f"rotation-{index}",
             turn_id=f"t{index}",
             input_digest=f"digest-{index}",
+            state_store_identity=memory.state.store_identity,
             prepared={"events": []},
         )
 
-    initial = journal.list_pending(2)
+    initial = journal.list_pending(workspace_key="", limit=2)
     assert len(initial) == 2
     failed_id = initial[0]["capture_id"]
     next_id = initial[1]["capture_id"]
@@ -1430,8 +1431,12 @@ def test_capture_journal_failed_resume_rotates_pending_records(
         error_message="injected recovery failure",
     )
 
-    assert journal.list_pending(1)[0]["capture_id"] == next_id
-    failed = next(row for row in journal.list_pending(2) if row["capture_id"] == failed_id)
+    assert journal.list_pending(workspace_key="", limit=1)[0]["capture_id"] == next_id
+    failed = next(
+        row
+        for row in journal.list_pending(workspace_key="", limit=2)
+        if row["capture_id"] == failed_id
+    )
     assert failed["resume_attempts"] == 1
     assert failed["last_resume_failure"]["error_message"] == "injected recovery failure"
 

@@ -74,7 +74,9 @@ class CaptureJournalStore:
         row = (self._read().get("records") or {}).get(capture_id)
         return copy.deepcopy(row) if isinstance(row, dict) else None
 
-    def list_pending(self, limit: int = 4) -> list[dict[str, Any]]:
+    def list_pending(
+        self, *, workspace_key: str, limit: int = 4
+    ) -> list[dict[str, Any]]:
         """Return a bounded, fair batch of incomplete captures.
 
         Oldest ``updated_at`` wins. Recording a failed resume advances that
@@ -94,7 +96,11 @@ class CaptureJournalStore:
         pending = [
             copy.deepcopy(row)
             for row in records.values()
-            if isinstance(row, dict) and row.get("status") == "in_progress"
+            if (
+                isinstance(row, dict)
+                and row.get("status") == "in_progress"
+                and str(row.get("workspace_key") or "") == workspace_key
+            )
         ]
         pending.sort(
             key=lambda row: (
@@ -157,6 +163,7 @@ class CaptureJournalStore:
         session_id: str,
         turn_id: str,
         input_digest: str,
+        state_store_identity: str,
         prepared: dict[str, Any],
     ) -> dict[str, Any]:
         capture_id = self.capture_id(
@@ -165,6 +172,13 @@ class CaptureJournalStore:
             turn_id=turn_id,
         )
         result: dict[str, Any] = {}
+        if not state_store_identity.strip():
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_CAPTURE_AFFINITY",
+                    "automatic capture requires a state-store identity",
+                )
+            )
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             records = data.setdefault("records", {})
@@ -175,6 +189,14 @@ class CaptureJournalStore:
                         app_error(
                             "ARIADNE_MEMORY_CAPTURE_CONFLICT",
                             "one turn id cannot be captured with different evidence",
+                            capture_id=capture_id,
+                        )
+                    )
+                if current.get("state_store_identity") != state_store_identity:
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_MEMORY_CAPTURE_AFFINITY",
+                            "automatic capture state-store identity changed",
                             capture_id=capture_id,
                         )
                     )
@@ -195,6 +217,7 @@ class CaptureJournalStore:
                 "session_id": session_id,
                 "turn_id": turn_id,
                 "input_digest": input_digest,
+                "state_store_identity": state_store_identity,
                 "status": "in_progress",
                 "prepared": copy.deepcopy(prepared),
                 "stages": {
