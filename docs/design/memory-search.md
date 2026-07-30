@@ -192,14 +192,15 @@ Allowed small-model jobs (normative target):
    expand search terms (still retrieval).
 3. **Rerank** — score only **existing** candidate snippets; drop low scores.
 
-**Implementation status (honest):** until a small-model planner is wired,
-`mode=deep` / auto-upgrade may run **local multi-query split only** (split on
-`and`/commas/和, re-run fast per part, merge). That path reports
-`mode_used=deep` with `notes` including `deep:local_query_split` and
-`deep:no_llm_planner`. Single-clause deep with no real decomp must **not**
-claim deep success: `mode_used=fast` + `deep:unavailable_local_noop` +
-`deep:no_llm_planner`. Re-sorting the same fast hits without new sub-queries is
-a no-op and must not be labeled deep.
+**Implementation status:**
+
+- Default planner = **local multi-query split** (`LocalSplitPlanner`).
+- Host may set `ARIADNE_MEMORY_DEEP_PLANNER=llm` to use a chat model for
+  subqueries / alias_extra / rerank_order over **existing** candidate keys only
+  (`make_llm_deep_planner`). Failure → `mode_used=fast` + notes.
+- Single-clause local deep with no decomp: `mode_used=fast` +
+  `deep:unavailable_local_noop` (must not claim deep).
+- User scope uses **user episodic index** + provenance-bearing curated only.
 
 Forbidden:
 

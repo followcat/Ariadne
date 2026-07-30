@@ -169,29 +169,27 @@ hosts and kernel code.
 Design: [design/memory-scopes.md](design/memory-scopes.md),
 [design/memory-search.md](design/memory-search.md) (linked from [MEMORY.md](MEMORY.md)).
 
-**Status: partial** — S0/S1 largely; S2 partial; S3 local-only decomp; S4 incomplete.
+**Status: S0–S4 core shipped** (personal scale; no multi-device sync).
 
 - [x] **user / workspace / session** curated partition + stable UUID ids +
-  `source_turn_id` (no renumber on delete)
+  `source_turn_id` / `source_session_id` (no renumber on delete)
 - [x] CLI user root `~/.ariadne/memory`; workspace/session under data_dir
 - [x] Web per-account bind: `user_id=username` + `user_memory_dir={account}/memory`
-  (must not share `~/.ariadne/memory` across accounts)
 - [x] `user_id` mismatch fastfail (provided id must match facade bind)
-- [x] `memory_search` tool: `scope` + `mode`; session/workspace hybrid hits with
-  `turn_id` + store-grounded snippets
-- [x] `limit` over hard max → validation error (not silent clamp)
-- [x] `before_turn_id` applied for session **and** workspace (transcript order)
+- [x] `memory_search` tool: `scope` + `mode`; grounded hits with `turn_id` +
+  `session_id`
+- [x] `limit` over hard max → validation error
 - [x] Honest L2: projection **off by default**; layer status `disabled` when unset
 - [x] Turn summary input: user + assistant + truncated tool outcomes
 - [x] Skill digest pins (`TurnResult.skill_pins` / `SkillEvent.content_digest`)
-- [x] Tests: `tests/test_memory_scopes_search.py` (+ contract regressions)
-- [~] `mode=auto` upgrade signals (basic; incomplete vs design §5)
-- [~] `mode=deep`: **local multi-query split only**; reports `deep:no_llm_planner`.
-  Normative small-model decomp/alias/rerank **not implemented**
-- [ ] User-wide episodic index (cross-workspace transcript/summary/semantic);
-  user scope search is **curated-only** with honest notes
-- [ ] Real embedding backend default (hash embedder remains local placeholder)
-- [ ] Full as-of semantics across multi-store / multi-session clocks
+- [x] **User-wide episodic index** (`user_memory_dir/episodic/`); dual-write on
+  turn; `scope=user` hybrid search (curated only with real turn provenance)
+- [x] **Chunk clocks** (`ts`/`seq`); `before_turn_id` → `before_ts` across stores
+- [x] **Embedding default `auto`**: OpenAI-compatible when credentials exist,
+  else hash (tests stay hash)
+- [x] **Deep planner port**: `LocalSplitPlanner` default; `ARIADNE_MEMORY_DEEP_PLANNER=llm`
+  wires small-model decomp/rerank (candidates only); failure → fast + notes
+- [x] Tests: `test_memory_scopes_search` + `test_memory_2c_design_gaps`
 
 ### Phase 12 — Docker-first hardened sandbox (Codex-aligned)
 - [x] Default `sandbox=docker`; `local`/`null` explicit escape; doctor checks
