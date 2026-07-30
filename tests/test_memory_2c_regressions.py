@@ -200,6 +200,144 @@ def test_user_curated_hit_honors_before_turn_clock(tmp_path: Path) -> None:
     assert all(hit["turn_id"] != "t2" for hit in result["hits"])
 
 
+def test_curated_asof_excludes_when_cutoff_has_no_chunk_clock(
+    tmp_path: Path,
+) -> None:
+    """Transcript-order as-of without before_ts must not leak curated hits."""
+    mem = Memory.local(path=tmp_path / "memory")
+    # Transcript only — no semantic clocks for t1/t2
+    for tid, text in (("t1", "older"), ("t2", "cutoff")):
+        mem.transcript.append(
+            {
+                "role": "user",
+                "content": text,
+                "turn_id": tid,
+                "session_id": "s1",
+            }
+        )
+    mem.apply_curated(
+        action="add",
+        content="written after cutoff",
+        scope="user",
+        session_id="s1",
+        source_turn_id="t1",
+    )
+    result = _run(
+        mem.memory_search(
+            query="written after cutoff",
+            session_id="s1",
+            scope="user",
+            mode="fast",
+            before_turn_id="t2",
+        )
+    )
+    assert all(
+        "written after cutoff" not in str(h.get("snippet") or "")
+        for h in result["hits"]
+    )
+
+
+def test_deep_mode_used_requires_real_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mode_used=deep only when set/order changes — not merely because multi-subquery ran."""
+
+    class NoopMultiPlanner:
+        async def plan(self, **_kwargs: Any) -> DeepPlan:
+            return DeepPlan(subqueries=["a", "b"], notes="local_query_split")
+
+        async def rerank(self, **_kwargs: Any) -> list[str] | None:
+            return None
+
+    mem = Memory.local(path=tmp_path / "memory", deep_planner=NoopMultiPlanner())
+
+    async def same_hits(**_kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "session_id": "s1",
+                "turn_id": "t1",
+                "kind": "user",
+                "snippet": "same",
+                "score": 0.9,
+            },
+            {
+                "session_id": "s1",
+                "turn_id": "t2",
+                "kind": "user",
+                "snippet": "same2",
+                "score": 0.8,
+            },
+        ]
+
+    monkeypatch.setattr(mem.semantic, "search_hybrid", same_hits)
+    result = _run(
+        mem.memory_search(
+            query="x", session_id="s1", scope="session", mode="deep"
+        )
+    )
+    assert result["mode_used"] == "fast"
+    assert "noop" in result["notes"] or "unchanged" in result["notes"]
+
+
+def test_deep_order_change_from_subquery_is_deep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class OrderFlipPlanner:
+        async def plan(self, **_kwargs: Any) -> DeepPlan:
+            return DeepPlan(subqueries=["flip"], notes="local_query_split")
+
+        async def rerank(self, **_kwargs: Any) -> list[str] | None:
+            return None
+
+    mem = Memory.local(path=tmp_path / "memory", deep_planner=OrderFlipPlanner())
+    call = {"n": 0}
+
+    async def flipping(**kwargs: Any) -> list[dict[str, Any]]:
+        call["n"] += 1
+        if kwargs.get("query") == "flip":
+            return [
+                {
+                    "session_id": "s1",
+                    "turn_id": "t2",
+                    "kind": "user",
+                    "snippet": "second",
+                    "score": 0.95,
+                },
+                {
+                    "session_id": "s1",
+                    "turn_id": "t1",
+                    "kind": "user",
+                    "snippet": "first",
+                    "score": 0.9,
+                },
+            ]
+        return [
+            {
+                "session_id": "s1",
+                "turn_id": "t1",
+                "kind": "user",
+                "snippet": "first",
+                "score": 0.9,
+            },
+            {
+                "session_id": "s1",
+                "turn_id": "t2",
+                "kind": "user",
+                "snippet": "second",
+                "score": 0.8,
+            },
+        ]
+
+    monkeypatch.setattr(mem.semantic, "search_hybrid", flipping)
+    result = _run(
+        mem.memory_search(
+            query="x", session_id="s1", scope="session", mode="deep"
+        )
+    )
+    assert result["mode_used"] == "deep"
+    assert result["hits"][0]["turn_id"] == "t2"
+
+
 def test_curated_asof_excludes_post_cutoff_write_on_old_source_turn(
     tmp_path: Path,
 ) -> None:

@@ -106,8 +106,10 @@ live in `tool_schema.description`.
    `updated_at ≥ before_ts` (post-cutoff create/update must not leak, even when
    the source turn itself is older). No curated version history in v1: as-of
    either returns the *current* entry (if both clocks pass) or drops it.
-4. If cutoff clock cannot be resolved, fall back to transcript order where
-   available; otherwise stay conservative (empty / notes).
+4. If cutoff clock cannot be resolved, episodic may fall back to transcript
+   order; **curated is excluded** for that call (cannot prove write time vs
+   cutoff without `before_ts`). Notes should mention transcript-order /
+   missing clock.
 
 Host/kernel may inject active `session_id` / `user_id` from the turn; the model
 does not pick another user’s store.
@@ -216,17 +218,16 @@ Allowed small-model jobs (normative target):
 - Default planner = **local multi-query split** (`LocalSplitPlanner`).
 - Host may set `ARIADNE_MEMORY_DEEP_PLANNER=llm` → `make_llm_deep_planner`
   (reads `ModelExchange.message.content`).
-- **Two-phase deep:**
-  1. `plan()` → `subqueries` + `alias_extra` (optional seed `rerank_order` ignored
-     for final order if a post-merge phase exists)
+- **Two-phase deep** (planner must implement both `plan` and `rerank`):
+  1. `plan()` → `subqueries` + `alias_extra`
   2. Run each subquery via fast; merge candidates
-  3. `rerank(final candidates)` → order over **merged** keys only (or a second
-     `plan()` for planners that only implement one method)
-  4. **Rerank-only:** if `plan()` returns no subqueries but deep was requested
-     and the planner can rerank seed hits, still run step 3
-- Failure / parse error → `mode_used=fast` + notes; never invent hits.
-- Single-clause local deep with no decomp and no rerank change:
-  `mode_used=fast` + `deep:unavailable_local_noop` / `deep:noop_unchanged`.
+  3. `rerank(final candidates)` → order over **merged** keys only
+  4. **Rerank-only:** if `plan()` returns no subqueries, still run step 3
+- Rerank network/parse failures raise / surface notes (`deep:llm_rerank_*` +
+  `deep:fallback_fast`); legal “no reorder” returns `None` without error notes.
+- `mode_used=deep` **only** when the candidate **set** or **order** changed vs
+  plain fast (or a successful rerank changed order). Multi-subquery no-ops stay
+  `fast` + `deep:noop_unchanged`.
 - User scope: **user episodic index** + L3 curated with real provenance
   (`source_turn_id`, `source_session_id`); curated evidence uses
   `source=curated` + `entry_id` (not faked as L1 summary).

@@ -286,11 +286,15 @@ def test_deep_multi_clause_uses_parts(tmp_path: Path) -> None:
             mode="deep",
         )
     )
-    assert r["mode_used"] == "deep"
-    assert "deep:local_query_split" in r["notes"]
-    assert "deep:no_llm_planner" in r["notes"]
+    # Local split always runs; mode_used=deep only if set/order actually changed.
+    assert "local_query_split" in r["notes"]
     ids = {h["turn_id"] for h in r["hits"]}
     assert "ta" in ids or "tb" in ids
+    if r["mode_used"] == "deep":
+        assert "deep:no_llm_planner" in r["notes"]
+    else:
+        assert r["mode_used"] == "fast"
+        assert "noop" in r["notes"] or "unchanged" in r["notes"]
 
 
 def test_projection_disabled_by_default_honest_layer(tmp_path: Path) -> None:
