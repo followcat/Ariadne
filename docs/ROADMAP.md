@@ -169,18 +169,29 @@ hosts and kernel code.
 Design: [design/memory-scopes.md](design/memory-scopes.md),
 [design/memory-search.md](design/memory-search.md) (linked from [MEMORY.md](MEMORY.md)).
 
-- [x] **user / workspace / session** scope layout; host paths (CLI `~/.ariadne` +
-  workspace `.ariadne`; optional `user_curated` store)
-- [x] Stop silent `user_id` ignore; mismatch fastfail when facade is account-bound
-- [x] `memory_search` tool: `scope` + `mode=auto|fast|deep`; hits carry `turn_id` /
-  grounded snippets (no invented history)
-- [x] `mode=auto` upgrade heuristics; deep = local alias/split/rerank (optional LLM later)
-- [x] Honest L2: projection **off by default** (`enable_memory_projection` /
-  `Memory.local(enable_projection=True)`); layer status `disabled` when unset
-- [x] Curated stable UUID ids + `source_turn_id` (no renumber on delete)
+**Status: partial** — S0/S1 largely; S2 partial; S3 local-only decomp; S4 incomplete.
+
+- [x] **user / workspace / session** curated partition + stable UUID ids +
+  `source_turn_id` (no renumber on delete)
+- [x] CLI user root `~/.ariadne/memory`; workspace/session under data_dir
+- [x] Web per-account bind: `user_id=username` + `user_memory_dir={account}/memory`
+  (must not share `~/.ariadne/memory` across accounts)
+- [x] `user_id` mismatch fastfail (provided id must match facade bind)
+- [x] `memory_search` tool: `scope` + `mode`; session/workspace hybrid hits with
+  `turn_id` + store-grounded snippets
+- [x] `limit` over hard max → validation error (not silent clamp)
+- [x] `before_turn_id` applied for session **and** workspace (transcript order)
+- [x] Honest L2: projection **off by default**; layer status `disabled` when unset
 - [x] Turn summary input: user + assistant + truncated tool outcomes
-- [x] Skill digest pins on turn (`TurnResult.skill_pins` / `SkillEvent.content_digest`)
-- [x] Tests: `tests/test_memory_scopes_search.py` + acceptance id fixes
+- [x] Skill digest pins (`TurnResult.skill_pins` / `SkillEvent.content_digest`)
+- [x] Tests: `tests/test_memory_scopes_search.py` (+ contract regressions)
+- [~] `mode=auto` upgrade signals (basic; incomplete vs design §5)
+- [~] `mode=deep`: **local multi-query split only**; reports `deep:no_llm_planner`.
+  Normative small-model decomp/alias/rerank **not implemented**
+- [ ] User-wide episodic index (cross-workspace transcript/summary/semantic);
+  user scope search is **curated-only** with honest notes
+- [ ] Real embedding backend default (hash embedder remains local placeholder)
+- [ ] Full as-of semantics across multi-store / multi-session clocks
 
 ### Phase 12 — Docker-first hardened sandbox (Codex-aligned)
 - [x] Default `sandbox=docker`; `local`/`null` explicit escape; doctor checks

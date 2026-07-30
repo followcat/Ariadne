@@ -184,7 +184,7 @@ If L4 is disabled or not ready: lexical-only is valid **fast**; report in
 
 ### 4.2 Deep (on top of real candidates)
 
-Allowed small-model jobs:
+Allowed small-model jobs (normative target):
 
 1. **Query decomposition** — split multi-hop questions into sub-queries; each
    sub-query runs fast retrieval; merge candidates.
@@ -192,12 +192,23 @@ Allowed small-model jobs:
    expand search terms (still retrieval).
 3. **Rerank** — score only **existing** candidate snippets; drop low scores.
 
+**Implementation status (honest):** until a small-model planner is wired,
+`mode=deep` / auto-upgrade may run **local multi-query split only** (split on
+`and`/commas/和, re-run fast per part, merge). That path reports
+`mode_used=deep` with `notes` including `deep:local_query_split` and
+`deep:no_llm_planner`. Single-clause deep with no real decomp must **not**
+claim deep success: `mode_used=fast` + `deep:unavailable_local_noop` +
+`deep:no_llm_planner`. Re-sorting the same fast hits without new sub-queries is
+a no-op and must not be labeled deep.
+
 Forbidden:
 
 - “Recall” dialogue not present in candidates or store
 - Writing new durable memory as a side effect of search
 - Blocking the **next** user turn’s first token on deep search unless this call
   is inside the tool loop (tool latency is expected; `build_context` stays light)
+- Reporting `mode_used=deep` when the pipeline did not change candidates beyond
+  plain fast
 
 ### 4.3 Snippet grounding
 
