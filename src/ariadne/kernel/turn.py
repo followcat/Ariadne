@@ -34,6 +34,11 @@ from ..tasks.protocol import (
     payload_has_tool,
     require_sole_control_call,
 )
+from ..tasks.runtime import (
+    finalize_attempt,
+    prepare_capability_exchange,
+    resolve_final_answer_status,
+)
 from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry, dumps_tool_output
 from ..types import (
     Message,
@@ -1116,37 +1121,25 @@ class TurnApplication:
                     turn_status = "completed"
                     turn_error = None
                     if task_mode:
-                        if self.task_controller is None or task_state is None:
+                        if self.task_controller is None:
                             turn_status = "failed"
                             turn_error = app_error(
                                 "ARIADNE_TASK_PLAN_REQUIRED",
                                 "task mode requires submit_task_plan before an answer",
                             )
-                        elif task_state.status == "completed":
-                            turn_status = "completed"
-                        elif task_state.status in {"failed", "cancelled"}:
-                            turn_status = "failed"
-                            turn_error = app_error(
-                                "ARIADNE_TASK_FAILED",
-                                task_state.last_observation.summary
-                                if task_state.last_observation is not None
-                                else f"task ended with status {task_state.status}",
-                                task_id=task_state.task_id,
-                            )
                         else:
-                            task_state = self.task_controller.ask_user(
+                            (
+                                turn_status,
+                                turn_error,
                                 task_state,
-                                text or "The task is not verified and needs more input.",
+                                needs_ev,
+                            ) = resolve_final_answer_status(
+                                controller=self.task_controller,
+                                state=task_state,
+                                assistant_text=text or "",
                             )
-                            turn_status = "needs_input"
-                            yield TurnEvent(
-                                "task_needs_input",
-                                {
-                                    "task_id": task_state.task_id,
-                                    "current_step_id": task_state.current_step_id,
-                                    "question": task_state.open_questions[0].prompt,
-                                },
-                            )
+                            if needs_ev is not None:
+                                yield needs_ev
                     self.memory.transcript.append(
                         {
                             "role": "assistant",
@@ -1263,71 +1256,24 @@ class TurnApplication:
                                 "capability calls require a persisted task plan",
                             )
                         )
-                    capability_names = [
-                        str((call.get("function") or {}).get("name") or "")
-                        for call in tool_calls_payload
-                    ]
-                    capability_specs = []
-                    material_specs = []
-                    task_meta_capabilities = {
-                        "search_skills",
-                        "load_skill",
-                        "adopt_skill",
-                        "tool_search",
-                    }
-                    for capability_name, capability_call in zip(
-                        capability_names, tool_calls_payload, strict=True
-                    ):
-                        spec = self.tools.get(capability_name)
-                        raw_effect_args = (
-                            (capability_call.get("function") or {}).get("arguments") or "{}"
-                        )
-                        try:
-                            effect_args = (
-                                json.loads(raw_effect_args)
-                                if isinstance(raw_effect_args, str)
-                                else dict(raw_effect_args)
-                            )
-                        except (TypeError, ValueError, json.JSONDecodeError):
-                            effect_args = {}
-                        effect = (
-                            spec.effect_for(effect_args)
-                            if spec is not None and isinstance(effect_args, dict)
-                            else "unknown"
-                        )
-                        if capability_name not in task_meta_capabilities:
-                            capability_specs.append((spec, effect))
-                        if effect not in {"none", "read"}:
-                            material_specs.append((spec, effect))
-                    if len(material_specs) > 1:
-                        raise AriadneError(
-                            app_error(
-                                "ARIADNE_TASK_PROTOCOL_ERROR",
-                                "task mode permits at most one material capability call per exchange",
-                                names=capability_names,
-                            )
-                        )
-                    if capability_specs:
-                        task_attempt_spec, task_attempt_effect = (
-                            material_specs[0] if material_specs else capability_specs[0]
-                        )
-                        task_state, task_step, task_attempt_id = self.task_controller.start_attempt(
-                            task_state
-                        )
+                    cap_plan = prepare_capability_exchange(
+                        controller=self.task_controller,
+                        tools=self.tools,
+                        state=task_state,
+                        tool_calls_payload=tool_calls_payload,
+                    )
+                    task_state = cap_plan.state
+                    task_attempt_id = cap_plan.attempt_id
+                    task_attempt_spec = cap_plan.attempt_spec
+                    task_attempt_effect = cap_plan.attempt_effect
+                    if task_attempt_id:
                         bind_pending_skills(
                             task_id=task_state.task_id,
-                            step_id=task_step.step_id,
+                            step_id=str(task_state.current_step_id or ""),
                             attempt_id=task_attempt_id,
                         )
-                        yield TurnEvent(
-                            "task_step_started",
-                            {
-                                "task_id": task_state.task_id,
-                                "step_id": task_step.step_id,
-                                "attempt": task_step.attempt,
-                                "intent": task_step.intent,
-                            },
-                        )
+                    if cap_plan.step_started_event is not None:
+                        yield cap_plan.step_started_event
 
                 exchange_traces: list[ToolCallTrace] = []
                 for call in tool_calls_payload:
@@ -1520,76 +1466,30 @@ class TurnApplication:
                     and self.task_controller is not None
                     and task_state is not None
                 ):
-                    outcome = await self.task_controller.record_attempt_async(
-                        task_state,
+                    finalized = await finalize_attempt(
+                        controller=self.task_controller,
+                        state=task_state,
                         traces=exchange_traces,
-                        spec=task_attempt_spec,
-                        effect_level=task_attempt_effect,
+                        attempt_spec=task_attempt_spec,
+                        attempt_effect=task_attempt_effect,
                         attempt_id=task_attempt_id,
+                        skill_names=sorted(
+                            attempt_skill_events.get(task_attempt_id, {}).keys()
+                        ),
                     )
-                    task_state = outcome.state
-                    task_attempt_outcomes.append(
-                        {
-                            "task_id": task_state.task_id,
-                            "step_id": outcome.step.step_id,
-                            "attempt_id": task_attempt_id,
-                            "step_outcome": outcome.step.status,
-                            "task_outcome": task_state.status,
-                            "skills": sorted(
-                                attempt_skill_events.get(task_attempt_id, {}).keys()
-                            ),
-                            "tool_names": [
-                                trace.name for trace in exchange_traces if trace.name
-                            ],
-                        }
-                    )
-                    for check_result in outcome.step.check_results:
-                        yield TurnEvent(
-                            "task_check_completed",
-                            {
-                                "task_id": task_state.task_id,
-                                "step_id": outcome.step.step_id,
-                                "check_id": check_result.check_id,
-                                "status": check_result.status,
-                                "observed_value": check_result.observed_value,
-                                "error": (
-                                    {
-                                        "code": check_result.error.code,
-                                        "message": check_result.error.message,
-                                    }
-                                    if check_result.error
-                                    else None
-                                ),
-                            },
-                        )
+                    task_state = finalized.state
+                    task_attempt_outcomes.append(finalized.outcome_row)
+                    for ev in finalized.events:
+                        yield ev
                     append_required_context(
                         {
                             "role": "system",
-                            "content": self.task_controller.format_context(task_state),
+                            "content": finalized.context_system_text,
                         },
                         source=f"task_state_revision:{task_state.revision}",
                         reason="authoritative task state after verification",
                         trust="kernel_state",
                     )
-                    if task_state.status == "completed":
-                        yield TurnEvent(
-                            "task_completed",
-                            {"task_id": task_state.task_id, "revision": task_state.revision},
-                        )
-                    elif task_state.status == "failed":
-                        yield TurnEvent(
-                            "task_failed",
-                            {"task_id": task_state.task_id, "revision": task_state.revision},
-                        )
-                    elif task_state.status == "needs_input":
-                        yield TurnEvent(
-                            "task_needs_input",
-                            {
-                                "task_id": task_state.task_id,
-                                "current_step_id": task_state.current_step_id,
-                                "question": task_state.open_questions[0].prompt,
-                            },
-                        )
 
             await guard.release()
             err = app_error(

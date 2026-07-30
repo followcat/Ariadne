@@ -14,6 +14,13 @@ from .models import (
     TaskSummary,
 )
 from .policy import resolve_task_mode
+from .runtime import (
+    AttemptFinalizeResult,
+    CapabilityExchangePlan,
+    finalize_attempt,
+    prepare_capability_exchange,
+    resolve_final_answer_status,
+)
 from .store import SQLiteTaskStore
 from .verify import DeterministicVerifier
 from .semantic import SemanticVerifier
@@ -21,6 +28,8 @@ from .scheduler import ScheduledGoalStore
 
 __all__ = [
     "Assumption",
+    "AttemptFinalizeResult",
+    "CapabilityExchangePlan",
     "Check",
     "CheckResult",
     "DeterministicVerifier",
@@ -35,5 +44,8 @@ __all__ = [
     "TaskController",
     "TaskState",
     "TaskSummary",
+    "finalize_attempt",
+    "prepare_capability_exchange",
+    "resolve_final_answer_status",
     "resolve_task_mode",
 ]
