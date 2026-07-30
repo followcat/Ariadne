@@ -146,6 +146,14 @@ def render_json(result: TurnResult) -> str:
             for e in result.skill_events
         ],
         "skill_pins": dict(getattr(result, "skill_pins", None) or {}),
+        "task": (
+            {
+                key: getattr(result.task, key)
+                for key in result.task.__dataclass_fields__
+            }
+            if getattr(result, "task", None) is not None
+            else None
+        ),
         "memory": {
             "curated_count": result.memory.curated_count,
             "state_entity_count": result.memory.state_entity_count,

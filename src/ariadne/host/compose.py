@@ -27,6 +27,7 @@ from ..sandbox.profiles import resolve_image
 from ..sandbox.runtime_agent import RuntimeAgent
 from ..sandbox.toolbox import get_profile as get_toolbox_profile
 from ..skills.store import SkillStore
+from ..tasks import DeterministicVerifier, SQLiteTaskStore, TaskController
 from ..tools.registry import build_default_registry
 
 
@@ -278,6 +279,10 @@ def compose_agent(settings: Settings) -> Agent:
         runtime_agent=runtime,
         extra_system_prompt=getattr(settings, "extra_system_prompt", "") or "",
         max_tokens=int(getattr(settings, "max_tokens", None) or 8192),
+        task_controller=TaskController(
+            store=SQLiteTaskStore(data_dir / "tasks.sqlite3"),
+            verifier=DeterministicVerifier(settings.workspace),
+        ),
     )
     return Agent(
         turn_app=turn_app,

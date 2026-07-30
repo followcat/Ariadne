@@ -17,6 +17,8 @@ from ..redact import redact_secrets
 from ..sandbox.active import ActiveSessionManager
 from ..sandbox.port import SandboxBackend, SandboxSession
 from ..skills.store import SkillStore
+from ..tasks.controller import SUBMIT_TASK_PLAN_NAME, SUBMIT_TASK_PLAN_TOOL, TaskController
+from ..tasks.models import TaskState, TaskSummary
 from ..tools.registry import ApprovalHook, ToolContext, ToolRegistry, dumps_tool_output
 from ..types import (
     Message,
@@ -201,6 +203,7 @@ class TurnApplication:
     extra_system_prompt: str = ""
     # Completion budget per model call (default 8k; atelier often 16k).
     max_tokens: int = 8192
+    task_controller: TaskController | None = None
     _sandbox_start_semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def _start_semaphore(self) -> asyncio.Semaphore:
@@ -325,6 +328,30 @@ class TurnApplication:
                     {"direction": "in", "kind": finding.kind, "detail": finding.detail},
                 )
 
+        task_mode = bool((metadata or {}).get("task_mode", False))
+        task_state: TaskState | None = None
+        if task_mode:
+            if self.task_controller is None:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TASK_UNAVAILABLE",
+                        "task mode requires a configured TaskController",
+                    )
+                )
+            task_state = self.task_controller.load_active(session_id)
+            if task_state is not None:
+                task_state = self.task_controller.prepare_resume(task_state)
+                if task_state.status == "needs_input":
+                    task_state = self.task_controller.continue_with_user_input(task_state, prompt)
+                yield TurnEvent(
+                    "task_resumed",
+                    {
+                        "task_id": task_state.task_id,
+                        "status": task_state.status,
+                        "revision": task_state.revision,
+                    },
+                )
+
         sandbox_task: asyncio.Task[SandboxSession] | None = None
         if self.sandbox_prestart:
             # prestart in parallel with memory build (bounded so parallel
@@ -386,6 +413,15 @@ class TurnApplication:
             messages.append({"role": "system", "content": extra_sys})
         if memory_system:
             messages.append({"role": "system", "content": memory_system})
+        if task_mode and self.task_controller is not None:
+            if task_state is None:
+                messages.append(
+                    {"role": "system", "content": self.task_controller.plan_prompt(prompt)}
+                )
+            else:
+                messages.append(
+                    {"role": "system", "content": self.task_controller.format_context(task_state)}
+                )
 
         # Always emit compact SKILL_SELECTION (never dump full linear index).
         n_skills = len(self.skills.list())
@@ -541,7 +577,19 @@ class TurnApplication:
 
         try:
             for loop_i in range(loop_limit):
-                tools_payload = exposure.request_tools or None
+                if task_mode and task_state is None:
+                    # Planning is a kernel control exchange: capabilities remain
+                    # unavailable until a valid, persisted plan exists.
+                    tools_payload = [SUBMIT_TASK_PLAN_TOOL]
+                elif task_mode and task_state is not None and task_state.status in {
+                    "needs_input",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                }:
+                    tools_payload = None
+                else:
+                    tools_payload = exposure.request_tools or None
                 # Last loops: force a final answer, no more tools (stop endless fix loops).
                 force_final = loop_i >= max(1, loop_limit - 2)
                 if force_final:
@@ -641,6 +689,78 @@ class TurnApplication:
                     evidence_parts.append(assistant.content)
                     ctx.evidence_text = "\n".join(evidence_parts)
 
+                if task_mode and any(
+                    str((call.get("function") or {}).get("name") or "")
+                    == SUBMIT_TASK_PLAN_NAME
+                    for call in tool_calls_payload
+                ):
+                    if self.task_controller is None:
+                        raise AriadneError(
+                            app_error("ARIADNE_TASK_UNAVAILABLE", "TaskController is unavailable")
+                        )
+                    if task_state is not None or len(tool_calls_payload) != 1:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TASK_PROTOCOL_ERROR",
+                                "submit_task_plan must be the only call and is valid only before a task exists",
+                            )
+                        )
+                    control_call = tool_calls_payload[0]
+                    control_id = str(control_call.get("id") or uuid.uuid4().hex)
+                    raw_control = (control_call.get("function") or {}).get("arguments") or "{}"
+                    try:
+                        control_args = (
+                            json.loads(raw_control)
+                            if isinstance(raw_control, str)
+                            else dict(raw_control)
+                        )
+                    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TASK_INVALID",
+                                f"task plan arguments are not valid JSON: {exc}",
+                            )
+                        ) from exc
+                    if not isinstance(control_args, dict):
+                        raise AriadneError(
+                            app_error("ARIADNE_TASK_INVALID", "task plan must be an object")
+                        )
+                    task_state = self.task_controller.create_from_plan(
+                        session_id=session_id,
+                        user_id=user_id,
+                        arguments=control_args,
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": control_id,
+                            "content": dumps_tool_output(
+                                {
+                                    "task_id": task_state.task_id,
+                                    "status": task_state.status,
+                                    "current_step_id": task_state.current_step_id,
+                                    "revision": task_state.revision,
+                                }
+                            ),
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": self.task_controller.format_context(task_state),
+                        }
+                    )
+                    yield TurnEvent(
+                        "task_started",
+                        {
+                            "task_id": task_state.task_id,
+                            "goal": task_state.goal,
+                            "step_count": len(task_state.steps),
+                            "revision": task_state.revision,
+                        },
+                    )
+                    continue
+
                 if not tool_calls_payload:
                     text = (assistant.content or "").strip()
                     if not text:
@@ -662,6 +782,40 @@ class TurnApplication:
                             yield TurnEvent(
                                 "guard_finding",
                                 {"direction": "out", "kind": finding.kind, "detail": finding.detail},
+                            )
+                    turn_status = "completed"
+                    turn_error = None
+                    if task_mode:
+                        if self.task_controller is None or task_state is None:
+                            turn_status = "failed"
+                            turn_error = app_error(
+                                "ARIADNE_TASK_PLAN_REQUIRED",
+                                "task mode requires submit_task_plan before an answer",
+                            )
+                        elif task_state.status == "completed":
+                            turn_status = "completed"
+                        elif task_state.status in {"failed", "cancelled"}:
+                            turn_status = "failed"
+                            turn_error = app_error(
+                                "ARIADNE_TASK_FAILED",
+                                task_state.last_observation.summary
+                                if task_state.last_observation is not None
+                                else f"task ended with status {task_state.status}",
+                                task_id=task_state.task_id,
+                            )
+                        else:
+                            task_state = self.task_controller.ask_user(
+                                task_state,
+                                text or "The task is not verified and needs more input.",
+                            )
+                            turn_status = "needs_input"
+                            yield TurnEvent(
+                                "task_needs_input",
+                                {
+                                    "task_id": task_state.task_id,
+                                    "current_step_id": task_state.current_step_id,
+                                    "question": task_state.open_questions[0].prompt,
+                                },
                             )
                     self.memory.transcript.append(
                         {
@@ -740,7 +894,7 @@ class TurnApplication:
                     await guard.release()
                     result = TurnResult(
                         turn_id=turn_id,
-                        status="completed",
+                        status=turn_status,  # type: ignore[arg-type]
                         text=text,
                         messages=_public_messages(messages),
                         tool_calls=tool_calls,
@@ -751,10 +905,58 @@ class TurnApplication:
                         model=model or self.model.model,
                         schema_metrics=schema_metrics,
                         skill_pins=skill_pins,
+                        task=TaskSummary.from_state(task_state) if task_state else None,
+                        error=turn_error,
                     )
-                    yield TurnEvent("turn_completed", {"result": result})
+                    yield TurnEvent(
+                        "turn_failed" if turn_status == "failed" else "turn_completed",
+                        {"result": result},
+                    )
                     return
 
+                task_attempt_id = ""
+                task_attempt_spec = None
+                if task_mode:
+                    if self.task_controller is None or task_state is None:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TASK_PLAN_REQUIRED",
+                                "capability calls require a persisted task plan",
+                            )
+                        )
+                    capability_names = [
+                        str((call.get("function") or {}).get("name") or "")
+                        for call in tool_calls_payload
+                    ]
+                    material_specs = []
+                    for capability_name in capability_names:
+                        spec = self.tools.get(capability_name)
+                        if spec is None or spec.side_effect_level not in {"none", "read"}:
+                            material_specs.append(spec)
+                    if len(material_specs) > 1:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_TASK_PROTOCOL_ERROR",
+                                "task mode permits at most one material capability call per exchange",
+                                names=capability_names,
+                            )
+                        )
+                    if material_specs:
+                        task_attempt_spec = material_specs[0]
+                        task_state, task_step, task_attempt_id = self.task_controller.start_attempt(
+                            task_state
+                        )
+                        yield TurnEvent(
+                            "task_step_started",
+                            {
+                                "task_id": task_state.task_id,
+                                "step_id": task_step.step_id,
+                                "attempt": task_step.attempt,
+                                "intent": task_step.intent,
+                            },
+                        )
+
+                exchange_traces: list[ToolCallTrace] = []
                 for call in tool_calls_payload:
                     call_id = str(call.get("id") or uuid.uuid4().hex)
                     fn = call.get("function") or {}
@@ -791,8 +993,12 @@ class TurnApplication:
                             started_at=started,
                             finished_at=finished,
                             schema_chars=spec.schema_chars() if spec else 0,
+                            task_id=task_state.task_id if task_state else "",
+                            step_id=(task_state.current_step_id or "") if task_state else "",
+                            attempt_id=task_attempt_id,
                         )
                         tool_calls.append(trace)
+                        exchange_traces.append(trace)
                         messages.append(
                             {
                                 "role": "tool",
@@ -825,8 +1031,7 @@ class TurnApplication:
                         finished = datetime.now(timezone.utc)
                         err = exc.error
                         fail_args = redact_secrets(args) if self.redact_traces else args
-                        tool_calls.append(
-                            ToolCallTrace(
+                        failed_trace = ToolCallTrace(
                                 call_id=call_id,
                                 name=name,
                                 arguments=fail_args if isinstance(fail_args, dict) else args,
@@ -835,8 +1040,12 @@ class TurnApplication:
                                 error=err,
                                 started_at=started,
                                 finished_at=finished,
+                                task_id=task_state.task_id if task_state else "",
+                                step_id=(task_state.current_step_id or "") if task_state else "",
+                                attempt_id=task_attempt_id,
                             )
-                        )
+                        tool_calls.append(failed_trace)
+                        exchange_traces.append(failed_trace)
                         messages.append(
                             {
                                 "role": "tool",
@@ -865,8 +1074,7 @@ class TurnApplication:
                     except Exception as exc:  # noqa: BLE001
                         finished = datetime.now(timezone.utc)
                         err = app_error("ARIADNE_TOOL_HANDLER_ERROR", f"{type(exc).__name__}: {exc}")
-                        tool_calls.append(
-                            ToolCallTrace(
+                        failed_trace = ToolCallTrace(
                                 call_id=call_id,
                                 name=name,
                                 arguments=args,
@@ -875,8 +1083,12 @@ class TurnApplication:
                                 error=err,
                                 started_at=started,
                                 finished_at=finished,
+                                task_id=task_state.task_id if task_state else "",
+                                step_id=(task_state.current_step_id or "") if task_state else "",
+                                attempt_id=task_attempt_id,
                             )
-                        )
+                        tool_calls.append(failed_trace)
+                        exchange_traces.append(failed_trace)
                         messages.append(
                             {
                                 "role": "tool",
@@ -894,6 +1106,64 @@ class TurnApplication:
                                 "status": "failed",
                                 "arguments": args,
                                 "error": {"code": err.code, "message": err.message},
+                            },
+                        )
+
+                if (
+                    task_mode
+                    and task_attempt_id
+                    and self.task_controller is not None
+                    and task_state is not None
+                ):
+                    outcome = self.task_controller.record_attempt(
+                        task_state,
+                        traces=exchange_traces,
+                        spec=task_attempt_spec,
+                        attempt_id=task_attempt_id,
+                    )
+                    task_state = outcome.state
+                    for check_result in outcome.step.check_results:
+                        yield TurnEvent(
+                            "task_check_completed",
+                            {
+                                "task_id": task_state.task_id,
+                                "step_id": outcome.step.step_id,
+                                "check_id": check_result.check_id,
+                                "status": check_result.status,
+                                "observed_value": check_result.observed_value,
+                                "error": (
+                                    {
+                                        "code": check_result.error.code,
+                                        "message": check_result.error.message,
+                                    }
+                                    if check_result.error
+                                    else None
+                                ),
+                            },
+                        )
+                    messages.append(
+                        {
+                            "role": "system",
+                            "content": self.task_controller.format_context(task_state),
+                        }
+                    )
+                    if task_state.status == "completed":
+                        yield TurnEvent(
+                            "task_completed",
+                            {"task_id": task_state.task_id, "revision": task_state.revision},
+                        )
+                    elif task_state.status == "failed":
+                        yield TurnEvent(
+                            "task_failed",
+                            {"task_id": task_state.task_id, "revision": task_state.revision},
+                        )
+                    elif task_state.status == "needs_input":
+                        yield TurnEvent(
+                            "task_needs_input",
+                            {
+                                "task_id": task_state.task_id,
+                                "current_step_id": task_state.current_step_id,
+                                "question": task_state.open_questions[0].prompt,
                             },
                         )
 
@@ -935,13 +1205,28 @@ class TurnApplication:
                 session_id=session_id,
                 model=model or self.model.model,
                 schema_metrics=schema_metrics,
+                task=TaskSummary.from_state(task_state) if task_state else None,
             )
             yield TurnEvent("turn_failed", {"result": result})
         except AriadneError as exc:
             await guard.release()
+            needs_input = bool(task_state is not None and task_state.status == "needs_input")
+            if needs_input:
+                yield TurnEvent(
+                    "task_needs_input",
+                    {
+                        "task_id": task_state.task_id,
+                        "current_step_id": task_state.current_step_id,
+                        "question": (
+                            task_state.open_questions[0].prompt
+                            if task_state.open_questions
+                            else exc.error.message
+                        ),
+                    },
+                )
             result = TurnResult(
                 turn_id=turn_id,
-                status="failed",
+                status="needs_input" if needs_input else "failed",
                 text="",
                 messages=_public_messages(messages),
                 tool_calls=tool_calls,
@@ -952,8 +1237,9 @@ class TurnApplication:
                 session_id=session_id,
                 model=model or self.model.model,
                 schema_metrics=schema_metrics,
+                task=TaskSummary.from_state(task_state) if task_state else None,
             )
-            yield TurnEvent("turn_failed", {"result": result})
+            yield TurnEvent("turn_completed" if needs_input else "turn_failed", {"result": result})
         except Exception as exc:  # noqa: BLE001
             await guard.release()
             result = TurnResult(
@@ -969,6 +1255,7 @@ class TurnApplication:
                 session_id=session_id,
                 model=model or self.model.model,
                 schema_metrics=schema_metrics,
+                task=TaskSummary.from_state(task_state) if task_state else None,
             )
             yield TurnEvent("turn_failed", {"result": result})
 

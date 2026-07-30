@@ -48,6 +48,7 @@ class Agent:
         session_id: str | None = None,
         model: str | None = None,
         images: list[Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AsyncIterator[TurnEvent]:
         if isinstance(input, RunTurnCommand):
             command = input
@@ -57,16 +58,19 @@ class Agent:
             sid = command.session_id
             mdl = command.model
             imgs = images
+            meta = command.metadata
         else:
             prompt = input
             sid = session_id or self.session_id
             mdl = model or self.model
             imgs = images
+            meta = metadata
         async for event in self.turn_app.run_events(
             prompt=prompt,
             session_id=sid,
             model=mdl,
             images=imgs,
+            metadata=meta,
         ):
             yield event
 
@@ -92,6 +96,10 @@ class Agent:
                 "description": spec.description,
                 "catalog_description": spec.catalog_description,
                 "exposure": spec.tool_exposure,
+                "side_effect_level": spec.side_effect_level,
+                "network_access": spec.network_access,
+                "idempotent": spec.idempotent,
+                "required_credentials": list(spec.required_credentials),
             }
             for spec in self.turn_app.tools.tools.values()
             if spec.tool_exposure != "hidden"

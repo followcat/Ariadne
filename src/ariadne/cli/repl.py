@@ -118,17 +118,27 @@ async def _run_turn(
     json_mode: bool,
     verbose: bool,
     images: list | None = None,
+    task_mode: bool = False,
 ) -> tuple[int, Any]:
     from ..cli.main import _emit_stream  # shared stream renderer
 
     if stream:
         return await _emit_stream(
-            agent, line, json_mode=json_mode, verbose=verbose, images=images
+            agent,
+            line,
+            json_mode=json_mode,
+            verbose=verbose,
+            images=images,
+            metadata={"task_mode": True} if task_mode else None,
         )
     spinner = ui.status("thinking…")
     spinner.__enter__()
     try:
-        result = await agent.run(line, images=images)
+        result = await agent.run(
+            line,
+            images=images,
+            metadata={"task_mode": True} if task_mode else None,
+        )
     finally:
         spinner.__exit__(None, None, None)
     if json_mode:
@@ -219,6 +229,7 @@ def run_repl(
                     json_mode=settings.json_mode,
                     verbose=settings.verbose,
                     images=imgs or None,
+                    task_mode=bool(getattr(args, "task", False)),
                 )
             )
         except KeyboardInterrupt:

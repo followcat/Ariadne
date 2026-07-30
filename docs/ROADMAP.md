@@ -232,22 +232,22 @@ Design: [design/agent-closed-loop.md](design/agent-closed-loop.md).
 **North star:** after each material action, verify with evidence; update the plan
 from evidence — not from “tool returned success.”
 
-**Status: design only** (implementation not started).
+**Status: 14a shipped; 14b–e pending.**
 
 #### 14a — Verify + TaskState (P0)
-- [ ] `TaskState` persistence (local SQLite, task identity + active session
+- [x] `TaskState` persistence (local SQLite, task identity + active session
   pointer, optimistic revision) + resume re-check of
   workspace fingerprint / assumptions
-- [ ] Complete Observation / Assumption / CheckResult / PlanRevision contracts
-- [ ] Kernel `submit_task_plan` control call; strict schema and one material
+- [x] Complete Observation / Assumption / CheckResult / PlanRevision contracts
+- [x] Kernel `submit_task_plan` control call; strict schema and one material
   capability call per exchange
-- [ ] Full JSON Schema runtime validation; unknown/write actions never
+- [x] Full JSON Schema runtime validation; unknown/write actions never
   auto-retry
-- [ ] Step model: `preconditions`, `done_when`, `failure_policy`, retries
-- [ ] Deterministic checks: `command_exit`, `path_exists` / `path_absent`,
+- [x] Step model: `preconditions`, `done_when`, `failure_policy`, retries
+- [x] Deterministic checks: `command_exit`, `path_exists` / `path_absent`,
   `file_contains` (more kinds later)
-- [ ] Task mode on TurnApplication (flag / policy); tool complete → verify step
-- [ ] Offline tests: fake model + file change + exit-code style verification
+- [x] Task mode on TurnApplication / CLI / Web; tool complete → verify step
+- [x] Offline tests: fake model + file change + exit-code style verification
 
 #### 14b — Replan + tool metadata (P0/P1)
 - [ ] Structured replan with append-only `plan_revisions` (must cite evidence)

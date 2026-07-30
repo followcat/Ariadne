@@ -196,6 +196,12 @@ def _add_global_flags(p: argparse.ArgumentParser, *, suppress: bool) -> None:
         default=s,
         help="Tool approval policy (default: auto)",
     )
+    p.add_argument(
+        "--task",
+        action="store_true",
+        default=b,
+        help="Use closed-loop task mode with explicit plan and verification",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -445,11 +451,17 @@ def _event_to_jsonable(event: TurnEvent) -> dict[str, object]:
 
 
 async def _emit_stream(
-    agent, prompt: str, *, json_mode: bool, verbose: bool, images: list | None = None
+    agent,
+    prompt: str,
+    *,
+    json_mode: bool,
+    verbose: bool,
+    images: list | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> tuple[int, object]:
     final = None
     saw_delta = False
-    async for event in agent.run_stream(prompt, images=images):
+    async for event in agent.run_stream(prompt, images=images, metadata=metadata):
         if event.kind in {"turn_completed", "turn_failed"}:
             final = event.data.get("result")
             continue
@@ -510,10 +522,17 @@ async def cmd_run(args: argparse.Namespace) -> int:
         return 2
     if settings.stream:
         code, _ = await _emit_stream(
-            agent, prompt, json_mode=settings.json_mode, verbose=settings.verbose
+            agent,
+            prompt,
+            json_mode=settings.json_mode,
+            verbose=settings.verbose,
+            metadata={"task_mode": True} if getattr(args, "task", False) else None,
         )
         return code
-    result = await agent.run(prompt)
+    result = await agent.run(
+        prompt,
+        metadata={"task_mode": True} if getattr(args, "task", False) else None,
+    )
     if settings.json_mode:
         sys.stdout.write(render_json(result))
     else:

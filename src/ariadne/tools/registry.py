@@ -4,6 +4,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, ValidationError
+
 from ..errors import AriadneError, app_error
 from ..memory.facade import MemoryFacade
 from ..sandbox.port import SandboxExecRequest, SandboxSession
@@ -12,6 +15,8 @@ from .exposure import ToolExposureState
 
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[Any]]
 ToolExposure = Literal["eager", "named_deferred", "hidden"]
+SideEffectLevel = Literal["none", "read", "write", "destructive", "unknown"]
+NetworkAccess = Literal["none", "outbound", "unknown"]
 # host-side approval: called with (tool_name, arguments) before dispatch;
 # False denies the invocation (SANDBOX.md: confirmation stays a host concern)
 ApprovalHook = Callable[[str, dict[str, Any]], bool]
@@ -54,7 +59,14 @@ class ToolSpec:
     title: str = ""
     kind: str = "tool"  # tool | system_action | ...
     exposed_to_llm: bool = True
-    required_credentials: tuple[str, ...] = ()  # personal v1 ignores credentials
+    required_credentials: tuple[str, ...] = ()
+    side_effect_level: SideEffectLevel = "unknown"
+    network_access: NetworkAccess = "unknown"
+    idempotent: bool | None = None
+    failure_codes: tuple[str, ...] = ()
+    verification_hint: tuple[str, ...] = ()
+    preconditions: tuple[str, ...] = ()
+    effects: tuple[str, ...] = ()
 
     def catalog_phrase(self) -> str:
         """Short discovery phrase (docs CapabilitySpec.description)."""
@@ -93,6 +105,16 @@ class ToolRegistry:
     ) -> None:
         if handler is not None:
             spec.handler = handler
+        try:
+            Draft202012Validator.check_schema(spec.parameters)
+        except SchemaError as exc:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    f"invalid JSON Schema for tool {spec.name!r}: {exc.message}",
+                    name=spec.name,
+                )
+            ) from exc
         if spec.name in self.tools and not replace:
             raise AriadneError(
                 app_error(
@@ -260,7 +282,7 @@ class ToolRegistry:
         return len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")))
 
     def validate_arguments(self, name: str, arguments: dict[str, Any]) -> None:
-        """Lightweight JSON-schema subset: required keys + object type (TOOLCALL §4)."""
+        """Validate runtime arguments against the complete declared JSON Schema."""
         spec = self.tools.get(name)
         if spec is None:
             return
@@ -272,20 +294,19 @@ class ToolRegistry:
                     name=name,
                 )
             )
-        params = spec.parameters or {}
-        required = params.get("required") or []
-        if not isinstance(required, list):
-            return
-        missing = [k for k in required if k not in arguments]
-        if missing:
+        try:
+            Draft202012Validator(spec.parameters or {}).validate(arguments)
+        except ValidationError as exc:
+            path = ".".join(str(part) for part in exc.absolute_path)
             raise AriadneError(
                 app_error(
                     "ARIADNE_INVALID_TOOL_ARGS",
-                    f"tool {name!r} missing required: {', '.join(missing)}",
+                    f"tool {name!r} arguments failed JSON Schema validation: {exc.message}",
                     name=name,
-                    missing=missing,
+                    path=path,
+                    validator=str(exc.validator or ""),
                 )
-            )
+            ) from exc
 
     async def invoke(self, name: str, arguments: dict[str, Any], ctx: ToolContext) -> Any:
         spec = self.tools.get(name)

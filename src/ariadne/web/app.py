@@ -58,6 +58,7 @@ class ProviderBody(BaseModel):
 
 class TurnBody(BaseModel):
     input: str
+    task_mode: bool = False
     session_id: str | None = None
     atelier_id: str | None = None
     atelier_session: str | None = None  # main | branch-<name> | bare branch name
@@ -71,6 +72,7 @@ class ImagePart(BaseModel):
 
 class TurnStreamBody(BaseModel):
     input: str = ""
+    task_mode: bool = False
     session_id: str | None = None
     images: list[ImagePart] = []
     atelier_id: str | None = None
@@ -540,7 +542,10 @@ def create_app(settings: Settings) -> FastAPI:
                 user_settings = dataclasses.replace(user_settings, session_id=body.session_id)
         agent = compose_agent(user_settings)
         try:
-            result = await agent.run(body.input)
+            if body.task_mode:
+                result = await agent.run(body.input, metadata={"task_mode": True})
+            else:
+                result = await agent.run(body.input)
         except AriadneError as exc:
             raise HTTPException(status_code=400, detail=exc.error.message) from exc
         out = json.loads(render_json(result))
@@ -608,6 +613,7 @@ def create_app(settings: Settings) -> FastAPI:
         text: str,
         session_id: str | None,
         images: list[Any] | None,
+        task_mode: bool = False,
         atelier_id: str | None = None,
         atelier_session: str | None = None,
     ) -> StreamingResponse:
@@ -631,7 +637,16 @@ def create_app(settings: Settings) -> FastAPI:
 
         async def events():
             try:
-                async for event in agent.run_stream(text, images=images or None):
+                stream_events = (
+                    agent.run_stream(
+                        text,
+                        images=images or None,
+                        metadata={"task_mode": True},
+                    )
+                    if task_mode
+                    else agent.run_stream(text, images=images or None)
+                )
+                async for event in stream_events:
                     if event.kind in {"turn_completed", "turn_failed"}:
                         result = event.data.get("result")
                         result_payload = (
@@ -750,6 +765,7 @@ def create_app(settings: Settings) -> FastAPI:
     async def stream_turn(
         input: str,
         session_id: str | None = None,
+        task_mode: bool = False,
         atelier_id: str | None = None,
         atelier_session: str | None = None,
         username: str = Depends(current_user),
@@ -760,6 +776,7 @@ def create_app(settings: Settings) -> FastAPI:
             text=input,
             session_id=session_id,
             images=None,
+            task_mode=task_mode,
             atelier_id=atelier_id,
             atelier_session=atelier_session,
         )
@@ -777,6 +794,7 @@ def create_app(settings: Settings) -> FastAPI:
             text=body.input or "",
             session_id=body.session_id,
             images=images,
+            task_mode=body.task_mode,
             atelier_id=body.atelier_id,
             atelier_session=body.atelier_session,
         )

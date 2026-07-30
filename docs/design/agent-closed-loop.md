@@ -1,6 +1,6 @@
 # Design: Closed-Loop Agent Execution (Personal / 2C)
 
-Status: **active design** (not fully implemented)  
+Status: **active delivery** (Phase 14a implemented; later phases pending)
 Audience: implementers  
 Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [turn-lifecycle.md](turn-lifecycle.md),
 [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
@@ -429,14 +429,14 @@ Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 
 ### Phase 14a — Verify + TaskState (P0)
 
-- [ ] `TaskState` store + resume re-check  
-- [ ] Complete state/check/evidence contracts, revisions, and task events
-- [ ] Kernel `submit_task_plan` control-call protocol; one material call/exchange
-- [ ] Full JSON Schema argument validation and safe retry baseline
-- [ ] Step `done_when` with deterministic checks (command_exit, path_*, file_contains)  
-- [ ] Turn integration: task mode flag; on tool complete → verify current step  
-- [ ] failure_policy: retry / ask_user / abort (replan stub ok)  
-- [ ] Tests: fake model + file edit + pytest-style exit check  
+- [x] `TaskState` SQLite store + resume re-check
+- [x] Complete state/check/evidence contracts, revisions, and task events
+- [x] Kernel `submit_task_plan` control-call protocol; one material call/exchange
+- [x] Full JSON Schema argument validation and safe retry baseline
+- [x] Step `done_when` with deterministic checks (command_exit, path_*, file_contains)
+- [x] Turn integration: task mode flag; on tool complete → verify current step
+- [x] failure_policy: retry / ask_user / abort (replan pauses for 14b)
+- [x] Tests: fake model + file edit + command exit check
 
 ### Phase 14b — Replan + tool metadata (P0/P1)
 

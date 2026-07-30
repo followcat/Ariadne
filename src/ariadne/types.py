@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from .tasks.models import TaskSummary
 
 
 @dataclass(slots=True)
@@ -24,6 +27,9 @@ class ToolCallTrace:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     schema_chars: int = 0
+    task_id: str = ""
+    step_id: str = ""
+    attempt_id: str = ""
 
 
 @dataclass(slots=True)
@@ -118,6 +124,7 @@ class TurnResult:
     schema_metrics: list[SchemaMetrics] = field(default_factory=list)
     # skill name → content digest for skills loaded this turn (audit/replay)
     skill_pins: dict[str, str] = field(default_factory=dict)
+    task: TaskSummary | None = None
 
 
 # Streaming / host events
@@ -129,6 +136,13 @@ TurnEventKind = Literal[
     "tool_completed",
     "skill_event",
     "memory_layer",
+    "task_started",
+    "task_resumed",
+    "task_step_started",
+    "task_check_completed",
+    "task_needs_input",
+    "task_completed",
+    "task_failed",
     "guard_finding",
     "turn_completed",
     "turn_failed",
