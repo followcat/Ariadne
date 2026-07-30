@@ -88,23 +88,29 @@ Only **TurnApplication** remains the public execution entry ([ARCHITECTURE](../A
 
 ## 4. TaskState (lightweight persistence)
 
-Stored under host data dir (JSON or SQLite), keyed by `session_id` (+ optional
-task id). Not a second chat log.
+Stored in host-local SQLite under the data dir. `task_id` is the durable
+identity; a separate `session_id → active_task_id` pointer selects the task to
+resume. A session may retain multiple terminal tasks, but has at most one
+active / needs-input task. It is not a second chat log.
 
 ```text
 TaskState
+  schema_version: int               # v1; reject unknown future versions
+  revision: int                     # optimistic concurrency token
   task_id: str
   session_id: str
-  user_id: str
-  status: active | blocked | completed | failed | cancelled
+  user_id: str | None
+  status: active | needs_input | completed | failed | cancelled
   goal: str                         # user-facing objective
   goal_checks: list[Check]          # goal-level verification
   steps: list[Step]
   current_step_id: str | None
   last_observation: Observation | None
-  open_questions: list[str]         # needs_input
-  workspace_fingerprint: str        # e.g. git HEAD / mtime hash
+  open_questions: list[OpenQuestion]
+  workspace_fingerprint: str        # scoped tree fingerprint; not evidence
   assumptions: list[Assumption]     # must re-check on resume
+  plan_revisions: list[PlanRevision] # append-only
+  created_at: float
   updated_at: float
 ```
 
@@ -122,28 +128,97 @@ Step
   failure_policy: retry | replan | ask_user | abort
   evidence: list[EvidenceRef]
   attempt: int
+  check_results: list[CheckResult]
 ```
 
 ### 4.2 Check / Evidence
 
 ```text
 Check
+  check_id: str
   kind: command_exit | path_exists | path_absent | file_contains
-       | git_diff_matches | http_ok | json_path | llm_semantic | user_confirm
+       | git_diff_matches | http_response | json_path | llm_semantic | user_confirm
   spec: dict                        # kind-specific
   required: bool
 
 EvidenceRef
+  evidence_id: str
   kind: tool_result | command | file_diff | test_log | memory_hit | user
   ref: str                          # turn_id, path, tool_call_id, ...
   summary: str                      # short, non-invented
+  attempt_id: str
+  at: float
+
+CheckResult
+  check_id: str
+  status: pass | fail | error | stale | not_run
+  evidence: list[EvidenceRef]
+  observed_value: any | None
+  error: AppError | None
+  checked_at: float
+
+Observation
+  observation_id: str
+  kind: tool_result | check_result | user | environment
+  summary: str
+  evidence: list[EvidenceRef]
+  at: float
+
+Assumption
+  assumption_id: str
+  text: str
+  status: current | stale | invalid
+  recheck: Check | None
+  checked_at: float | None
+
+OpenQuestion
+  question_id: str
+  prompt: str
+  asked_at: float
+
+PlanRevision
+  revision: int
+  reason: str
+  evidence: list[EvidenceRef]        # required; no evidence-free replan
+  prior_step_ids: list[str]
+  new_step_ids: list[str]
   at: float
 ```
 
 **Rule:** `status=verified` only when all required `done_when` checks pass.
 Tool invoke success alone never promotes a step to verified.
 
-### 4.3 Resume
+### 4.3 State transitions and concurrency
+
+Allowed task transitions:
+
+```text
+active → needs_input | completed | failed | cancelled
+needs_input → active | failed | cancelled
+completed | failed | cancelled → terminal (no mutation except archival metadata)
+```
+
+Store writes use an expected `revision`; a stale writer fails with
+`ARIADNE_TASK_CONFLICT`. New user input never silently replaces an active
+goal. The host must explicitly continue, cancel, or start a new task.
+
+Step transitions are `pending → running → verified|failed`, with `skipped`
+allowed only through an evidence-citing replan. Check ERROR never becomes
+FAIL or PASS.
+
+### 4.4 Verification boundary
+
+Verifier checks consume existing evidence by default. A check must never
+execute a command, read outside the configured workspace root, or issue a
+network request behind `ToolRegistry` / sandbox / approval. In particular,
+`command_exit` references an already-recorded tool call; it is not an
+arbitrary command runner.
+
+Any active verification read is a normal registered tool call and passes the
+same authorization path as other actions. `http_response` is tool-level
+evidence only and cannot, by itself, complete a mutating step or the goal.
+
+### 4.5 Resume
 
 On process restart / `/resume`:
 
@@ -151,6 +226,10 @@ On process restart / `/resume`:
 2. Recompute `workspace_fingerprint`; if changed, mark assumptions **stale**.
 3. Re-run checks for `current_step` and open goal checks before more tools.
 4. Do **not** treat chat history as proof that external world is unchanged.
+
+The fingerprint is a change detector, not completion evidence. File checks
+are re-run; prior command/API results become stale unless a fresh registered
+tool call reproduces them.
 
 ---
 
@@ -166,10 +245,25 @@ On process restart / `/resume`:
 Activation (host policy), examples:
 
 - User or CLI: `--task` / “plan and verify”
-- Heuristic: many tools, approval-mode on-request, test/edit verbs
+- Phase 14a: explicit host flag only
+- Later heuristic activation requires outcome evals and is always traced
 - Always-on later only if latency budget allows
 
-### 5.2 Control flow (task mode)
+### 5.2 Plan control protocol
+
+Plans and replans use kernel control calls (`submit_task_plan`, later
+`revise_task_plan`) with strict JSON schemas. They are not capabilities, do
+not enter the public tool catalog, and cannot perform side effects. The kernel
+assigns task / step / check IDs and rejects unknown check kinds or empty
+required `done_when` lists.
+
+In task mode each model exchange may contain at most one material capability
+call. The kernel verifies it before another capability call is accepted. A
+plain assistant answer cannot complete an unverified task; it transitions to
+`needs_input` (with the text recorded as an open question) or fails with a
+structured protocol error.
+
+### 5.3 Control flow (task mode)
 
 ```text
 if no TaskState or goal changed:
@@ -190,7 +284,7 @@ loop until goal verified | failed | needs_input | loop limit:
   update last_observation + optional memory project
 ```
 
-### 5.3 Replan
+### 5.4 Replan
 
 Replan **must** cite evidence (failed check, new observation).  
 Forbidden: silent full plan wipe without notes in TaskState history
@@ -212,6 +306,10 @@ still return structured pass/fail + quote from evidence, never free invention.
 
 Infra ERROR ≠ step FAIL (same discipline as memory eval).
 
+Automatic retry is allowed only for `none` / `read` effects or tools with an
+explicit idempotency contract. Unknown, write, and destructive actions default
+to `max_retries=0`; a new approval is required when an operation changes.
+
 ---
 
 ## 7. Memory integration (cognitive state)
@@ -221,7 +319,7 @@ adds **write discipline**:
 
 | Write | Rule |
 | --- | --- |
-| L2 projection | **Opt-in** (`enable_memory_projection`); ops need evidence quotes; no silent empty `no_change` success |
+| L2 projection | **Opt-in** (`enable_memory_projection`); ops need evidence quotes; distinguish confirmed_no_change from disabled/skipped/failed |
 | Conflicts | New version + `superseded_by` / status; no blind overwrite of authoritative fields |
 | Types | Prefer typed slots: fact \| preference \| goal \| hypothesis (extensible) |
 | Curated L3 | Explicit tool or user-confirmed consolidation apply |
@@ -229,6 +327,9 @@ adds **write discipline**:
 
 User-visible “why remembered / why updated” is a host UI concern; kernel stores
 `source_turn_id`, evidence, and timestamps.
+
+While a task is active, TaskState is authoritative for its goal and progress;
+L2 is a derived projection and must not overwrite it.
 
 ---
 
@@ -279,6 +380,10 @@ and tool exposure.
 - Deferred detail remains default ([DESIGN_PRINCIPLES §5](../DESIGN_PRINCIPLES.md))  
 - Evidence required for verify stays **verbatim** (no aggressive summarize)  
 - Schema cost metrics already exist — Compiler must emit comparable traces  
+- Authority order is kernel policy > host policy > TaskState > user-confirmed
+  curated memory > skills > retrieved memory > external/tool content
+- Required evidence that does not fit the budget fails explicitly; it is never
+  silently truncated or dropped
 
 ---
 
@@ -294,6 +399,11 @@ Keep one registry. Add **optional** metadata (absent = unknown, not “safe”):
 | `verification_hint` | suggested Check kinds after invoke |
 | `preconditions` | soft hints for planner (not a second auth system) |
 | `effects` | soft postconditions |
+
+Phase 14a also replaces the current required-fields-only validator with full
+JSON Schema runtime validation. `required_credentials` becomes enforced host
+context, not documentation. Approval remains a host decision but consumes
+effect metadata; missing metadata is `unknown`, never safe.
 
 Authorization stays separate from exposure ([DESIGN_PRINCIPLES §6](../DESIGN_PRINCIPLES.md)).
 
@@ -320,6 +430,9 @@ Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 ### Phase 14a — Verify + TaskState (P0)
 
 - [ ] `TaskState` store + resume re-check  
+- [ ] Complete state/check/evidence contracts, revisions, and task events
+- [ ] Kernel `submit_task_plan` control-call protocol; one material call/exchange
+- [ ] Full JSON Schema argument validation and safe retry baseline
 - [ ] Step `done_when` with deterministic checks (command_exit, path_*, file_contains)  
 - [ ] Turn integration: task mode flag; on tool complete → verify current step  
 - [ ] failure_policy: retry / ask_user / abort (replan stub ok)  
@@ -363,6 +476,13 @@ Editable in host UI; every entry: type, source, confidence, scope, updated_at.
 | Skill false-load rate | Selection learning |
 | User override rate on memory/skill patches | Trust |
 
+Phase gates also track false-complete rate, duplicate side effects, resume
+correctness, direct-mode latency regression, task-mode token/tool-call cost,
+unnecessary task activation, and replan-after-evidence success. Fake-model
+tests prove state-machine behavior; fixed trajectory fixtures measure agent
+outcomes. A phase is not complete while a false-complete or duplicate-effect
+regression remains unexplained.
+
 Infra ERROR ≠ product FAIL.
 
 ---
@@ -376,7 +496,7 @@ Infra ERROR ≠ product FAIL.
 | Verification | Deterministic first | Accuracy + token cost |
 | L2 project | Opt-in, evidence-bound | Honest memory defaults |
 | Skill learning | Propose + confirm | Avoid error reinforcement |
-| Persistence | Local JSON/SQLite TaskState | Enough for personal resume |
+| Persistence | Local SQLite TaskState | Transactional revisions without a hosted service |
 | Multi-agent | Deferred | Complexity without closed loop |
 
 ---

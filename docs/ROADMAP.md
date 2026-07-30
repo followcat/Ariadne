@@ -235,8 +235,14 @@ from evidence — not from “tool returned success.”
 **Status: design only** (implementation not started).
 
 #### 14a — Verify + TaskState (P0)
-- [ ] `TaskState` persistence (session-keyed JSON/SQLite) + resume re-check of
+- [ ] `TaskState` persistence (local SQLite, task identity + active session
+  pointer, optimistic revision) + resume re-check of
   workspace fingerprint / assumptions
+- [ ] Complete Observation / Assumption / CheckResult / PlanRevision contracts
+- [ ] Kernel `submit_task_plan` control call; strict schema and one material
+  capability call per exchange
+- [ ] Full JSON Schema runtime validation; unknown/write actions never
+  auto-retry
 - [ ] Step model: `preconditions`, `done_when`, `failure_policy`, retries
 - [ ] Deterministic checks: `command_exit`, `path_exists` / `path_absent`,
   `file_contains` (more kinds later)
