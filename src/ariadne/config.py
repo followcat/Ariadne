@@ -79,6 +79,14 @@ class Settings:
     summary_mode: str = "grounded"
     # Optional host-injected system block (e.g. Atelier KNOWLEDGE.md context)
     extra_system_prompt: str = ""
+    # Memory scopes / graded search (design/memory-scopes.md, memory-search.md)
+    user_id: str = "local"
+    # Cross-workspace user curated root; default ~/.ariadne/memory when None
+    user_memory_dir: Path | None = None
+    # Default memory_search mode when tool omits mode: auto | fast | deep
+    memory_search_mode: str = "auto"
+    # L2 projection queue off by default (honest: no silent empty projector)
+    enable_memory_projection: bool = False
 
     @property
     def resolved_data_dir(self) -> Path:
@@ -287,6 +295,14 @@ def load_settings(
         skill_plan_chars=skill_plan,
         tool_search_mode=search_mode,
         summary_mode=sum_mode,
+        user_id=(pick("ARIADNE_USER_ID", default="local") or "local").strip() or "local",
+        memory_search_mode=(
+            pick("ARIADNE_MEMORY_SEARCH_MODE", default="auto") or "auto"
+        ).strip().lower(),
+        enable_memory_projection=pick(
+            "ARIADNE_ENABLE_MEMORY_PROJECTION", default="0"
+        ).strip().lower()
+        in {"1", "true", "yes", "on"},
         sandbox_profile=(
             sandbox_profile or pick("ARIADNE_SANDBOX_PROFILE", default="minimal")
         ).strip().lower(),

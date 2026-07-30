@@ -138,17 +138,33 @@ def compose_agent(settings: Settings) -> Agent:
         from ..memory.llm_summary import make_llm_compressor
 
         summary_store.compressor = make_llm_compressor(model, max_chars=400, fallback=True)
+    # User-scope curated lives under ~/.ariadne (CLI) — cross-workspace durable prefs.
+    # Web hosts that rebind data_dir should pass an explicit user memory root via
+    # settings.user_memory_dir when available.
+    user_memory_dir = getattr(settings, "user_memory_dir", None)
+    if user_memory_dir is None:
+        user_memory_dir = Path.home() / ".ariadne" / "memory"
+    else:
+        user_memory_dir = Path(user_memory_dir)
+    user_memory_dir.mkdir(parents=True, exist_ok=True)
+    enable_projection = bool(getattr(settings, "enable_memory_projection", False))
+    projection = None
+    if enable_projection:
+        projection = ProjectionWorker(
+            path=data_dir / "memory" / "projection_jobs.json",
+            state_store=state_store,
+        )
     memory = MemoryFacade(
         transcript=transcript,
         curated=CuratedStore(path=data_dir / "memory" / "curated.json"),
         state=state_store,
         summaries=summary_store,
         semantic=SemanticIndex(path=data_dir / "memory" / "semantic.json", embedder=embedder),
-        projection=ProjectionWorker(
-            path=data_dir / "memory" / "projection_jobs.json",
-            state_store=state_store,
-        ),
+        projection=projection,
         hybrid_semantic=True,
+        user_id=getattr(settings, "user_id", None) or "local",
+        user_curated=CuratedStore(path=user_memory_dir / "curated.json"),
+        search_mode_default=getattr(settings, "memory_search_mode", None) or "auto",
     )
 
     skill_dirs: list[Path] = []
