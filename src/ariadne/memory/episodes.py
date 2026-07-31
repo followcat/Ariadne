@@ -143,6 +143,7 @@ class EpisodeStore:
         title: str = "",
         close_episode: bool = False,
         ts: float | None = None,
+        segment: str = "main",
     ) -> dict[str, Any]:
         sid = (session_id or "").strip()
         tid = (turn_id or "").strip()
@@ -153,6 +154,7 @@ class EpisodeStore:
                     "episode append requires session_id and turn_id",
                 )
             )
+        seg = (segment or "main").strip() or "main"
         for event in events:
             self._validate_event(event)
             for ref in event.get("evidence") or []:
@@ -169,8 +171,12 @@ class EpisodeStore:
 
         def mut(data: dict[str, Any]) -> dict[str, Any]:
             turn_index = data.setdefault("turn_index", {})
-            turn_key = f"{session_key}:{tid}"
+            # Segment keys allow same-turn close A → open B without colliding.
+            turn_key = f"{session_key}:{tid}#{seg}"
+            legacy_key = f"{session_key}:{tid}"
             existing_id = turn_index.get(turn_key)
+            if existing_id is None and seg == "main":
+                existing_id = turn_index.get(legacy_key)
             episodes = data.setdefault("episodes", {})
             if existing_id:
                 existing = episodes.get(existing_id)
@@ -269,6 +275,8 @@ class EpisodeStore:
                 episode["status"] = "completed"
                 active.pop(session_key, None)
             turn_index[turn_key] = episode_id
+            # Keep a primary turn pointer on the latest segment for for_turn().
+            turn_index[legacy_key] = episode_id
             result.update(copy.deepcopy(episode))
             result["idempotent_replay"] = False
             return data
@@ -774,8 +782,30 @@ class EpisodeStore:
     ) -> dict[str, Any] | None:
         data = self._read()
         index = data.get("turn_index") or {}
-        episode_id = index.get(f"{workspace_key}\x1f{session_id}:{turn_id}")
+        base = f"{workspace_key}\x1f{session_id}:{turn_id}"
+        # Prefer the latest primary pointer (open segment overwrites close).
+        episode_id = index.get(base)
+        if not episode_id:
+            episode_id = index.get(f"{base}#open") or index.get(f"{base}#main")
         if not episode_id:
             episode_id = index.get(f"{session_id}:{turn_id}")  # legacy v1 key
+        episode = (data.get("episodes") or {}).get(episode_id) if episode_id else None
+        return copy.deepcopy(episode) if episode is not None else None
+
+    def for_turn_segment(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        workspace_key: str = "",
+        segment: str = "main",
+    ) -> dict[str, Any] | None:
+        data = self._read()
+        index = data.get("turn_index") or {}
+        base = f"{workspace_key}\x1f{session_id}:{turn_id}"
+        seg = (segment or "main").strip() or "main"
+        episode_id = index.get(f"{base}#{seg}")
+        if not episode_id and seg == "main":
+            episode_id = index.get(base)
         episode = (data.get("episodes") or {}).get(episode_id) if episode_id else None
         return copy.deepcopy(episode) if episode is not None else None

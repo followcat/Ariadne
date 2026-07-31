@@ -110,6 +110,27 @@ class ConversationStateStore:
     def current_goal_id(self, session_id: str) -> str | None:
         return self.current_goal_id_from_state(self.get(session_id))
 
+    def goal_id_for_task(self, session_id: str, task_id: str) -> str | None:
+        """Resolve a host-owned task_id to an immutable goal entity id."""
+
+        tid = (task_id or "").strip()
+        if not tid:
+            return None
+        entities = self.get(session_id).get("entities") or {}
+        matches: list[str] = []
+        for entity_id, entity in entities.items():
+            if not isinstance(entity, dict) or entity.get("type") != "goal":
+                continue
+            payload = (entity.get("attributes") or {}).get("task_id")
+            if not isinstance(payload, dict) or payload.get("status") != "active":
+                continue
+            if str(payload.get("value") or "") == tid:
+                matches.append(str(entity_id))
+        if not matches:
+            return None
+        matches.sort()
+        return matches[0]
+
     def get_as_of(
         self, session_id: str, *, allowed_turn_ids: set[str] | None = None
     ) -> dict[str, Any]:

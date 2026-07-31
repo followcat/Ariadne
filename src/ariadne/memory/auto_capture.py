@@ -796,6 +796,38 @@ class AutomaticMemoryProjector:
             index += 1
         return {"user_model_entry_ids": entry_ids}
 
+    @staticmethod
+    def _is_user_goal_event(event: dict[str, Any]) -> bool:
+        if event.get("type") != "goal":
+            return False
+        source = str(((event.get("evidence") or [{}])[0]).get("source") or "")
+        return source == "user"
+
+    def _resolve_terminal_goal_id(
+        self,
+        *,
+        session_id: str,
+        terminal: dict[str, Any],
+        prior_goal_id: str | None,
+    ) -> str | None:
+        """Resolve which goal a terminal event closes.
+
+        Never uses a goal proposed later in the same turn. Prefer host
+        ``task_id`` binding, then the pre-turn current pointer.
+        """
+
+        metadata = (
+            terminal.get("metadata")
+            if isinstance(terminal.get("metadata"), dict)
+            else {}
+        )
+        task_id = str(metadata.get("task_id") or "").strip()
+        if task_id and self.state is not None:
+            bound = self.state.goal_id_for_task(session_id, task_id)
+            if bound:
+                return bound
+        return prior_goal_id
+
     def _capture_state(
         self,
         *,
@@ -807,18 +839,62 @@ class AutomaticMemoryProjector:
         if self.state is None:
             return {"state_version": None}
         state_ops: list[dict[str, Any]] = []
-        goal = next(
-            (
-                event
-                for event in events
-                if event.get("type") == "goal"
-                and str(((event.get("evidence") or [{}])[0]).get("source") or "")
-                == "user"
-            ),
+        # Snapshot before this turn may rewrite the pointer with a new goal.
+        prior_goal_id = self.state.current_goal_id(session_id)
+        new_goal = next(
+            (event for event in events if self._is_user_goal_event(event)),
             None,
         )
-        if goal is not None:
-            quote = str(((goal.get("evidence") or [{}])[0]).get("quote") or "")
+        terminal = next((event for event in events if _is_terminal_event(event)), None)
+
+        # 1) Close the prior/task-bound goal first (same-turn A done + B open).
+        if terminal is not None:
+            terminal_goal_id = self._resolve_terminal_goal_id(
+                session_id=session_id,
+                terminal=terminal,
+                prior_goal_id=prior_goal_id,
+            )
+            if terminal_goal_id:
+                quote = str(
+                    ((terminal.get("evidence") or [{}])[0]).get("quote") or ""
+                )
+                metadata = (
+                    terminal.get("metadata")
+                    if isinstance(terminal.get("metadata"), dict)
+                    else {}
+                )
+                kind = str(metadata.get("outcome_kind") or "")
+                task_id = str(metadata.get("task_id") or "").strip()
+                if task_id:
+                    # Host-owned binding survives pointer moves.
+                    state_ops.append(
+                        {
+                            "op": "set_attribute",
+                            "entity_id": terminal_goal_id,
+                            "key": "task_id",
+                            "value": task_id,
+                            "memory_type": "goal",
+                            "authority": "user_explicit",
+                            "evidence_quote": quote,
+                        }
+                    )
+                state_ops.append(
+                    {
+                        "op": "set_status",
+                        "entity_id": terminal_goal_id,
+                        "status": (
+                            "done"
+                            if kind in {"completed", "verified_completion"}
+                            else "cancelled"
+                        ),
+                        "authority": metadata.get("authority"),
+                        "evidence_quote": quote,
+                    }
+                )
+
+        # 2) Open a new goal after terminal resolution.
+        if new_goal is not None:
+            quote = str(((new_goal.get("evidence") or [{}])[0]).get("quote") or "")
             goal_id = f"goal:{turn_id}"
             state_ops.extend(
                 [
@@ -832,7 +908,7 @@ class AutomaticMemoryProjector:
                         "op": "set_attribute",
                         "entity_id": goal_id,
                         "key": "description",
-                        "value": goal.get("content"),
+                        "value": new_goal.get("content"),
                         "memory_type": "goal",
                         "authority": "user_explicit",
                         "evidence_quote": quote,
@@ -851,26 +927,6 @@ class AutomaticMemoryProjector:
                         "evidence_quote": quote,
                     },
                 ]
-            )
-        else:
-            goal_id = self.state.current_goal_id(session_id)
-        terminal = next((event for event in events if _is_terminal_event(event)), None)
-        if terminal is not None and goal_id:
-            quote = str(((terminal.get("evidence") or [{}])[0]).get("quote") or "")
-            metadata = terminal.get("metadata") or {}
-            kind = str(metadata.get("outcome_kind") or "")
-            state_ops.append(
-                {
-                    "op": "set_status",
-                    "entity_id": goal_id,
-                    "status": (
-                        "done"
-                        if kind in {"completed", "verified_completion"}
-                        else "cancelled"
-                    ),
-                    "authority": metadata.get("authority"),
-                    "evidence_quote": quote,
-                }
             )
         if not state_ops:
             return {"state_version": None}
@@ -896,6 +952,64 @@ class AutomaticMemoryProjector:
         workspace_key: str,
         events: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        has_terminal = any(_is_terminal_event(event) for event in events)
+        has_new_goal = any(self._is_user_goal_event(event) for event in events)
+
+        # Same turn: close episode A on terminal events, then open B for the
+        # new user goal. Other turns keep a single append.
+        if has_terminal and has_new_goal:
+            close_events = [
+                event for event in events if not self._is_user_goal_event(event)
+            ]
+            open_events = [
+                event for event in events if self._is_user_goal_event(event)
+            ]
+            close_title = next(
+                (
+                    event
+                    for event in close_events
+                    if event.get("type") in {"goal", "problem"}
+                ),
+                None,
+            )
+            open_title = next(
+                (
+                    event
+                    for event in open_events
+                    if event.get("type") in {"goal", "problem"}
+                ),
+                None,
+            )
+            closed = self.episodes.append_turn(
+                session_id=session_id,
+                turn_id=turn_id,
+                workspace_key=workspace_key,
+                events=close_events,
+                title=str((close_title or {}).get("content") or "")[:200],
+                close_episode=True,
+                segment="close",
+            )
+            opened = self.episodes.append_turn(
+                session_id=session_id,
+                turn_id=turn_id,
+                workspace_key=workspace_key,
+                events=open_events,
+                title=str((open_title or {}).get("content") or "")[:200],
+                close_episode=False,
+                segment="open",
+            )
+            event_ids = [
+                str(event.get("event_id") or "")
+                for episode in (closed, opened)
+                for event in episode.get("events") or []
+                if event.get("turn_id") == turn_id
+            ]
+            return {
+                "episode_id": opened.get("episode_id"),
+                "closed_episode_id": closed.get("episode_id"),
+                "event_ids": event_ids,
+            }
+
         title_event = next(
             (event for event in events if event.get("type") in {"goal", "problem"}),
             None,
@@ -906,7 +1020,7 @@ class AutomaticMemoryProjector:
             workspace_key=workspace_key,
             events=events,
             title=str((title_event or {}).get("content") or "")[:200],
-            close_episode=any(_is_terminal_event(event) for event in events),
+            close_episode=has_terminal,
         )
         return {
             "episode_id": episode.get("episode_id"),
@@ -940,11 +1054,23 @@ class AutomaticMemoryProjector:
                     capture_id=capture_id,
                 )
             )
-        if record.get("state_store_identity") != state_store_identity:
+        stored_identity = str(record.get("state_store_identity") or "").strip()
+        # Completed legacy rows may lack affinity; same input_digest replay is
+        # handled in journal.start. Pending rows always require identity.
+        if record.get("status") != "completed":
+            if stored_identity != state_store_identity:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CAPTURE_AFFINITY",
+                        "pending capture belongs to another state store",
+                        capture_id=capture_id,
+                    )
+                )
+        elif stored_identity and stored_identity != state_store_identity:
             raise AriadneError(
                 app_error(
                     "ARIADNE_MEMORY_CAPTURE_AFFINITY",
-                    "pending capture belongs to another state store",
+                    "completed capture belongs to another state store",
                     capture_id=capture_id,
                 )
             )
