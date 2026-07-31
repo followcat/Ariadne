@@ -51,6 +51,76 @@ class CaptureJournalStore:
             "quarantined_records": {},
         }
 
+    @staticmethod
+    def _quarantine_row(
+        *,
+        capture_id: str,
+        row: dict[str, Any] | None,
+        reason: str,
+        legacy_status: str,
+        now: float,
+    ) -> dict[str, Any]:
+        out = copy.deepcopy(row) if isinstance(row, dict) else {}
+        out["capture_id"] = capture_id
+        out["legacy_status"] = legacy_status
+        out["status"] = "migration_required"
+        out["migration_error_code"] = "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED"
+        out["migration_reason"] = reason
+        out["source_schema_version"] = 1
+        out["quarantined_at"] = now
+        return out
+
+    @classmethod
+    def _legacy_resume_contract_error(
+        cls, capture_id: str, row: dict[str, Any]
+    ) -> str | None:
+        """Return why a v1 row cannot satisfy _resume_record prerequisites."""
+
+        status = str(row.get("status") or "")
+        # workspace_key may be "" for the default personal store.
+        if "workspace_key" not in row:
+            return "legacy record is missing workspace_key"
+        workspace_key = str(row.get("workspace_key") or "")
+        session_id = str(row.get("session_id") or "")
+        turn_id = str(row.get("turn_id") or "")
+        if not session_id or not turn_id:
+            return "legacy record is missing session/turn identity"
+        expected_id = cls.capture_id(
+            workspace_key=workspace_key,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        row_id = str(row.get("capture_id") or capture_id)
+        if row_id != capture_id or expected_id != capture_id:
+            return "legacy capture_id does not match workspace/session/turn"
+        if status == "completed":
+            # Completed rows may lack prepared plan; replay returns stored report.
+            if not isinstance(row.get("report"), dict):
+                return "legacy completed capture is missing report"
+            return None
+        if status != "in_progress":
+            return "legacy record status is unrecoverable"
+        if not str(row.get("state_store_identity") or "").strip():
+            return "legacy pending capture has no state-store identity"
+        if not str(row.get("input_digest") or "").strip():
+            return "legacy pending capture is missing input_digest"
+        prepared = row.get("prepared")
+        if not isinstance(prepared, dict) or not isinstance(
+            prepared.get("events"), list
+        ):
+            return "legacy pending capture has no valid prepared event plan"
+        stages = row.get("stages")
+        if not isinstance(stages, dict) or not stages:
+            return "legacy pending capture is missing stage map"
+        for stage in CAPTURE_STAGES:
+            stage_row = stages.get(stage)
+            if not isinstance(stage_row, dict):
+                return f"legacy pending capture is missing stage {stage}"
+            stage_status = str(stage_row.get("status") or "")
+            if stage_status not in {"pending", "done"}:
+                return f"legacy pending stage {stage} has invalid status"
+        return None
+
     def _migrate_schema(self) -> None:
         """Upgrade v1 without guessing affinity for unrecoverable pending rows."""
 
@@ -96,45 +166,32 @@ class CaptureJournalStore:
             for key, value in records.items():
                 capture_id = str(key)
                 if not isinstance(value, dict):
-                    quarantined[capture_id] = {
-                        "capture_id": capture_id,
-                        "status": "migration_required",
-                        "legacy_status": "invalid",
-                        "migration_error_code": "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED",
-                        "migration_reason": "legacy record is not an object",
-                        "source_schema_version": 1,
-                        "quarantined_at": now,
-                    }
+                    quarantined[capture_id] = self._quarantine_row(
+                        capture_id=capture_id,
+                        row=None,
+                        reason="legacy record is not an object",
+                        legacy_status="invalid",
+                        now=now,
+                    )
                     continue
                 row = copy.deepcopy(value)
                 status = str(row.get("status") or "")
-                if status == "in_progress" and not str(
-                    row.get("state_store_identity") or ""
-                ).strip():
-                    row["legacy_status"] = status
-                    row["status"] = "migration_required"
-                    row["migration_error_code"] = (
-                        "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED"
+                contract_error = self._legacy_resume_contract_error(capture_id, row)
+                if contract_error is not None:
+                    quarantined[capture_id] = self._quarantine_row(
+                        capture_id=capture_id,
+                        row=row,
+                        reason=contract_error,
+                        legacy_status=status or "missing",
+                        now=now,
                     )
-                    row["migration_reason"] = (
-                        "legacy pending capture has no state-store identity"
-                    )
-                    row["source_schema_version"] = 1
-                    row["quarantined_at"] = now
-                    quarantined[capture_id] = row
-                    continue
-                if status not in {"in_progress", "completed"}:
-                    row["legacy_status"] = status or "missing"
-                    row["status"] = "migration_required"
-                    row["migration_error_code"] = (
-                        "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED"
-                    )
-                    row["migration_reason"] = "legacy record status is unrecoverable"
-                    row["source_schema_version"] = 1
-                    row["quarantined_at"] = now
-                    quarantined[capture_id] = row
                     continue
                 row["source_schema_version"] = 1
+                # Completed rows without identity stay replayable by input_digest.
+                if status == "completed" and not str(
+                    row.get("state_store_identity") or ""
+                ).strip():
+                    row["state_store_identity"] = ""
                 active[capture_id] = row
             return {
                 "schema_version": CAPTURE_JOURNAL_SCHEMA_VERSION,
@@ -333,7 +390,18 @@ class CaptureJournalStore:
                             capture_id=capture_id,
                         )
                     )
-                if current.get("state_store_identity") != state_store_identity:
+                stored_identity = str(current.get("state_store_identity") or "").strip()
+                if current.get("status") == "completed":
+                    # Legacy completed rows may lack affinity; digest match is enough.
+                    if stored_identity and stored_identity != state_store_identity:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_MEMORY_CAPTURE_AFFINITY",
+                                "automatic capture state-store identity changed",
+                                capture_id=capture_id,
+                            )
+                        )
+                elif stored_identity != state_store_identity:
                     raise AriadneError(
                         app_error(
                             "ARIADNE_MEMORY_CAPTURE_AFFINITY",
