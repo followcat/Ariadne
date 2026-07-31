@@ -15,10 +15,25 @@ _AUTHORIZATION_SCHEME = re.compile(
 _BEARER_VALUE = re.compile(
     r"(?i)\b(?P<scheme>bearer)\s+(?P<credential>[^\s,;]+)"
 )
+# Compact keys (no spaces) plus a short allowlist of multi-word secret labels.
+# Multi-word keys must stay allowlisted so tool names containing "secret" are
+# not treated as credential assignments (e.g. "nested_secret_tool completed:").
+_VALUE = (
+    r"(?:"
+    r"(?P<dq>\"(?P<dq_value>(?:\\.|[^\"\\])*)\")"
+    r"|(?P<sq>'(?P<sq_value>(?:\\.|[^'\\])*)')"
+    r"|(?P<bare>[^\s,;}\]]+(?:\s+[^\s,;}\]]+)*)"
+    r")"
+)
 _ASSIGNMENT = re.compile(
-    r"(?P<key>[A-Za-z][A-Za-z0-9_.-]{1,95})"
-    r"(?P<separator>[\"']?\s*[:=]\s*[\"']?)"
-    r"(?P<value>[^\s\"',;}\]]+)"
+    r"(?:"
+    r"(?P<spaced_key>\b(?:api\s+key|access\s+token|client\s+secret|"
+    r"private\s+key|secret\s+key|auth(?:orization)?\s+token|session\s+token)\b)"
+    r"|(?P<key>[A-Za-z][A-Za-z0-9_.-]{1,95})"
+    r")"
+    r"(?P<separator>\s*[:=]\s*)"
+    + _VALUE,
+    re.IGNORECASE,
 )
 _AUTHORIZATION_SCHEMES = {"bearer", "basic", "token", "apikey"}
 
@@ -47,7 +62,7 @@ def _is_secret_key(value: Any) -> bool:
 
 
 def redact_text(text: str) -> str:
-    """Redact credential assignments, including camelCase key names."""
+    """Redact credential assignments, including camelCase and spaced key names."""
 
     out = _OPENAI_KEY.sub("sk-***", text)
     out = _AUTHORIZATION_SCHEME.sub(
@@ -62,16 +77,32 @@ def redact_text(text: str) -> str:
     )
 
     def replace_assignment(match: re.Match[str]) -> str:
-        key = match.group("key")
-        value = match.group("value")
-        if not _is_secret_key(key):
+        key = match.group("spaced_key") or match.group("key") or ""
+        if match.group("spaced_key") is None and not _is_secret_key(key):
             return match.group(0)
-        if (
-            _normalize_key(key) == "authorization"
-            and value.casefold() in _AUTHORIZATION_SCHEMES
-        ):
-            # The scheme-specific pass already replaced its following value.
-            return match.group(0)
+        if match.group("dq") is not None:
+            value = match.group("dq_value") or ""
+            if value.casefold() in _AUTHORIZATION_SCHEMES and _normalize_key(
+                key
+            ) == "authorization":
+                return match.group(0)
+            return f'{key}{match.group("separator")}"***"'
+        if match.group("sq") is not None:
+            value = match.group("sq_value") or ""
+            if value.casefold() in _AUTHORIZATION_SCHEMES and _normalize_key(
+                key
+            ) == "authorization":
+                return match.group(0)
+            return f"{key}{match.group('separator')}'***'"
+        bare = match.group("bare") or ""
+        if _normalize_key(key) == "authorization":
+            parts = bare.split(None, 1)
+            scheme = parts[0].casefold() if parts else ""
+            if scheme in _AUTHORIZATION_SCHEMES:
+                if len(parts) == 1 or parts[1].strip("*") == "":
+                    return match.group(0)
+                return f"{key}{match.group('separator')}{parts[0]} ***"
+            return f"{key}{match.group('separator')}***"
         return f"{key}{match.group('separator')}***"
 
     return _ASSIGNMENT.sub(replace_assignment, out)
