@@ -1,7 +1,8 @@
 # Design: Memory Intelligence Vertical Slice
 
-Status: **functional vertical slice; reviewed correctness hardening complete;
-production/ranking hardening pending**
+Status: **functional personal-kernel vertical slice; major correctness
+hardening landed (same-turn goal binding, quoted/spaced scalar secrets, full
+v1 journal structural validation); production/ranking hardening pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -214,10 +215,13 @@ Personal defaults are configurable without changing the kernel contract:
 
 ## 8. Scope and remaining work
 
-This slice is deliberately local and auditable. Reviewed correctness hardening
-covers consent binding, authority, secret persistence, capture replay, Episode
-lifecycle, strict extractor protocol, and evidence response budgets. It does
-not claim production hardening for background scheduling, multi-device sync,
-learned ranking, ontology induction, or multi-tenant governance. Ranking and
-episode boundary quality should be improved from real usage traces after the
-write/read path is exercised.
+This slice is deliberately local and auditable. Major correctness hardening
+covers consent binding, host-owned terminal authority, same-turn goal A/B
+binding (task_id → goal_id; terminal before pointer rewrite; episode
+close/open segments), structured secret redaction (including quoted multi-word
+values and spaced labels like ``API Key``), recoverable capture journals with
+workspace affinity and full v1 structural validation/quarantine, nonterminal
+tool failures, strict extractor protocol, and evidence response budgets.
+
+It does not claim production hardening for background scheduling, multi-device
+sync, learned ranking, ontology induction, or multi-tenant governance.

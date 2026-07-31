@@ -767,6 +767,66 @@ def test_completed_goal_a_can_be_followed_by_distinct_active_goal_b(
     assert episode_b is not None and episode_b["status"] == "active"
 
 
+def test_same_turn_verified_a_and_proposed_b_binds_terminal_to_a(
+    tmp_path: Path,
+) -> None:
+    """A active → same turn A verified + B proposed → A done, B active."""
+
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="same-turn-goals",
+        turn_id="t1",
+        user="目标是完成任务 A。",
+    )
+    report = _capture(
+        memory,
+        session_id="same-turn-goals",
+        turn_id="t2",
+        user="新目标是完成任务 B。",
+        assistant="任务 A 的检查已通过，开始任务 B。",
+        verified_goal={
+            "status": "completed",
+            "task_id": "task-a",
+            "goal": "完成任务 A",
+            "summary": "任务 A 已验证完成",
+            "check_ids": ["check-a"],
+        },
+    )
+    assert report["status"] == "used"
+    state = memory.state.get("same-turn-goals")
+    goal_a = state["entities"]["goal:t1"]
+    goal_b = state["entities"]["goal:t2"]
+    pointer = state["entities"]["session:current_goal"]
+    assert goal_a["status"] == "done"
+    assert goal_a["status_authority"] == "verified_check"
+    assert goal_a["attributes"]["task_id"]["value"] == "task-a"
+    assert goal_b["status"] == "active"
+    assert pointer["attributes"]["goal_id"]["value"] == "goal:t2"
+    assert memory.state.current_goal_id("same-turn-goals") == "goal:t2"
+    assert memory.state.goal_id_for_task("same-turn-goals", "task-a") == "goal:t1"
+
+    closed = memory.episodes.for_turn_segment(
+        session_id="same-turn-goals",
+        turn_id="t2",
+        segment="close",
+    )
+    opened = memory.episodes.for_turn_segment(
+        session_id="same-turn-goals",
+        turn_id="t2",
+        segment="open",
+    )
+    assert closed is not None and closed["status"] == "completed"
+    assert opened is not None and opened["status"] == "active"
+    assert any(event.get("type") == "outcome" for event in closed["events"])
+    assert any(
+        event.get("type") == "goal" and "任务 B" in str(event.get("content") or "")
+        for event in opened["events"]
+    )
+    primary = memory.episodes.for_turn(session_id="same-turn-goals", turn_id="t2")
+    assert primary is not None and primary["episode_id"] == opened["episode_id"]
+
+
 def test_new_goal_migrates_legacy_fixed_goal_without_reactivation(
     tmp_path: Path,
 ) -> None:
@@ -1199,6 +1259,183 @@ def test_generic_scalar_credentials_never_reach_persistent_memory(
         for path in (tmp_path / "memory").rglob("*.json")
     )
     assert secret not in persisted
+
+
+@pytest.mark.parametrize(
+    ("payload", "secret"),
+    [
+        ('password="correct horse battery staple"', "correct horse battery staple"),
+        ("password='correct horse battery staple'", "correct horse battery staple"),
+        ("password=correct horse battery staple", "horse battery"),
+        ("API Key: supersecret123", "supersecret123"),
+        ("Access Token: abcdefghijklmnop", "abcdefghijklmnop"),
+    ],
+)
+def test_quoted_and_spaced_secret_assignments_never_reach_memory(
+    tmp_path: Path,
+    payload: str,
+    secret: str,
+) -> None:
+    assert secret not in redact_text(payload)
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="quoted-secret",
+        turn_id="t1",
+        user="继续",
+        tool_calls=[
+            {
+                "call_id": "quoted-secret",
+                "name": "quoted_secret_tool",
+                "arguments": {},
+                "output": {"status": payload},
+                "status": "completed",
+            }
+        ],
+    )
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "memory").rglob("*.json")
+    )
+    assert secret not in persisted
+    assert secret not in redact_text(payload)
+
+
+def test_legacy_pending_with_identity_but_empty_prepared_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "shared" / "capture_journal.json"
+    journal_path.parent.mkdir(parents=True)
+    capture_id = CaptureJournalStore.capture_id(
+        workspace_key="/legacy/workspace",
+        session_id="legacy-session",
+        turn_id="legacy-turn",
+    )
+    journal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "records": {
+                    capture_id: {
+                        "capture_id": capture_id,
+                        "workspace_key": "/legacy/workspace",
+                        "session_id": "legacy-session",
+                        "turn_id": "legacy-turn",
+                        "input_digest": "legacy-digest",
+                        "state_store_identity": "conversation-state-v1:deadbeef",
+                        "status": "in_progress",
+                        "prepared": {},
+                        "stages": {
+                            stage: {"status": "pending", "result": {}}
+                            for stage in (
+                                "user_model",
+                                "state",
+                                "episode",
+                                "reflection",
+                                "prospective",
+                            )
+                        },
+                        "report": {},
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    journal = CaptureJournalStore(journal_path)
+    raw = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 2
+    assert capture_id not in raw["records"]
+    quarantined = journal.list_quarantined()
+    assert len(quarantined) == 1
+    assert quarantined[0]["status"] == "migration_required"
+    assert "prepared" in quarantined[0]["migration_reason"]
+    assert journal.list_pending(workspace_key="/legacy/workspace") == []
+
+
+def test_legacy_completed_without_identity_replays_by_digest(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "shared" / "capture_journal.json"
+    journal_path.parent.mkdir(parents=True)
+    workspace_key = ""
+    session_id = "legacy-done"
+    turn_id = "t-done"
+    capture_id = CaptureJournalStore.capture_id(
+        workspace_key=workspace_key,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+    report = {"status": "used", "episode_id": "ep-legacy", "event_ids": []}
+    # Build digest the same way capture_turn does for empty tools.
+    from ariadne.memory.auto_capture import AutomaticMemoryProjector
+
+    memory = Memory.local(tmp_path / "memory")
+    # First complete a real capture so we know a valid digest/report path,
+    # then rewrite the journal row as legacy completed without identity.
+    real = _capture(
+        memory,
+        session_id=session_id,
+        turn_id=turn_id,
+        user="继续",
+    )
+    assert real["status"] in {"used", "skipped"}
+    row = memory.capture_journal.get(
+        workspace_key=workspace_key,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+    assert row is not None
+    digest = row["input_digest"]
+    journal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "records": {
+                    capture_id: {
+                        "capture_id": capture_id,
+                        "workspace_key": workspace_key,
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "input_digest": digest,
+                        "status": "completed",
+                        "prepared": {"events": []},
+                        "stages": {
+                            stage: {"status": "done", "result": {}}
+                            for stage in (
+                                "user_model",
+                                "state",
+                                "episode",
+                                "reflection",
+                                "prospective",
+                            )
+                        },
+                        "report": report,
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    # Rebind stores to the rewritten v1 file (migrates on open).
+    memory.capture_journal = CaptureJournalStore(journal_path)
+    memory.auto_capture.journal = memory.capture_journal
+    replayed = _capture(
+        memory,
+        session_id=session_id,
+        turn_id=turn_id,
+        user="继续",
+    )
+    assert replayed.get("idempotent_replay") is True or replayed.get(
+        "episode_id"
+    ) == "ep-legacy"
+    assert memory.capture_journal.list_pending(workspace_key=workspace_key) == []
 
 
 def test_legacy_pending_capture_without_affinity_is_quarantined_once(
