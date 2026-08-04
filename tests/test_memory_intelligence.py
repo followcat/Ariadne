@@ -1740,6 +1740,37 @@ def test_same_turn_task_goal_completion_stays_one_completed_episode(
     ) is None
 
 
+def test_host_task_binding_materializes_goal_without_goal_phrase(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    memory.state.bind_task_goal(
+        session_id="implicit-task-goal",
+        task_id="task-implicit",
+        goal_id="goal:t1",
+        source_turn_id="t1",
+        evidence_text="修复认证 bug",
+        goal_description="修复认证 bug",
+    )
+    report = _capture(
+        memory,
+        session_id="implicit-task-goal",
+        turn_id="t1",
+        user="修复认证 bug",
+        verified_goal={
+            "status": "completed",
+            "task_id": "task-implicit",
+            "goal": "修复认证 bug",
+            "summary": "认证 bug 已验证修复",
+            "check_ids": ["check-implicit"],
+        },
+    )
+    assert report["status"] == "used"
+    state = memory.state.get("implicit-task-goal")
+    assert state["entities"]["goal:t1"]["status"] == "done"
+    assert memory.state.current_goal_id("implicit-task-goal") == "goal:t1"
+
+
 def test_unredacted_traces_do_not_authorize_secret_persistence_in_memory(
     tmp_path: Path,
 ) -> None:
