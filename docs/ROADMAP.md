@@ -330,6 +330,9 @@ hardening remains usage-driven work — not multi-tenant “complete.”**
 - [x] Capture journal v2 migration; unrecoverable legacy pending rows are terminal `migration_required` quarantine records
 - [x] Nonterminal failure/retry Episode lifecycle and strict LLM capture protocol
 - [x] Windowed Episode hits, stable event ids, paged evidence, and total byte caps
+- [x] Centralized `MemoryLimits` settings for layer/recent/store/recovery budgets
+- [x] Host-safe conversation-state read view and centralized Goal identity helpers
+- [x] Generic provider token and compositional secret redaction at Memory boundary
 
 ## Explicitly deferred forever (unless product changes)
 

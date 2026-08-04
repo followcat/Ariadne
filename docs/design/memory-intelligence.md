@@ -118,7 +118,9 @@ Tool arguments and outputs cross an independent Memory redaction boundary.
 Sensitive structured keys are normalized across camelCase and separators
 before matching. Scalar text uses a generic assignment parser and routes every
 captured key through that same normalization/matching function, covering
-provider-prefixed token/secret names without a second finite list.
+provider-prefixed token/secret names without a second finite list. Known
+GitHub (`ghp_`, `gho_`, `ghs_`, `ghr_`, `github_pat_`) and Slack (`xoxb-`,
+`xoxp-`, `xoxa-`, `xoxr-`) token families are also redacted by shape.
 Authorization `Bearer`, `Basic`, `Token`, and `ApiKey` schemes have a separate
 closed redaction pass, including short credentials. Episodes retain only
 bounded scalar fields from the status allowlist; nested or oversized values
@@ -222,6 +224,20 @@ Personal defaults are configurable without changing the kernel contract:
 | `ARIADNE_MEMORY_AUTO_CAPTURE_LLM` | on | allow an extra model call only on ambiguity signals |
 | `ARIADNE_MEMORY_EPISODE_SEARCH` | on | merge Episode hits into `memory_search` |
 | `ARIADNE_MEMORY_REFLECTION_SESSIONS` | 3 | distinct sessions required for a candidate |
+| `ARIADNE_MEMORY_RECENT_LIMIT` | 4 | recent raw messages per context build |
+| `ARIADNE_MEMORY_LAYER_BUDGETS` | built-in JSON | per-layer character budgets |
+| `ARIADNE_MEMORY_EPISODE_MAX_EPISODES` | 1024 | maximum stored Episodes |
+| `ARIADNE_MEMORY_EPISODE_MAX_EVENTS` | 256 | maximum events per Episode |
+| `ARIADNE_MEMORY_CAPTURE_MAX_RECORDS` | 4096 | maximum capture journal records |
+| `ARIADNE_MEMORY_CAPTURE_RESUME_BATCH` | 4 | bounded pending-capture recovery batch |
+
+These values are loaded into one `MemoryLimits` object and passed by the host
+to every memory store. Invalid values fail configuration with
+`ARIADNE_CONFIG_INVALID`; they are never silently clamped.
+
+The model-facing `conversation_state` read path uses an explicit safe view.
+Host-only `task_goal_bindings` remain available to task completion and journal
+recovery but are omitted from both returned JSON and rendered context.
 
 ## 8. Scope and remaining work
 

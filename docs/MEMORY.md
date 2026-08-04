@@ -163,6 +163,12 @@ stored.
 StateStore identity. Such rows become terminal `migration_required` records;
 they are observable but never retried as transient failures.
 
+Runtime memory budgets are centralized in `MemoryLimits` (`recent_limit`, layer
+budgets, Episode and capture-journal capacities, and recovery batch size).
+Hosts configure them with the `ARIADNE_MEMORY_*` environment variables listed
+in the design document; invalid values fail fast. Model-facing state reads use
+a Host-safe projection and never expose `task_goal_bindings`.
+
 The journal validates prepared events, reflection/prospective payloads, stage
 status/result contracts, and active v2 rows before recovery. Invalid rows are
 quarantined instead of being rotated as transient failures. Task completion is
