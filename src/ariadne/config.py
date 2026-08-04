@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import AriadneError, app_error
+from .memory.limits import MemoryLimits
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -97,6 +98,7 @@ class Settings:
     memory_auto_capture_llm: bool = True
     memory_episode_search: bool = True
     memory_reflection_sessions: int = 3
+    memory_limits: MemoryLimits = field(default_factory=MemoryLimits)
     # Optional evidence-quoting LLM verifier for llm_semantic task checks.
     enable_semantic_verifier: bool = False
     # Optional bounded advisory fan-out; delegates never receive capabilities.
@@ -160,6 +162,7 @@ def load_settings(
     egress_allowed_hosts: str | None = None,
     egress_default_allow: bool | None = None,
     command_policy_enabled: bool | None = None,
+    memory_limits: MemoryLimits | None = None,
 ) -> Settings:
     workspace = (workspace or Path.cwd()).resolve()
     if workspace in {Path("/"), Path.home()} and not force_workspace:
@@ -301,6 +304,8 @@ def load_settings(
             )
         )
 
+    configured_memory_limits = memory_limits or MemoryLimits.from_env(pick)
+
     return Settings(
         base_url=base_url,
         api_key=api_key,
@@ -359,6 +364,7 @@ def load_settings(
             2,
             pick_int(None, "ARIADNE_MEMORY_REFLECTION_SESSIONS", default=3),
         ),
+        memory_limits=configured_memory_limits,
         enable_semantic_verifier=pick(
             "ARIADNE_ENABLE_SEMANTIC_VERIFIER", default="0"
         ).strip().lower()

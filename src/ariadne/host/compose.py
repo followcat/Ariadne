@@ -180,9 +180,15 @@ def compose_agent(settings: Settings) -> Agent:
         from ..memory.deep_planner import LocalSplitPlanner
 
         deep_planner = LocalSplitPlanner()
-    episodes = EpisodeStore(path=user_memory_dir / "episodes.json")
+    memory_limits = settings.memory_limits
+    episodes = EpisodeStore(
+        path=user_memory_dir / "episodes.json",
+        max_episodes=memory_limits.episode_max_episodes,
+        max_events_per_episode=memory_limits.episode_max_events_per_episode,
+    )
     capture_journal = CaptureJournalStore(
-        path=user_memory_dir / "capture_journal.json"
+        path=user_memory_dir / "capture_journal.json",
+        max_records=memory_limits.capture_max_records,
     )
     reflection = ReflectionStore(
         path=user_memory_dir / "reflection.json",
@@ -207,6 +213,7 @@ def compose_agent(settings: Settings) -> Agent:
             reflection=reflection,
             prospective=prospective,
             extractor=extractor,
+            resume_batch_size=memory_limits.capture_resume_batch_size,
         )
     memory = MemoryFacade(
         transcript=transcript,
@@ -245,6 +252,7 @@ def compose_agent(settings: Settings) -> Agent:
         reflection=reflection,
         prospective=prospective,
         episode_search=bool(getattr(settings, "memory_episode_search", True)),
+        limits=memory_limits,
     )
 
     skill_dirs: list[Path] = []

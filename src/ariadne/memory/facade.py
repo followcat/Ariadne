@@ -14,6 +14,7 @@ from .capture_journal import CaptureJournalStore
 from .deep_planner import DeepPlan, DeepPlanner, DeepRerankError, LocalSplitPlanner
 from .embeddings import HashEmbeddingProvider
 from .episodes import EpisodeStore
+from .limits import MemoryLimits
 from .projection import ProjectionWorker
 from .prospective import ProspectiveMemoryStore
 from .reflection import ReflectionStore
@@ -49,7 +50,10 @@ class MemoryFacade:
     summaries: TurnSummaryStore
     semantic: SemanticIndex
     projection: ProjectionWorker | None = None
-    recent_limit: int = 4
+    limits: MemoryLimits = field(default_factory=MemoryLimits)
+    # Compatibility overrides for direct/manual construction. Hosts should
+    # configure the single ``limits`` object instead.
+    recent_limit: int | None = None
     hybrid_semantic: bool = True
     require_ready: bool = False  # if True, pending projection lag fails the build
     # Personal operator id for this facade (design/memory-scopes.md). Not multi-tenant SaaS.
@@ -75,17 +79,17 @@ class MemoryFacade:
     prospective: ProspectiveMemoryStore | None = None
     episode_search: bool = True
     # per-layer char budgets (config, not vibes); truncation is always marked
-    layer_budgets: dict[str, int] = field(
-        default_factory=lambda: {
-            "conversation_state": 2500,
-            "curated": 1500,
-            "turn_summary": 2000,
-            "semantic": 1500,
-            "user_model": 2000,
-            "reflection": 1200,
-            "prospective": 1200,
-        }
-    )
+    layer_budgets: dict[str, int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.recent_limit is None:
+            self.recent_limit = self.limits.recent_limit
+        else:
+            self.recent_limit = int(self.recent_limit)
+        if self.layer_budgets is None:
+            self.layer_budgets = dict(self.limits.layer_budgets)
+        else:
+            self.layer_budgets = dict(self.layer_budgets)
 
     async def capture_turn(
         self,
@@ -1590,6 +1594,7 @@ class Memory(MemoryFacade):
         user_episodic_path: str | Path | None = None,
         search_mode_default: str = "auto",
         deep_planner: DeepPlanner | None = None,
+        limits: MemoryLimits | None = None,
     ) -> "Memory":
         """Local personal memory root.
 
@@ -1600,6 +1605,7 @@ class Memory(MemoryFacade):
         """
         root = Path(path)
         root.mkdir(parents=True, exist_ok=True)
+        memory_limits = limits or MemoryLimits()
         state = ConversationStateStore(path=root / "state.json")
         projection: ProjectionWorker | None = None
         if enable_projection:
@@ -1621,8 +1627,15 @@ class Memory(MemoryFacade):
         user_episodic = SemanticIndex(path=ep_path, embedder=embedder)
         from .auto_capture import AutomaticMemoryProjector
 
-        episodes = EpisodeStore(path=root / "episodes.json")
-        capture_journal = CaptureJournalStore(path=root / "capture_journal.json")
+        episodes = EpisodeStore(
+            path=root / "episodes.json",
+            max_episodes=memory_limits.episode_max_episodes,
+            max_events_per_episode=memory_limits.episode_max_events_per_episode,
+        )
+        capture_journal = CaptureJournalStore(
+            path=root / "capture_journal.json",
+            max_records=memory_limits.capture_max_records,
+        )
         reflection = ReflectionStore(path=root / "reflection.json")
         prospective = ProspectiveMemoryStore(path=root / "prospective.json")
         user_model = UserModelStore(path=root / "user_model.json")
@@ -1633,6 +1646,7 @@ class Memory(MemoryFacade):
             state=state,
             reflection=reflection,
             prospective=prospective,
+            resume_batch_size=memory_limits.capture_resume_batch_size,
         )
         return cls(
             transcript=TranscriptStore(path=root / "transcript.jsonl"),
@@ -1652,6 +1666,7 @@ class Memory(MemoryFacade):
             prospective=prospective,
             deep_planner=deep_planner,
             search_mode_default=search_mode_default,
+            limits=memory_limits,
         )
 
     @classmethod
