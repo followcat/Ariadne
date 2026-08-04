@@ -25,6 +25,7 @@ Stable enough for hosts to branch on.
 | `ARIADNE_MEMORY_NOT_READY` | memory | required layer/projection incomplete |
 | `ARIADNE_MEMORY_WRITE_FAILED` | memory | durable write failed |
 | `ARIADNE_MEMORY_CONFLICT` | memory | a lower-authority or invalid temporal transition conflicts with authoritative state |
+| `ARIADNE_MEMORY_GOAL_BINDING` | memory | Host-owned task→goal binding is missing, ambiguous, immutable-conflicting, or points to an invalid goal |
 | `ARIADNE_MEMORY_CAPTURE_PROTOCOL` | memory | automatic extractor/status violated its closed protocol |
 | `ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID` | memory | capture journal schema, stage, or reference is invalid |
 | `ARIADNE_MEMORY_CAPTURE_CONFLICT` | memory | one turn id was replayed with different capturable evidence |

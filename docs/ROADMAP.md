@@ -311,9 +311,9 @@ Production-hardening backlog.
 Design: [design/memory-intelligence.md](design/memory-intelligence.md).
 
 **Status: functional personal-kernel vertical slice; major correctness
-hardening landed (same-turn goal binding, quoted/spaced scalar secrets, full
-v1 journal structural validation). Production/ranking hardening remains
-usage-driven work — not multi-tenant “complete.”**
+hardening landed (Host-owned task→goal binding, compositional scalar secrets,
+v1/v2 journal structural validation and quarantine). Production/ranking
+hardening remains usage-driven work — not multi-tenant “complete.”**
 
 - [x] Deterministic-first automatic turn projector with ambiguity-only optional LLM
 - [x] Typed preference supersession with temporal validity and evidence

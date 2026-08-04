@@ -163,6 +163,13 @@ stored.
 StateStore identity. Such rows become terminal `migration_required` records;
 they are observable but never retried as transient failures.
 
+The journal validates prepared events, reflection/prospective payloads, stage
+status/result contracts, and active v2 rows before recovery. Invalid rows are
+quarantined instead of being rotated as transient failures. Task completion is
+bound through a Host-owned immutable task→goal mapping; a missing or ambiguous
+binding is a structured memory failure and never falls back to
+`session:current_goal`.
+
 ## 5. Write API
 
 Minimum personal v1:

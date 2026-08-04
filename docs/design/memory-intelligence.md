@@ -1,8 +1,9 @@
 # Design: Memory Intelligence Vertical Slice
 
 Status: **functional personal-kernel vertical slice; major correctness
-hardening landed (same-turn goal binding, quoted/spaced scalar secrets, full
-v1 journal structural validation); production/ranking hardening pending**
+hardening landed (Host-owned task→goal binding, compositional scalar secrets,
+v1/v2 journal structural validation and quarantine); production/ranking
+hardening pending**
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -76,6 +77,14 @@ it moves atomically to `quarantined_records` with terminal status
 `ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED`. It is excluded from recovery and
 therefore cannot create an infinite transient-failure loop. Bounded quarantine
 ids remain visible in `auto_capture` observability.
+
+Task lifecycle binding is Host-owned. Task creation persists an immutable
+`task_id -> goal_id` entry in the StateStore before any task attempt can run;
+model-facing state operations cannot write `task_id` or the binding map. A
+terminal outcome with a task id must resolve exactly one binding, otherwise it
+fails with `ARIADNE_MEMORY_GOAL_BINDING` and is not allowed to fall back to the
+current pointer. A task created and verified in one turn opens its goal before
+applying the terminal status, so it remains one completed Episode.
 
 ## 2. Episode and causal memory
 
@@ -216,11 +225,12 @@ Personal defaults are configurable without changing the kernel contract:
 ## 8. Scope and remaining work
 
 This slice is deliberately local and auditable. Major correctness hardening
-covers consent binding, host-owned terminal authority, same-turn goal A/B
-binding (task_id → goal_id; terminal before pointer rewrite; episode
-close/open segments), structured secret redaction (including quoted multi-word
-values and spaced labels like ``API Key``), recoverable capture journals with
-workspace affinity and full v1 structural validation/quarantine, nonterminal
+covers consent binding, host-owned terminal authority, immutable task→goal
+binding (no pointer fallback; same-turn completion and goal A/B episode
+segments), structured secret redaction (including compositional assignments,
+quoted multi-word values and spaced labels like ``API Key``), recoverable
+capture journals with workspace affinity and v1/v2 structural
+validation/quarantine, nonterminal
 tool failures, strict extractor protocol, and evidence response budgets.
 
 It does not claim production hardening for background scheduling, multi-device
