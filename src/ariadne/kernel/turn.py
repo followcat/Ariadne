@@ -985,6 +985,20 @@ class TurnApplication:
                         task_mode_reason=task_mode_reason,
                     )
                     task_state = control.state
+                    # The task controller is the Host authority for the
+                    # immutable task→goal relation. Persist it before the
+                    # model can execute or complete any task step; memory
+                    # capture must never infer this relation from model text.
+                    state_store = getattr(self.memory, "state", None)
+                    if state_store is not None:
+                        state_store.bind_task_goal(
+                            session_id=session_id,
+                            task_id=task_state.task_id,
+                            goal_id=f"goal:{turn_id}",
+                            source_turn_id=turn_id,
+                            evidence_text=prompt,
+                            idempotency_key=f"{turn_id}:task-goal:{task_state.task_id}",
+                        )
                     for app in control.appends:
                         append_required_context(
                             app.message,

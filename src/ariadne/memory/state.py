@@ -23,6 +23,7 @@ ALLOWED_OPS = {
     "collection_remove",
     "collection_move",
     "set_current_goal",
+    "bind_task_goal",
 }
 
 ATTRIBUTE_AUTHORITIES = {
@@ -49,7 +50,14 @@ MAX_COLLECTIONS = 32
 
 
 def empty_state() -> dict[str, Any]:
-    return {"schema_version": 1, "entities": {}, "relations": {}, "collections": {}}
+    return {
+        "schema_version": 1,
+        "entities": {},
+        "relations": {},
+        "collections": {},
+        # Host-owned and intentionally omitted from model-facing rendering.
+        "task_goal_bindings": {},
+    }
 
 
 @dataclass
@@ -111,25 +119,74 @@ class ConversationStateStore:
         return self.current_goal_id_from_state(self.get(session_id))
 
     def goal_id_for_task(self, session_id: str, task_id: str) -> str | None:
-        """Resolve a host-owned task_id to an immutable goal entity id."""
+        """Resolve only the immutable Host-owned task→goal binding."""
 
         tid = (task_id or "").strip()
         if not tid:
             return None
-        entities = self.get(session_id).get("entities") or {}
-        matches: list[str] = []
-        for entity_id, entity in entities.items():
-            if not isinstance(entity, dict) or entity.get("type") != "goal":
-                continue
-            payload = (entity.get("attributes") or {}).get("task_id")
-            if not isinstance(payload, dict) or payload.get("status") != "active":
-                continue
-            if str(payload.get("value") or "") == tid:
-                matches.append(str(entity_id))
-        if not matches:
+        bindings = self.get(session_id).get("task_goal_bindings") or {}
+        value = bindings.get(tid)
+        if value is None:
             return None
-        matches.sort()
-        return matches[0]
+        if isinstance(value, list) or isinstance(value, dict):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_GOAL_BINDING",
+                    "task has multiple or malformed Host-owned goal bindings",
+                    session_id=session_id,
+                    task_id=tid,
+                )
+            )
+        goal_id = str(value).strip()
+        if not goal_id:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_GOAL_BINDING",
+                    "task has an empty Host-owned goal binding",
+                    session_id=session_id,
+                    task_id=tid,
+                )
+            )
+        return goal_id
+
+    def bind_task_goal(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        goal_id: str,
+        source_turn_id: str,
+        evidence_text: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist an immutable task→goal binding through a Host-only path."""
+
+        tid = str(task_id or "").strip()
+        gid = str(goal_id or "").strip()
+        if not tid or not gid or not gid.startswith("goal:"):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_GOAL_BINDING",
+                    "Host task-goal binding requires non-empty task and goal ids",
+                    task_id=tid,
+                    goal_id=gid,
+                )
+            )
+        return self.apply_ops(
+            session_id=session_id,
+            operations=[
+                {
+                    "op": "bind_task_goal",
+                    "task_id": tid,
+                    "goal_id": gid,
+                    "evidence_quote": str(evidence_text or "")[:2000],
+                }
+            ],
+            source_turn_id=source_turn_id,
+            evidence_text=evidence_text,
+            idempotency_key=idempotency_key,
+            host_owned=True,
+        )
 
     def get_as_of(
         self, session_id: str, *, allowed_turn_ids: set[str] | None = None
@@ -274,6 +331,7 @@ class ConversationStateStore:
         evidence_text: str,
         expected_parent_version: int | None = None,
         idempotency_key: str | None = None,
+        host_owned: bool = False,
     ) -> dict[str, Any]:
         if not operations:
             raise AriadneError(
@@ -301,7 +359,27 @@ class ConversationStateStore:
                 "collection_remove": ("name", "member"),
                 "collection_move": ("name", "member", "to_index"),
                 "set_current_goal": ("goal_id",),
+                "bind_task_goal": ("task_id", "goal_id"),
             }[name]
+            if name in {"set_current_goal", "bind_task_goal"} and not host_owned:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TOOL_DENIED",
+                        f"state op {name} is Host-owned",
+                        op=name,
+                    )
+                )
+            if (
+                name == "set_attribute"
+                and str(op.get("key") or "").strip() == "task_id"
+                and not host_owned
+            ):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_TOOL_DENIED",
+                        "task_id is Host-owned and cannot be written by model-facing state",
+                    )
+                )
             missing = [field for field in required_fields if field not in op]
             if missing:
                 raise AriadneError(
@@ -312,7 +390,11 @@ class ConversationStateStore:
                         missing=missing,
                     )
                 )
-            if name in {"set_attribute", "expire_attribute", "set_current_goal"}:
+            if name in {
+                "set_attribute",
+                "expire_attribute",
+                "set_current_goal",
+            }:
                 authority = str(op.get("authority") or "model_inferred")
                 if authority not in ATTRIBUTE_AUTHORITIES:
                     raise AriadneError(
@@ -463,7 +545,23 @@ class ConversationStateStore:
         collections: dict[str, Any] = state.setdefault("collections", {})
         relations: dict[str, Any] = state.setdefault("relations", {})
         name = op["op"]
-        if name == "set_current_goal":
+        if name == "bind_task_goal":
+            task_id = str(op["task_id"]).strip()
+            goal_id = str(op["goal_id"]).strip()
+            bindings = state.setdefault("task_goal_bindings", {})
+            existing = bindings.get(task_id)
+            if existing is not None and str(existing) != goal_id:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_GOAL_BINDING",
+                        "task already has a different immutable goal binding",
+                        task_id=task_id,
+                        existing_goal_id=str(existing),
+                        proposed_goal_id=goal_id,
+                    )
+                )
+            bindings[task_id] = goal_id
+        elif name == "set_current_goal":
             goal_id = str(op["goal_id"])
             goal = entities.get(goal_id)
             if not isinstance(goal, dict) or goal.get("type") != "goal":

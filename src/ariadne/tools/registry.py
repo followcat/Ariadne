@@ -961,9 +961,19 @@ def build_default_registry(
                             app_error(
                                 "ARIADNE_TOOL_DENIED",
                                 "model-facing conversation_state cannot write terminal status",
-                                status=status,
-                            )
+                            status=status,
                         )
+                    )
+                if (
+                    str(op.get("op") or "") == "set_attribute"
+                    and str(op.get("key") or "").strip() == "task_id"
+                ):
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_TOOL_DENIED",
+                            "task_id is Host-owned and cannot be written by model-facing conversation_state",
+                        )
+                    )
                 if str(op.get("op") or "") in {
                     "set_attribute",
                     "expire_attribute",

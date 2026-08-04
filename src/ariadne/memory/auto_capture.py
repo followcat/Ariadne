@@ -809,6 +809,7 @@ class AutomaticMemoryProjector:
         session_id: str,
         terminal: dict[str, Any],
         prior_goal_id: str | None,
+        new_goal_id: str | None = None,
     ) -> str | None:
         """Resolve which goal a terminal event closes.
 
@@ -822,10 +823,38 @@ class AutomaticMemoryProjector:
             else {}
         )
         task_id = str(metadata.get("task_id") or "").strip()
-        if task_id and self.state is not None:
+        if task_id:
+            if self.state is None:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_GOAL_BINDING",
+                        "terminal task outcome requires a configured StateStore",
+                        task_id=task_id,
+                    )
+                )
             bound = self.state.goal_id_for_task(session_id, task_id)
-            if bound:
-                return bound
+            if not bound:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_GOAL_BINDING",
+                        "terminal task outcome has no Host-owned goal binding",
+                        task_id=task_id,
+                    )
+                )
+            target = self.state.get(session_id).get("entities", {}).get(bound)
+            if (
+                not isinstance(target, dict)
+                or target.get("type") != "goal"
+            ) and bound != new_goal_id:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_GOAL_BINDING",
+                        "Host-owned task binding points to a missing or non-goal entity",
+                        task_id=task_id,
+                        goal_id=bound,
+                    )
+                )
+            return bound
         return prior_goal_id
 
     def _capture_state(
@@ -847,66 +876,33 @@ class AutomaticMemoryProjector:
         )
         terminal = next((event for event in events if _is_terminal_event(event)), None)
 
-        # 1) Close the prior/task-bound goal first (same-turn A done + B open).
-        if terminal is not None:
-            terminal_goal_id = self._resolve_terminal_goal_id(
+        terminal_goal_id = (
+            self._resolve_terminal_goal_id(
                 session_id=session_id,
                 terminal=terminal,
                 prior_goal_id=prior_goal_id,
+                new_goal_id=(f"goal:{turn_id}" if new_goal is not None else None),
             )
-            if terminal_goal_id:
-                quote = str(
-                    ((terminal.get("evidence") or [{}])[0]).get("quote") or ""
-                )
-                metadata = (
-                    terminal.get("metadata")
-                    if isinstance(terminal.get("metadata"), dict)
-                    else {}
-                )
-                kind = str(metadata.get("outcome_kind") or "")
-                task_id = str(metadata.get("task_id") or "").strip()
-                if task_id:
-                    # Host-owned binding survives pointer moves.
-                    state_ops.append(
-                        {
-                            "op": "set_attribute",
-                            "entity_id": terminal_goal_id,
-                            "key": "task_id",
-                            "value": task_id,
-                            "memory_type": "goal",
-                            "authority": "user_explicit",
-                            "evidence_quote": quote,
-                        }
-                    )
-                state_ops.append(
-                    {
-                        "op": "set_status",
-                        "entity_id": terminal_goal_id,
-                        "status": (
-                            "done"
-                            if kind in {"completed", "verified_completion"}
-                            else "cancelled"
-                        ),
-                        "authority": metadata.get("authority"),
-                        "evidence_quote": quote,
-                    }
-                )
+            if terminal is not None
+            else None
+        )
+        new_goal_id = f"goal:{turn_id}" if new_goal is not None else None
 
-        # 2) Open a new goal after terminal resolution.
-        if new_goal is not None:
+        def append_goal_open() -> None:
+            if new_goal is None or new_goal_id is None:
+                return
             quote = str(((new_goal.get("evidence") or [{}])[0]).get("quote") or "")
-            goal_id = f"goal:{turn_id}"
             state_ops.extend(
                 [
                     {
                         "op": "ensure_entity",
-                        "entity_id": goal_id,
+                        "entity_id": new_goal_id,
                         "type": "goal",
                         "evidence_quote": quote,
                     },
                     {
                         "op": "set_attribute",
-                        "entity_id": goal_id,
+                        "entity_id": new_goal_id,
                         "key": "description",
                         "value": new_goal.get("content"),
                         "memory_type": "goal",
@@ -915,19 +911,68 @@ class AutomaticMemoryProjector:
                     },
                     {
                         "op": "set_status",
-                        "entity_id": goal_id,
+                        "entity_id": new_goal_id,
                         "status": "active",
                         "authority": "user_explicit",
                         "evidence_quote": quote,
                     },
                     {
                         "op": "set_current_goal",
-                        "goal_id": goal_id,
+                        "goal_id": new_goal_id,
                         "authority": "user_explicit",
                         "evidence_quote": quote,
                     },
                 ]
             )
+
+        def append_terminal_close() -> None:
+            if terminal is None or terminal_goal_id is None:
+                return
+            quote = str(((terminal.get("evidence") or [{}])[0]).get("quote") or "")
+            metadata = (
+                terminal.get("metadata")
+                if isinstance(terminal.get("metadata"), dict)
+                else {}
+            )
+            kind = str(metadata.get("outcome_kind") or "")
+            task_id = str(metadata.get("task_id") or "").strip()
+            if task_id:
+                # Keep a diagnostic copy, but never use this model-visible
+                # attribute as the authoritative binding source.
+                state_ops.append(
+                    {
+                        "op": "set_attribute",
+                        "entity_id": terminal_goal_id,
+                        "key": "task_id",
+                        "value": task_id,
+                        "memory_type": "goal",
+                        "authority": "user_explicit",
+                        "evidence_quote": quote,
+                    }
+                )
+            state_ops.append(
+                {
+                    "op": "set_status",
+                    "entity_id": terminal_goal_id,
+                    "status": (
+                        "done"
+                        if kind in {"completed", "verified_completion"}
+                        else "cancelled"
+                    ),
+                    "authority": metadata.get("authority"),
+                    "evidence_quote": quote,
+                }
+            )
+
+        # If the task was created and verified in this same turn, open the
+        # immutable goal first and then apply its terminal status. For a
+        # distinct new goal, close A before opening B.
+        if terminal_goal_id and terminal_goal_id == new_goal_id:
+            append_goal_open()
+            append_terminal_close()
+        else:
+            append_terminal_close()
+            append_goal_open()
         if not state_ops:
             return {"state_version": None}
         evidence_text = "\n".join(
@@ -941,6 +986,7 @@ class AutomaticMemoryProjector:
             source_turn_id=turn_id,
             evidence_text=evidence_text,
             idempotency_key=f"{capture_id}:state",
+            host_owned=True,
         )
         return {"state_version": int(result.get("version") or 0)}
 
@@ -955,9 +1001,22 @@ class AutomaticMemoryProjector:
         has_terminal = any(_is_terminal_event(event) for event in events)
         has_new_goal = any(self._is_user_goal_event(event) for event in events)
 
+        terminal_goal_id: str | None = None
+        if has_terminal and self.state is not None:
+            terminal = next(event for event in events if _is_terminal_event(event))
+            metadata = (
+                terminal.get("metadata")
+                if isinstance(terminal.get("metadata"), dict)
+                else {}
+            )
+            task_id = str(metadata.get("task_id") or "").strip()
+            if task_id:
+                terminal_goal_id = self.state.goal_id_for_task(session_id, task_id)
+        same_goal = has_new_goal and terminal_goal_id == f"goal:{turn_id}"
+
         # Same turn: close episode A on terminal events, then open B for the
         # new user goal. Other turns keep a single append.
-        if has_terminal and has_new_goal:
+        if has_terminal and has_new_goal and not same_goal:
             close_events = [
                 event for event in events if not self._is_user_goal_event(event)
             ]
@@ -1046,6 +1105,15 @@ class AutomaticMemoryProjector:
         """Finish one journal record from its durable prepared plan only."""
 
         capture_id = str(record.get("capture_id") or "")
+        contract_error = self.journal.validate_record(capture_id, record)
+        if contract_error is not None:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                    contract_error,
+                    capture_id=capture_id,
+                )
+            )
         if str(record.get("workspace_key") or "") != workspace_key:
             raise AriadneError(
                 app_error(
@@ -1248,6 +1316,17 @@ class AutomaticMemoryProjector:
                     "error_code": error_code,
                     "error_message": error_message,
                 }
+                if error_code in {
+                    "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                    "ARIADNE_MEMORY_GOAL_BINDING",
+                }:
+                    quarantined = self.journal.quarantine(
+                        capture_id=capture_id,
+                        reason=error_message,
+                        error_code=error_code,
+                    )
+                    if quarantined is not None:
+                        continue
                 try:
                     self.journal.note_resume_failure(
                         capture_id=capture_id,
