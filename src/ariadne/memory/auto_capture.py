@@ -813,8 +813,9 @@ class AutomaticMemoryProjector:
     ) -> str | None:
         """Resolve which goal a terminal event closes.
 
-        Never uses a goal proposed later in the same turn. Prefer host
-        ``task_id`` binding, then the pre-turn current pointer.
+        Never uses a goal proposed later in the same turn. With a host
+        ``task_id``, the immutable binding is required (no pointer fallback).
+        Without ``task_id``, use the pre-turn current pointer.
         """
 
         metadata = (

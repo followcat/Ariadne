@@ -990,17 +990,34 @@ class TurnApplication:
                     # immutable task→goal relation. Persist it before the
                     # model can execute or complete any task step; memory
                     # capture must never infer this relation from model text.
+                    #
+                    # Prefer an already-captured lifecycle goal (earlier phrase
+                    # on this session) so plan submit does not orphan goal:tN.
+                    # Only materialize goal:<plan_turn> when no current goal exists.
                     state_store = getattr(self.memory, "state", None)
-                    if state_store is not None:
-                        state_store.bind_task_goal(
-                            session_id=session_id,
-                            task_id=task_state.task_id,
-                            goal_id=make_goal_id(turn_id),
-                            source_turn_id=turn_id,
-                            evidence_text=prompt,
-                            idempotency_key=f"{turn_id}:task-goal:{task_state.task_id}",
-                            goal_description=task_state.goal,
+                    if state_store is None:
+                        raise AriadneError(
+                            app_error(
+                                "ARIADNE_MEMORY_GOAL_BINDING",
+                                "task plan submit requires a configured StateStore "
+                                "for Host-owned task→goal binding",
+                            )
                         )
+                    existing_goal_id = state_store.current_goal_id(session_id)
+                    bind_goal_id = (
+                        existing_goal_id
+                        if existing_goal_id is not None
+                        else make_goal_id(turn_id)
+                    )
+                    state_store.bind_task_goal(
+                        session_id=session_id,
+                        task_id=task_state.task_id,
+                        goal_id=bind_goal_id,
+                        source_turn_id=turn_id,
+                        evidence_text=prompt,
+                        idempotency_key=f"{turn_id}:task-goal:{task_state.task_id}",
+                        goal_description=task_state.goal,
+                    )
                     for app in control.appends:
                         append_required_context(
                             app.message,
