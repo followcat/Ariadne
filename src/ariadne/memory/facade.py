@@ -50,7 +50,6 @@ class MemoryFacade:
     summaries: TurnSummaryStore
     semantic: SemanticIndex
     projection: ProjectionWorker | None = None
-    limits: MemoryLimits = field(default_factory=MemoryLimits)
     # Compatibility overrides for direct/manual construction. Hosts should
     # configure the single ``limits`` object instead.
     recent_limit: int | None = None
@@ -80,6 +79,9 @@ class MemoryFacade:
     episode_search: bool = True
     # per-layer char budgets (config, not vibes); truncation is always marked
     layer_budgets: dict[str, int] | None = None
+    # Central host configuration. Kept after the historical positional fields
+    # so direct/manual construction remains source-compatible.
+    limits: MemoryLimits = field(default_factory=MemoryLimits)
 
     def __post_init__(self) -> None:
         if self.recent_limit is None:
