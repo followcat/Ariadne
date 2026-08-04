@@ -119,8 +119,9 @@ Sensitive structured keys are normalized across camelCase and separators
 before matching. Scalar text uses a generic assignment parser and routes every
 captured key through that same normalization/matching function, covering
 provider-prefixed token/secret names without a second finite list. Known
-GitHub (`ghp_`, `gho_`, `ghs_`, `ghr_`, `github_pat_`) and Slack (`xoxb-`,
-`xoxp-`, `xoxa-`, `xoxr-`) token families are also redacted by shape.
+GitHub (`ghp_`, `gho_`, `ghs_`, `ghr_`, `github_pat_`), Slack (`xoxb-`,
+`xoxp-`, `xoxa-`, `xoxr-`), Hugging Face (`hf_`), xAI (`xai-`), Google
+(`AIza`), and npm (`npm_`) token families are also redacted by shape.
 Authorization `Bearer`, `Basic`, `Token`, and `ApiKey` schemes have a separate
 closed redaction pass, including short credentials. Episodes retain only
 bounded scalar fields from the status allowlist; nested or oversized values
@@ -232,8 +233,13 @@ Personal defaults are configurable without changing the kernel contract:
 | `ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE` | 4 | bounded pending-capture recovery batch |
 
 These values are loaded into one `MemoryLimits` object and passed by the host
-to every memory store. Invalid values fail configuration with
-`ARIADNE_CONFIG_INVALID`; they are never silently clamped.
+to every memory store. Values must be strict integers and are bounded by
+hard maxima (recent messages 128, layer budget 120,000 characters, Episodes
+8,192, events per Episode 256, journal records 16,384, and recovery batch 32).
+Invalid values fail configuration with `ARIADNE_CONFIG_INVALID`; they are
+never silently converted or clamped. A partial layer-budget object overrides
+known defaults while retaining the other layer budgets; unknown layer names
+are rejected.
 
 The model-facing `conversation_state` read path uses an explicit safe view.
 Host-only `task_goal_bindings` remain available to task completion and journal

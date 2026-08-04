@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -15,6 +16,17 @@ DEFAULT_LAYER_BUDGETS = {
     "reflection": 1200,
     "prospective": 1200,
 }
+
+# Runtime safety ceilings.  These are intentionally independent of the
+# operator-configurable defaults: a bad environment value must fail before it
+# can allocate an unbounded transcript, Episode store, or journal batch.
+MAX_RECENT_LIMIT = 128
+MAX_LAYER_BUDGET = 120_000
+MAX_EPISODES = 8_192
+MAX_EVENTS_PER_EPISODE = 256
+MAX_CAPTURE_RECORDS = 16_384
+MAX_CAPTURE_RESUME_BATCH_SIZE = 32
+_STRICT_INTEGER = re.compile(r"^[+-]?\d+$")
 
 
 @dataclass(slots=True)
@@ -31,53 +43,78 @@ class MemoryLimits:
     capture_resume_batch_size: int = 4
 
     def __post_init__(self) -> None:
-        for name in (
-            "recent_limit",
-            "episode_max_episodes",
-            "episode_max_events_per_episode",
-            "capture_max_records",
-            "capture_resume_batch_size",
-        ):
+        limits = {
+            "recent_limit": (MAX_RECENT_LIMIT, "recent raw message limit"),
+            "episode_max_episodes": (MAX_EPISODES, "Episode capacity"),
+            "episode_max_events_per_episode": (
+                MAX_EVENTS_PER_EPISODE,
+                "events per Episode capacity",
+            ),
+            "capture_max_records": (MAX_CAPTURE_RECORDS, "capture journal capacity"),
+            "capture_resume_batch_size": (
+                MAX_CAPTURE_RESUME_BATCH_SIZE,
+                "capture resume batch size",
+            ),
+        }
+        for name, (maximum, label) in limits.items():
             raw = getattr(self, name)
-            try:
-                value = int(raw)
-            except (TypeError, ValueError) as exc:
+            if isinstance(raw, bool) or not isinstance(raw, int):
                 raise AriadneError(
                     app_error(
                         "ARIADNE_CONFIG_INVALID",
-                        f"memory limit {name} must be an integer",
+                        f"memory limit {name} must be a strict integer",
                         field=name,
                         value=raw,
                     )
-                ) from exc
-            if value < 1:
+                )
+            value = raw
+            if value < 1 or value > maximum:
                 raise AriadneError(
                     app_error(
                         "ARIADNE_CONFIG_INVALID",
-                        f"memory limit {name} must be positive",
+                        f"{label} must be in range 1..{maximum}",
                         field=name,
                         value=value,
                     )
                 )
             setattr(self, name, value)
-        normalized: dict[str, int] = {}
+        if not isinstance(self.layer_budgets, dict):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "memory layer budgets must be an object",
+                    field="layer_budgets",
+                    value=self.layer_budgets,
+                )
+            )
+        unknown = set(self.layer_budgets) - set(DEFAULT_LAYER_BUDGETS)
+        if unknown:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "unknown memory layer budget key",
+                    field=sorted(str(key) for key in unknown),
+                )
+            )
+        # Partial configuration is an override, never an opt-out from the
+        # remaining layer safety budgets.
+        normalized: dict[str, int] = dict(DEFAULT_LAYER_BUDGETS)
         for key, value in dict(self.layer_budgets).items():
-            try:
-                budget = int(value)
-            except (TypeError, ValueError) as exc:
+            if isinstance(value, bool) or not isinstance(value, int):
                 raise AriadneError(
                     app_error(
                         "ARIADNE_CONFIG_INVALID",
-                        "memory layer budgets must be integers",
+                        "memory layer budgets must be strict integers",
                         field=str(key),
                         value=value,
                     )
-                ) from exc
-            if budget < 1:
+                )
+            budget = value
+            if budget < 1 or budget > MAX_LAYER_BUDGET:
                 raise AriadneError(
                     app_error(
                         "ARIADNE_CONFIG_INVALID",
-                        "memory layer budgets must be positive",
+                        f"memory layer budget must be in range 1..{MAX_LAYER_BUDGET}",
                         field=str(key),
                         value=budget,
                     )
@@ -89,17 +126,24 @@ class MemoryLimits:
     def from_env(cls, pick: Callable[..., str]) -> "MemoryLimits":
         def integer(*keys: str, default: int) -> int:
             raw = pick(*keys, default=str(default))
-            try:
-                return int(raw)
-            except (TypeError, ValueError) as exc:
+            if isinstance(raw, bool) or isinstance(raw, float):
+                parsed: int | None = None
+            elif isinstance(raw, int):
+                parsed = raw
+            elif isinstance(raw, str) and _STRICT_INTEGER.fullmatch(raw.strip()):
+                parsed = int(raw.strip())
+            else:
+                parsed = None
+            if parsed is None:
                 raise AriadneError(
                     app_error(
                         "ARIADNE_CONFIG_INVALID",
-                        f"memory limit {keys[0]} must be an integer",
+                        f"memory limit {keys[0]} must be a strict integer",
                         field=keys[0],
                         value=raw,
                     )
-                ) from exc
+                )
+            return parsed
 
         budgets = dict(DEFAULT_LAYER_BUDGETS)
         raw_budgets = pick("ARIADNE_MEMORY_LAYER_BUDGETS", default="").strip()
@@ -120,15 +164,18 @@ class MemoryLimits:
                         "ARIADNE_MEMORY_LAYER_BUDGETS must be a JSON object",
                     )
                 )
-            try:
-                budgets = {str(key): int(value) for key, value in decoded.items()}
-            except (TypeError, ValueError) as exc:
-                raise AriadneError(
-                    app_error(
-                        "ARIADNE_CONFIG_INVALID",
-                        "ARIADNE_MEMORY_LAYER_BUDGETS values must be integers",
+            budgets = dict(DEFAULT_LAYER_BUDGETS)
+            for key, value in decoded.items():
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_CONFIG_INVALID",
+                            "ARIADNE_MEMORY_LAYER_BUDGETS values must be strict integers",
+                            field=str(key),
+                            value=value,
+                        )
                     )
-                ) from exc
+                budgets[str(key)] = value
         return cls(
             recent_limit=integer("ARIADNE_MEMORY_RECENT_LIMIT", default=4),
             layer_budgets=budgets,

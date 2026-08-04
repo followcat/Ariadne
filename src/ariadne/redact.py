@@ -9,7 +9,7 @@ from typing import Any
 _OPENAI_KEY = re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{8,}")
 _KNOWN_PROVIDER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_-])"
-    r"(?P<prefix>gh[pors]_|github_pat_|xox[bpra]-)"
+    r"(?P<prefix>gh[pors]_|github_pat_|xox[bpra]-|hf_|xai-|npm_|AIza)"
     # Prefixes are credential markers; keep the lower bound small so test,
     # staging, and shortened tokens cannot bypass the Memory boundary.
     r"(?P<credential>[A-Za-z0-9_-]{4,})",

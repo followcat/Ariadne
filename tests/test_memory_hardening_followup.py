@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,6 @@ import pytest
 from ariadne.config import load_settings
 from ariadne.errors import AriadneError
 from ariadne.memory import Memory, MemoryLimits, is_goal_id, make_goal_id
-from ariadne.memory.state import ConversationStateStore
 from ariadne.skills.store import SkillStore
 from ariadne.tools.registry import ToolContext, build_default_registry
 from ariadne.redact import redact_text
@@ -27,6 +27,10 @@ def _run(awaitable):
         ("sessionKey=SESSION123456", "SESSION123456"),
         ("ghp_abcdefghijklmnopqrstuvwx", "ghp_abcdefghijklmnopqrstuvwx"),
         ("xoxb-1234567890-abcdefghijkl", "xoxb-1234567890-abcdefghijkl"),
+        ("hf_abcd1234567890", "hf_abcd1234567890"),
+        ("xai-abcd1234567890", "xai-abcd1234567890"),
+        ("AIzaabcd1234567890", "AIzaabcd1234567890"),
+        ("npm_abcd1234567890", "npm_abcd1234567890"),
     ],
 )
 def test_generic_provider_credentials_are_redacted(value: str, secret: str) -> None:
@@ -80,6 +84,49 @@ def test_memory_limits_reject_invalid_budget_json(monkeypatch) -> None:
     with pytest.raises(AriadneError) as exc:
         load_settings(workspace=Path("/tmp/ariadne-memory-limit-test"), force_workspace=True)
     assert exc.value.error.code == "ARIADNE_CONFIG_INVALID"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"recent_limit": 1.5},
+        {"capture_resume_batch_size": 33},
+        {"episode_max_episodes": 8193},
+        {"episode_max_events_per_episode": 257},
+        {"capture_max_records": 16385},
+        {"layer_budgets": {"semantic": 120001}},
+    ],
+)
+def test_memory_limits_enforce_strict_types_and_hard_maxima(kwargs) -> None:
+    with pytest.raises(AriadneError) as exc:
+        MemoryLimits(**kwargs)
+    assert exc.value.error.code == "ARIADNE_CONFIG_INVALID"
+
+
+def test_partial_layer_budget_overrides_preserve_other_defaults() -> None:
+    limits = MemoryLimits(layer_budgets={"semantic": 321})
+    assert limits.layer_budgets["semantic"] == 321
+    assert limits.layer_budgets["curated"] == 1500
+    with pytest.raises(AriadneError):
+        MemoryLimits(layer_budgets={"typo_layer": 10})
+
+
+def test_goal_binding_read_rejects_corrupt_noncanonical_id(tmp_path: Path) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    memory.state.bind_task_goal(
+        session_id="s1",
+        task_id="task-1",
+        goal_id=make_goal_id("t1"),
+        source_turn_id="t1",
+        evidence_text="完成安全检查",
+    )
+    path = memory.state.path
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["documents"]["s1"]["state"]["task_goal_bindings"]["task-1"] = "foo"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(AriadneError) as exc:
+        memory.state.goal_id_for_task("s1", "task-1")
+    assert exc.value.error.code == "ARIADNE_MEMORY_GOAL_BINDING"
 
 
 def test_memory_local_applies_configured_store_limits(tmp_path: Path) -> None:

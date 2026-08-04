@@ -14,7 +14,7 @@ from .capture_journal import CaptureJournalStore
 from .deep_planner import DeepPlan, DeepPlanner, DeepRerankError, LocalSplitPlanner
 from .embeddings import HashEmbeddingProvider
 from .episodes import EpisodeStore
-from .limits import MemoryLimits
+from .limits import DEFAULT_LAYER_BUDGETS, MemoryLimits
 from .projection import ProjectionWorker
 from .prospective import ProspectiveMemoryStore
 from .reflection import ReflectionStore
@@ -91,7 +91,12 @@ class MemoryFacade:
         if self.layer_budgets is None:
             self.layer_budgets = dict(self.limits.layer_budgets)
         else:
-            self.layer_budgets = dict(self.layer_budgets)
+            # Direct callers may provide an override subset; retain the
+            # defaults for every layer not explicitly overridden.
+            self.layer_budgets = {
+                **DEFAULT_LAYER_BUDGETS,
+                **dict(self.layer_budgets),
+            }
 
     async def capture_turn(
         self,

@@ -10,6 +10,7 @@ from typing import Any
 from ..errors import AriadneError, app_error
 from .episodes import EPISODE_EVENT_TYPES
 from .json_file import locked_read_json, locked_update_json, locked_write_json
+from .limits import MAX_CAPTURE_RESUME_BATCH_SIZE
 
 CAPTURE_STAGES = (
     "user_model",
@@ -18,7 +19,8 @@ CAPTURE_STAGES = (
     "reflection",
     "prospective",
 )
-CAPTURE_RESUME_LIMIT_MAX = 32
+# Backward-compatible public name; the limit contract has one source of truth.
+CAPTURE_RESUME_LIMIT_MAX = MAX_CAPTURE_RESUME_BATCH_SIZE
 CAPTURE_QUARANTINE_LIMIT_MAX = 512
 CAPTURE_JOURNAL_SCHEMA_VERSION = 2
 

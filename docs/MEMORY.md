@@ -166,7 +166,9 @@ they are observable but never retried as transient failures.
 Runtime memory budgets are centralized in `MemoryLimits` (`recent_limit`, layer
 budgets, Episode and capture-journal capacities, and recovery batch size).
 Hosts configure them with the `ARIADNE_MEMORY_*` environment variables listed
-in the design document; invalid values fail fast. Model-facing state reads use
+in the design document; strict integer types and hard maxima fail fast.
+Partial layer overrides retain defaults and unknown layer names are rejected.
+Model-facing state reads use
 a Host-safe projection and never expose `task_goal_bindings`.
 
 The journal validates prepared events, reflection/prospective payloads, stage

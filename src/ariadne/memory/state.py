@@ -202,6 +202,16 @@ class ConversationStateStore:
                     task_id=tid,
                 )
             )
+        if not is_goal_id(goal_id):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_MEMORY_GOAL_BINDING",
+                    "Host task-goal binding contains a non-canonical goal id",
+                    session_id=session_id,
+                    task_id=tid,
+                    goal_id=goal_id,
+                )
+            )
         return goal_id
 
     def bind_task_goal(
