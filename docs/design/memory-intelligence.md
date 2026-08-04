@@ -252,9 +252,10 @@ layers; unknown layer names are rejected. Context scaling only adjusts
 prompt-adjacent budgets (recent + layers); store capacities stay profile
 safety ceilings.
 
-The model-facing `conversation_state` read path uses an explicit safe view.
-Host-only `task_goal_bindings` remain available to task completion and journal
-recovery but are omitted from both returned JSON and rendered context.
+All model-facing state rendering uses the `render_model_safe` snapshot choke
+point. Host-only `task_goal_bindings` remain available to task completion and
+journal recovery but are omitted from both returned JSON and rendered context;
+the tool's structured view and text are produced from the same sanitized read.
 
 ## 8. Scope and remaining work
 

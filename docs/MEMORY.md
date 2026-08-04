@@ -176,7 +176,10 @@ context window (`ARIADNE_CONTEXT_MAX_CHARS`, default 120_000). Store capacities
 Strict integer types and hard maxima fail fast. Partial layer overrides retain
 defaults and unknown layer names are rejected.
 Model-facing state reads use
-a Host-safe projection and never expose `task_goal_bindings`.
+a Host-safe projection and never expose `task_goal_bindings`. Both the
+`conversation_state` tool and MemoryFacade context assembly use the unified
+`render_model_safe` snapshot choke point, so structured state and rendered text
+come from the same sanitized read.
 
 The journal validates prepared events, reflection/prospective payloads, stage
 status/result contracts, and active v2 rows before recovery. Invalid rows are

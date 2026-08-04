@@ -1259,7 +1259,7 @@ class MemoryFacade:
         blocks: list[str] = []
         pit_note = f"before_turn_id:{before_turn_id}" if before_turn_id else ""
 
-        state_text, entity_count = self.state.render(
+        state_text, entity_count = self.state.render_model_safe(
             session_id, allowed_turn_ids=allowed
         )
         state_text, state_note = self._apply_budget("conversation_state", state_text)
@@ -1446,7 +1446,7 @@ class MemoryFacade:
         blocks: list[str] = []
         pit_note = f"before_turn_id:{before_turn_id}" if before_turn_id else ""
 
-        state_text, entity_count = self.state.render(
+        state_text, entity_count = self.state.render_model_safe(
             session_id, allowed_turn_ids=allowed
         )
         state_text, state_note = self._apply_budget("conversation_state", state_text)

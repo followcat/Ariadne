@@ -919,8 +919,9 @@ def build_default_registry(
         if action == "read":
             # task_goal_bindings and other Host-only routing metadata must
             # never cross the model-facing tool boundary.
-            safe_state = ctx.memory.state.get_model_safe(ctx.session_id)
-            text, count = ctx.memory.state.render_state(safe_state)
+            safe_state, text, count = ctx.memory.state.render_model_safe_snapshot(
+                ctx.session_id
+            )
             return {
                 "action": "read",
                 "entity_count": count,

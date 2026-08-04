@@ -367,6 +367,23 @@ class ConversationStateStore:
     def render_model_safe(
         self, session_id: str, *, allowed_turn_ids: set[str] | None = None
     ) -> tuple[str, int]:
+        """Render one Host-safe snapshot for model prompt/context use."""
+
+        _state, text, count = self.render_model_safe_snapshot(
+            session_id, allowed_turn_ids=allowed_turn_ids
+        )
+        return text, count
+
+    def render_model_safe_snapshot(
+        self, session_id: str, *, allowed_turn_ids: set[str] | None = None
+    ) -> tuple[dict[str, Any], str, int]:
+        """Return the safe JSON view and its rendering from one read.
+
+        Model-facing tools need both structured state and text. Keeping both
+        values tied to the same snapshot prevents a concurrent Host update
+        from making the returned JSON and rendered text disagree.
+        """
+
         state = (
             self.get_model_safe(session_id)
             if allowed_turn_ids is None
@@ -374,7 +391,8 @@ class ConversationStateStore:
                 self.get_as_of(session_id, allowed_turn_ids=allowed_turn_ids)
             )
         )
-        return self.render_state(state)
+        text, count = self.render_state(state)
+        return state, text, count
 
     def version(self, session_id: str) -> int:
         """Current document version (0 when never projected)."""

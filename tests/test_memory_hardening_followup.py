@@ -12,6 +12,7 @@ from ariadne.memory import Memory, MemoryLimits, is_goal_id, make_goal_id
 from ariadne.memory.capture_journal import CaptureJournalStore
 from ariadne.memory.episodes import EpisodeStore
 from ariadne.memory.facade import MemoryFacade
+from ariadne.memory.state import ConversationStateStore
 from ariadne.skills.store import SkillStore
 from ariadne.tools.registry import ToolContext, build_default_registry
 from ariadne.redact import redact_text
@@ -64,6 +65,27 @@ def test_conversation_state_read_returns_model_safe_view(tmp_path: Path) -> None
     assert "task_goal_bindings" not in result["text"]
     # Host code still has access to the binding for completion/recovery.
     assert memory.state.goal_id_for_task("s1", "task-1") == "goal:t1"
+
+
+def test_context_render_uses_model_safe_chokepoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    memory.state.bind_task_goal(
+        session_id="s1",
+        task_id="task-1",
+        goal_id=make_goal_id("t1"),
+        source_turn_id="t1",
+        evidence_text="完成安全检查",
+    )
+
+    def forbidden_raw_render(*args, **kwargs):
+        raise AssertionError("model context must not use raw state.render")
+
+    monkeypatch.setattr(ConversationStateStore, "render", forbidden_raw_render)
+    text, _summary = memory.build_context(session_id="s1", query="继续")
+    assert "task_goal_bindings" not in text
+    assert "goal:t1" in text
 
 
 def test_memory_limits_are_loaded_from_environment(monkeypatch, tmp_path: Path) -> None:
