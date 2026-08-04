@@ -14,7 +14,7 @@ from .capture_journal import CaptureJournalStore
 from .episodes import EPISODE_EVENT_TYPES, EpisodeStore, EvidenceRef
 from .prospective import ProspectiveMemoryStore
 from .reflection import ReflectionStore
-from .state import ConversationStateStore
+from .state import ConversationStateStore, make_goal_id
 from .user_model import UserModelStore
 
 MemoryExtractorFn = Callable[[dict[str, Any]], Awaitable[list[dict[str, Any]]]]
@@ -881,12 +881,12 @@ class AutomaticMemoryProjector:
                 session_id=session_id,
                 terminal=terminal,
                 prior_goal_id=prior_goal_id,
-                new_goal_id=(f"goal:{turn_id}" if new_goal is not None else None),
+                new_goal_id=(make_goal_id(turn_id) if new_goal is not None else None),
             )
             if terminal is not None
             else None
         )
-        new_goal_id = f"goal:{turn_id}" if new_goal is not None else None
+        new_goal_id = make_goal_id(turn_id) if new_goal is not None else None
 
         def append_goal_open() -> None:
             if new_goal is None or new_goal_id is None:
@@ -1012,7 +1012,7 @@ class AutomaticMemoryProjector:
             task_id = str(metadata.get("task_id") or "").strip()
             if task_id:
                 terminal_goal_id = self.state.goal_id_for_task(session_id, task_id)
-        same_goal = has_new_goal and terminal_goal_id == f"goal:{turn_id}"
+        same_goal = has_new_goal and terminal_goal_id == make_goal_id(turn_id)
 
         # Same turn: close episode A on terminal events, then open B for the
         # new user goal. Other turns keep a single append.

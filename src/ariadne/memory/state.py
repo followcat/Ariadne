@@ -48,6 +48,43 @@ MAX_RELATION_TYPES = 32
 MAX_COLLECTION_MEMBERS = 64
 MAX_COLLECTIONS = 32
 
+# Goal identities are a persistence protocol.  Keep construction and
+# validation in one place so lifecycle-bearing goals cannot drift between
+# TurnApplication, automatic capture, and StateStore.
+GOAL_ID_PREFIX = "goal:"
+LEGACY_GOAL_ID_PREFIX = "goal:legacy:"
+
+
+def is_goal_id(value: Any) -> bool:
+    """Return whether *value* is a non-empty lifecycle Goal identity."""
+
+    return isinstance(value, str) and value.startswith(GOAL_ID_PREFIX) and len(value) > len(
+        GOAL_ID_PREFIX
+    )
+
+
+def make_goal_id(seed: str) -> str:
+    """Construct a canonical immutable Goal id from a host-provided seed."""
+
+    normalized = str(seed or "").strip()
+    if normalized.startswith(GOAL_ID_PREFIX):
+        normalized = normalized[len(GOAL_ID_PREFIX) :]
+    if not normalized:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_MEMORY_GOAL_BINDING",
+                "goal id seed must be non-empty",
+                seed=normalized,
+            )
+        )
+    return f"{GOAL_ID_PREFIX}{normalized}"
+
+
+def make_legacy_goal_id(encoded: bytes) -> str:
+    """Derive the stable id used when migrating the pre-pointer Goal."""
+
+    return f"{LEGACY_GOAL_ID_PREFIX}{hashlib.sha256(encoded).hexdigest()[:20]}"
+
 
 def empty_state() -> dict[str, Any]:
     return {
@@ -94,6 +131,24 @@ class ConversationStateStore:
         if not doc:
             return empty_state()
         return dict(doc.get("state") or empty_state())
+
+    @staticmethod
+    def model_safe_state(state: dict[str, Any]) -> dict[str, Any]:
+        """Return the state view that may cross the model-facing boundary.
+
+        Task→goal bindings are Host-owned routing metadata.  They are needed
+        by task completion and journal recovery, but exposing them to the model
+        would disclose internal identities and invite forged binding attempts.
+        Keep this projection explicit so new Host-only fields cannot leak just
+        because a caller serialized ``get()`` directly.
+        """
+
+        safe = copy.deepcopy(state)
+        safe.pop("task_goal_bindings", None)
+        return safe
+
+    def get_model_safe(self, session_id: str) -> dict[str, Any]:
+        return self.model_safe_state(self.get(session_id))
 
     @staticmethod
     def current_goal_id_from_state(state: dict[str, Any]) -> str | None:
@@ -164,7 +219,7 @@ class ConversationStateStore:
 
         tid = str(task_id or "").strip()
         gid = str(goal_id or "").strip()
-        if not tid or not gid or not gid.startswith("goal:"):
+        if not tid or not is_goal_id(gid):
             raise AriadneError(
                 app_error(
                     "ARIADNE_MEMORY_GOAL_BINDING",
@@ -296,6 +351,18 @@ class ConversationStateStore:
             self.get(session_id)
             if allowed_turn_ids is None
             else self.get_as_of(session_id, allowed_turn_ids=allowed_turn_ids)
+        )
+        return self.render_state(state)
+
+    def render_model_safe(
+        self, session_id: str, *, allowed_turn_ids: set[str] | None = None
+    ) -> tuple[str, int]:
+        state = (
+            self.get_model_safe(session_id)
+            if allowed_turn_ids is None
+            else self.model_safe_state(
+                self.get_as_of(session_id, allowed_turn_ids=allowed_turn_ids)
+            )
         )
         return self.render_state(state)
 
@@ -616,9 +683,7 @@ class ConversationStateStore:
                     separators=(",", ":"),
                     default=str,
                 ).encode("utf-8")
-                legacy_goal_id = (
-                    "goal:legacy:" + hashlib.sha256(encoded).hexdigest()[:20]
-                )
+                legacy_goal_id = make_legacy_goal_id(encoded)
                 if legacy_goal_id in entities:
                     raise AriadneError(
                         app_error(

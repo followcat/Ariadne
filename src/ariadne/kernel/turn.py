@@ -13,6 +13,7 @@ from ..context import ContextAttribution, ContextBlock, ContextCompiler
 from ..errors import AriadneError, app_error
 from ..memory.facade import MemoryFacade
 from ..memory.projection import ProjectorFn
+from ..memory.state import make_goal_id
 from ..model.base import ModelPort
 from ..redact import redact_secrets
 from ..guardrails import scan_input, scan_output
@@ -994,7 +995,7 @@ class TurnApplication:
                         state_store.bind_task_goal(
                             session_id=session_id,
                             task_id=task_state.task_id,
-                            goal_id=f"goal:{turn_id}",
+                            goal_id=make_goal_id(turn_id),
                             source_turn_id=turn_id,
                             evidence_text=prompt,
                             idempotency_key=f"{turn_id}:task-goal:{task_state.task_id}",
