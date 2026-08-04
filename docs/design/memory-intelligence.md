@@ -78,8 +78,9 @@ it moves atomically to `quarantined_records` with terminal status
 therefore cannot create an infinite transient-failure loop. Bounded quarantine
 ids remain visible in `auto_capture` observability.
 
-Task lifecycle binding is Host-owned. Task creation persists an immutable
-`task_id -> goal_id` entry in the StateStore before any task attempt can run;
+Task lifecycle binding is Host-owned. Task creation atomically persists an
+immutable `task_id -> goal_id` entry, materializes the goal entity, and updates
+the pointer in the StateStore before any task attempt can run;
 model-facing state operations cannot write `task_id` or the binding map. A
 terminal outcome with a task id must resolve exactly one binding, otherwise it
 fails with `ARIADNE_MEMORY_GOAL_BINDING` and is not allowed to fall back to the
