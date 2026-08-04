@@ -15,7 +15,11 @@
 | **Tool loop** | Model ↔ tool invocation cycle inside a turn |
 | **Memory layer** | One contribution to context (raw, summary, curated, semantic, state) |
 | **Curated memory** | Explicit durable facts |
-| **Conversation state** | Structured projection of evolving session facts (advanced) |
+| **Conversation state** | Structured L2 projection of evolving session facts (entities, relations, collections) |
+| **MemoryLimits** | Host budgets for recent messages, per-layer chars, Episode/journal capacity, recovery batch; auto profiles `compact`/`default`/`deep` |
+| **task_goal_bindings** | Host-only immutable `task_id → goal_id` map; never model-facing |
+| **Goal pointer** | `session:current_goal` points at a lifecycle Goal entity; not the Goal itself |
+| **Model-safe state** | `render_model_safe` / snapshot: same sanitized view for tool JSON and context text |
 | **Sandbox** | Execution environment behind `SandboxPort` |
 | **Host** | CLI/HTTP/app that calls the kernel |
 | **Fastfail** | Clear structured failure; no silent downgrade |

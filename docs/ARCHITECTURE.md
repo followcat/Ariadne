@@ -48,8 +48,10 @@ ariadne/
     runtime.py            # dispatch authorized invocations
     builtin/              # memory, progress, sandbox.exec, ...
   memory/
-    facade.py             # layered MemoryContext assembly
-    state.py              # evidence-bound conversation state
+    facade.py             # layered MemoryContext assembly (model-safe L2)
+    limits.py             # MemoryLimits profiles + hard ceilings
+    state.py              # evidence-bound conversation state + Host bindings
+    auto_capture.py       # completed-turn capture journal stages
     user_model.py         # typed editable personalization
   context/
     compiler.py           # prompt budget + attribution
@@ -94,13 +96,20 @@ Import rule:
 ```
 
 **Closed-loop (Phase 14):** optional **task mode** inserts persisted plan / step
-verification and evidence-bound replan around the tool loop. An opt-in strict L2
-projector and the shared `ContextCompiler` add evidence-bound state plus prompt
-attribution. Outcome-aware skills, typed personalization, optional semantic/
-image verification, host-scheduled checks, and bounded advisory delegation
-form the functional 14a–e vertical slice. Production-hardening gates remain — see
+verification and evidence-bound replan around the tool loop. Plan submit also
+persists a Host-owned `task_id → goal_id` binding (reusing an existing lifecycle
+goal when present). An opt-in strict L2 projector and the shared
+`ContextCompiler` add evidence-bound state plus prompt attribution.
+Outcome-aware skills, typed personalization, optional semantic/image
+verification, host-scheduled checks, and bounded advisory delegation form the
+functional 14a–e vertical slice. Production-hardening gates remain — see
 [design/agent-closed-loop.md](design/agent-closed-loop.md). Default short turns
 remain the direct loop above.
+
+**Memory intelligence (Phase 15):** completed-turn automatic capture, Episodes,
+reflection/prospective layers, and graded search sit under `memory/`. Budgets
+default via `MemoryLimits` profiles; model-facing L2 always uses the model-safe
+snapshot. Design: [design/memory-intelligence.md](design/memory-intelligence.md).
 
 Only **TurnApplication** is the public use-case entry for execution. Internal helpers (model client, registries) are not second entries for hosts.
 

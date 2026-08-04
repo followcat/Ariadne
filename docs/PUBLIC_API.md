@@ -177,9 +177,18 @@ SkillStore.from_dirs(["./skills/builtin", "./skills/user"])
 ### 5.2 Memory
 
 ```python
+from ariadne.memory import Memory, MemoryLimits
+
 Memory.local(path="./.ariadne/memory")
+Memory.local(path=..., limits=MemoryLimits.for_profile("compact"))
 Memory.in_memory()  # tests only
 ```
+
+Budgets default to the personal `default` profile (see `MemoryLimits` /
+`ARIADNE_MEMORY_PROFILE`). Model-facing conversation state is always projected
+through the model-safe snapshot (no Host-only `task_goal_bindings` in context
+or the `conversation_state` tool). Closed-loop task plan submit persists a
+Host-owned `task_id → goal_id` binding before steps run.
 
 ### 5.3 Tools
 

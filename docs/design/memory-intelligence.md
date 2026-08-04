@@ -1,9 +1,10 @@
 # Design: Memory Intelligence Vertical Slice
 
 Status: **functional personal-kernel vertical slice; major correctness
-hardening landed (Host-owned task→goal binding, compositional scalar secrets,
-v1/v2 journal structural validation and quarantine); production/ranking
-hardening pending**
+hardening landed** (Host-owned task→goal binding with plan-time goal reuse,
+model-safe State choke point, automatic `MemoryLimits` profiles, compositional
+scalar secrets, v1/v2 journal structural validation/quarantine).
+**Production/ranking hardening pending** — not multi-tenant complete.
 Audience: implementers
 Related: [../MEMORY.md](../MEMORY.md), [memory-v1.md](memory-v1.md),
 [memory-search.md](memory-search.md), [turn-lifecycle.md](turn-lifecycle.md)
@@ -252,21 +253,29 @@ layers; unknown layer names are rejected. Context scaling only adjusts
 prompt-adjacent budgets (recent + layers); store capacities stay profile
 safety ceilings.
 
-All model-facing state rendering uses the `render_model_safe` snapshot choke
-point. Host-only `task_goal_bindings` remain available to task completion and
-journal recovery but are omitted from both returned JSON and rendered context;
+All model-facing state rendering uses the `render_model_safe` /
+`render_model_safe_snapshot` choke point (Facade context + `conversation_state`
+tool). Host-only `task_goal_bindings` remain available to task completion and
+journal recovery but are omitted from both returned JSON and rendered text;
 the tool's structured view and text are produced from the same sanitized read.
+Bare `state.render()` is not used on model-facing production paths.
 
 ## 8. Scope and remaining work
 
 This slice is deliberately local and auditable. Major correctness hardening
-covers consent binding, host-owned terminal authority, immutable task→goal
-binding (no pointer fallback; same-turn completion and goal A/B episode
-segments), structured secret redaction (including compositional assignments,
-quoted multi-word values and spaced labels like ``API Key``), recoverable
-capture journals with workspace affinity and v1/v2 structural
-validation/quarantine, nonterminal
-tool failures, strict extractor protocol, and evidence response budgets.
+covers:
+
+- consent binding and host-owned terminal authority (`verified_check`)
+- immutable Host `task_id → goal_id` map (plan submit reuses current goal when
+  present; terminal outcomes never fall back to the pointer when `task_id` is
+  set; same-turn complete + goal A/B episode segments)
+- unified model-safe State snapshot for context and tools
+- automatic `MemoryLimits` profiles + optional context scale
+- structured secret redaction (compositional assignments, quoted multi-word
+  values, spaced labels, known provider token prefixes)
+- recoverable capture journals with workspace/StateStore affinity and v1/v2
+  structural validation/quarantine
+- nonterminal tool failures, strict extractor protocol, evidence budgets
 
 It does not claim production hardening for background scheduling, multi-device
 sync, learned ranking, ontology induction, or multi-tenant governance.

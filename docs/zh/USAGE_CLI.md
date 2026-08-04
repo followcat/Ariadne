@@ -175,6 +175,22 @@ Web：`POST /api/turns`（及 stream）请求体字段 `task_mode: true`。
 对话 UI 有 **任务模式** 勾选框，并根据 SSE 的 `task_mode_resolved` / `task_*`
 事件显示状态条。
 
+### Memory 预算（Phase 15，默认自动）
+
+个人默认 **不必配置任何环境变量**。可选：
+
+```bash
+export ARIADNE_MEMORY_PROFILE=default   # compact | default | deep
+# 单字段覆盖（先 profile，再 override）：
+# ARIADNE_MEMORY_RECENT_LIMIT、ARIADNE_MEMORY_LAYER_BUDGETS（JSON）、
+# ARIADNE_MEMORY_EPISODE_MAX_*、ARIADNE_MEMORY_CAPTURE_*
+export ARIADNE_MEMORY_SCALE_TO_CONTEXT=0   # 1 = 按上下文缩放 recent/层预算
+export ARIADNE_CONTEXT_MAX_CHARS=120000    # host 提示预算（缩放参考）
+```
+
+设计见 [MEMORY.md](../MEMORY.md)、
+[design/memory-intelligence.md](../design/memory-intelligence.md)。
+
 ## 会话标题（主题总结）
 
 每个会话可有 **标题**（短主题总结），存在 `data_dir/sessions/meta/<id>.json`。

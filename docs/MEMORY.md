@@ -131,10 +131,13 @@ Episode search adds problem/attempt/observation/error/decision/outcome chains
 above the existing turn index. Failed attempts are nonterminal. Assistant
 self-reports and user free-text terminal phrases remain non-authoritative; in
 the current slice only closed `verified_check` evidence may close an Episode or
-authoritative goal. Goals use immutable `goal:<turn_id>` identities;
+authoritative goal. Goals use immutable `goal:<seed>` identities (plan turn id,
+or an earlier auto-captured goal id when the Host reuses it);
 `session:current_goal` is a Host-owned pointer. The model-facing state tool
-cannot mutate that pointer, StateStore authority is monotonic, and terminal
-entities cannot be reactivated in place. A new objective creates a new Goal.
+cannot mutate that pointer or the Host-only `task_goal_bindings` map.
+StateStore authority is monotonic, and terminal entities cannot be reactivated
+in place. A new objective creates a new Goal entity; completing A then proposing
+B only moves the pointer.
 Deep search can traverse stored entities, relations, timelines, decisions, and
 outcomes, but always returns real turn citations. Search returns a bounded event
 window and stable event ids; `memory_expand_evidence` pages full stored events
@@ -175,19 +178,26 @@ context window (`ARIADNE_CONTEXT_MAX_CHARS`, default 120_000). Store capacities
 
 Strict integer types and hard maxima fail fast. Partial layer overrides retain
 defaults and unknown layer names are rejected.
-Model-facing state reads use
-a Host-safe projection and never expose `task_goal_bindings`. Both the
-`conversation_state` tool and MemoryFacade context assembly use the unified
-`render_model_safe` snapshot choke point, so structured state and rendered text
-come from the same sanitized read.
+**Model-safe state choke point:** every model-facing State surface goes through
+`ConversationStateStore.render_model_safe` /
+`render_model_safe_snapshot` (MemoryFacade context assembly and the
+`conversation_state` tool). Structured JSON and rendered text share one
+sanitized snapshot, so concurrent Host updates cannot desync the two views.
+Production paths must not call bare `state.render()` for model context.
+Host-only `task_goal_bindings` stay available to task completion and journal
+recovery but never appear in model JSON or text.
 
 The journal validates prepared events, reflection/prospective payloads, stage
 status/result contracts, and active v2 rows before recovery. Invalid rows are
-quarantined instead of being rotated as transient failures. Task completion is
-bound through a Host-owned immutable task→goal mapping. Task creation also
-materializes the bound goal when no deterministic goal phrase exists; a
-missing or ambiguous binding is a structured memory failure and never falls
-back to `session:current_goal`.
+quarantined instead of being rotated as transient failures.
+
+**Host task→goal binding:** on `submit_task_plan`, the kernel persists an
+immutable `task_id → goal_id` entry before any step runs. If the session already
+has a lifecycle-bearing current goal (for example from an earlier user goal
+phrase), that id is reused; otherwise the Host materializes
+`goal:<plan_turn_id>`. Missing StateStore or ambiguous binding is
+`ARIADNE_MEMORY_GOAL_BINDING` (fastfail at plan submit / capture), never a
+silent fall back to the current pointer for terminal `task_id` outcomes.
 
 ## 5. Write API
 

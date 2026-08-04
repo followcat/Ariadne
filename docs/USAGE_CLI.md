@@ -187,6 +187,21 @@ Web: `POST /api/turns` / stream body field `task_mode: true` (same metadata).
 The chat UI shows a **任务模式** checkbox and a live banner driven by SSE
 `task_mode_resolved` / `task_*` events.
 
+### Memory budgets (Phase 15, automatic defaults)
+
+Personal default needs **no env**. Optional:
+
+```bash
+export ARIADNE_MEMORY_PROFILE=default   # compact | default | deep
+# Optional single-field overrides (profile first, then override):
+# ARIADNE_MEMORY_RECENT_LIMIT, ARIADNE_MEMORY_LAYER_BUDGETS (JSON),
+# ARIADNE_MEMORY_EPISODE_MAX_*, ARIADNE_MEMORY_CAPTURE_*
+export ARIADNE_MEMORY_SCALE_TO_CONTEXT=0   # 1 = scale recent/layers from context
+export ARIADNE_CONTEXT_MAX_CHARS=120000    # host prompt budget (scale reference)
+```
+
+Design: [MEMORY.md](MEMORY.md), [design/memory-intelligence.md](design/memory-intelligence.md).
+
 ## Session titles (topic summary)
 
 Each session can have a **title** (short topic summary), stored under

@@ -45,6 +45,13 @@ Host
     durable prepared plans. An opaque StateStore identity fences L2 replay. A
     recovery failure is persisted and reported without changing the user-task
     result or starving other pending records.
+11. On `submit_task_plan`, the Host binds `task_id → goal_id` (reuse existing
+    current lifecycle goal when present; otherwise materialize
+    `goal:<plan_turn_id>`). Terminal capture with a task id requires that
+    binding.
+12. Model-facing conversation state is assembled only through the model-safe
+    State snapshot choke point (never raw Host-only fields such as
+    `task_goal_bindings`).
 
 ## Closed-loop extension
 

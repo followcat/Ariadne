@@ -311,9 +311,10 @@ Production-hardening backlog.
 Design: [design/memory-intelligence.md](design/memory-intelligence.md).
 
 **Status: functional personal-kernel vertical slice; major correctness
-hardening landed (Host-owned task→goal binding, compositional scalar secrets,
-v1/v2 journal structural validation and quarantine). Production/ranking
-hardening remains usage-driven work — not multi-tenant “complete.”**
+hardening landed** (Host task→goal bind with plan-time goal reuse, model-safe
+State choke point, automatic `MemoryLimits` profiles, compositional secrets,
+journal quarantine). **Production/ranking hardening remains usage-driven —
+not multi-tenant “complete.”**
 
 - [x] Deterministic-first automatic turn projector with ambiguity-only optional LLM
 - [x] Typed preference supersession with temporal validity and evidence
@@ -333,6 +334,10 @@ hardening remains usage-driven work — not multi-tenant “complete.”**
 - [x] Centralized `MemoryLimits` settings for layer/recent/store/recovery budgets
 - [x] Automatic memory profiles (`compact`/`default`/`deep`) + optional
   context-window scale for recent/layer budgets
+- [x] Host-owned immutable `task_id → goal_id` map; plan submit reuses current
+  lifecycle goal when present (kernel-path tests in `test_host_goal_binding_turn`)
+- [x] Unified model-safe State snapshot choke point (`render_model_safe` /
+  `render_model_safe_snapshot`) for Facade context and `conversation_state` tool
 - [x] Host-safe conversation-state read view and centralized Goal identity helpers
 - [x] Generic provider token and compositional secret redaction at Memory boundary
 
