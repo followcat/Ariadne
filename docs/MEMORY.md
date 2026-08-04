@@ -165,9 +165,16 @@ they are observable but never retried as transient failures.
 
 Runtime memory budgets are centralized in `MemoryLimits` (`recent_limit`, layer
 budgets, Episode and capture-journal capacities, and recovery batch size).
-Hosts configure them with the `ARIADNE_MEMORY_*` environment variables listed
-in the design document; strict integer types and hard maxima fail fast.
-Partial layer overrides retain defaults and unknown layer names are rejected.
+
+**Personal default is automatic:** use profile `default` with no env keys.
+Optional `ARIADNE_MEMORY_PROFILE=compact|default|deep` selects a full preset;
+individual `ARIADNE_MEMORY_*` keys override single fields. Optional
+`ARIADNE_MEMORY_SCALE_TO_CONTEXT=1` scales recent/layer budgets from the host
+context window (`ARIADNE_CONTEXT_MAX_CHARS`, default 120_000). Store capacities
+(episodes, journal) stay as safety ceilings and are not auto-inflated.
+
+Strict integer types and hard maxima fail fast. Partial layer overrides retain
+defaults and unknown layer names are rejected.
 Model-facing state reads use
 a Host-safe projection and never expose `task_goal_bindings`.
 

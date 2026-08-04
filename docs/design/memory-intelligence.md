@@ -220,7 +220,9 @@ not change the turn result. Reflection and prospective context each have their
 own layer report. All search results remain grounded in real turn and session
 ids.
 
-Personal defaults are configurable without changing the kernel contract:
+Personal defaults are **automatic** without changing the kernel contract.
+Hosts load one `MemoryLimits` object (profile → optional field overrides →
+optional context scale) and pass it to every memory store.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -228,21 +230,27 @@ Personal defaults are configurable without changing the kernel contract:
 | `ARIADNE_MEMORY_AUTO_CAPTURE_LLM` | on | allow an extra model call only on ambiguity signals |
 | `ARIADNE_MEMORY_EPISODE_SEARCH` | on | merge Episode hits into `memory_search` |
 | `ARIADNE_MEMORY_REFLECTION_SESSIONS` | 3 | distinct sessions required for a candidate |
-| `ARIADNE_MEMORY_RECENT_LIMIT` | 4 | recent raw messages per context build |
-| `ARIADNE_MEMORY_LAYER_BUDGETS` | built-in JSON | per-layer character budgets |
-| `ARIADNE_MEMORY_EPISODE_MAX_EPISODES` | 1024 | maximum stored Episodes |
-| `ARIADNE_MEMORY_EPISODE_MAX_EVENTS_PER_EPISODE` | 256 | maximum events per Episode |
-| `ARIADNE_MEMORY_CAPTURE_MAX_RECORDS` | 4096 | maximum capture journal records |
-| `ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE` | 4 | bounded pending-capture recovery batch |
+| `ARIADNE_MEMORY_PROFILE` | `default` | `compact` \| `default` \| `deep` preset for all budgets |
+| `ARIADNE_MEMORY_SCALE_TO_CONTEXT` | off | scale recent/layer budgets from context window |
+| `ARIADNE_CONTEXT_MAX_CHARS` | 120000 | host prompt-context budget (scale reference) |
+| `ARIADNE_MEMORY_RECENT_LIMIT` | (profile) | override recent raw messages per context build |
+| `ARIADNE_MEMORY_LAYER_BUDGETS` | (profile) | partial JSON override of per-layer character budgets |
+| `ARIADNE_MEMORY_EPISODE_MAX_EPISODES` | (profile) | maximum stored Episodes |
+| `ARIADNE_MEMORY_EPISODE_MAX_EVENTS_PER_EPISODE` | (profile) | maximum events per Episode (alias `…_MAX_EVENTS`) |
+| `ARIADNE_MEMORY_CAPTURE_MAX_RECORDS` | (profile) | maximum capture journal records |
+| `ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE` | (profile) | recovery batch (alias `…_RESUME_BATCH`) |
 
-These values are loaded into one `MemoryLimits` object and passed by the host
-to every memory store. Values must be strict integers and are bounded by
-hard maxima (recent messages 128, layer budget 120,000 characters, Episodes
-8,192, events per Episode 256, journal records 16,384, and recovery batch 32).
-Invalid values fail configuration with `ARIADNE_CONFIG_INVALID`; they are
-never silently converted or clamped. A partial layer-budget object overrides
-known defaults while retaining the other layer budgets; unknown layer names
-are rejected.
+API helpers: `MemoryLimits.for_profile("default")`,
+`limits.scaled_to_context(context_max_chars)`.
+
+Values must be strict integers and are bounded by hard maxima (recent 128,
+layer budget 120,000 characters, Episodes 8,192, events per Episode 256,
+journal records 16,384, recovery batch 32). Invalid values fail with
+`ARIADNE_CONFIG_INVALID`; they are never silently converted past the maximum.
+A partial layer-budget object overrides known defaults while retaining other
+layers; unknown layer names are rejected. Context scaling only adjusts
+prompt-adjacent budgets (recent + layers); store capacities stay profile
+safety ceilings.
 
 The model-facing `conversation_state` read path uses an explicit safe view.
 Host-only `task_goal_bindings` remain available to task completion and journal

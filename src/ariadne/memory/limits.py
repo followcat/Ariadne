@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -16,6 +17,12 @@ DEFAULT_LAYER_BUDGETS = {
     "reflection": 1200,
     "prospective": 1200,
 }
+
+# Profiles are the personal-kernel auto path. Individual env keys remain
+# optional overrides for operators who need a single knob.
+MEMORY_PROFILES = frozenset({"compact", "default", "deep"})
+# Layer budgets in DEFAULT_LAYER_BUDGETS are calibrated for this context size.
+REFERENCE_CONTEXT_CHARS = 120_000
 
 # Runtime safety ceilings.  These are intentionally independent of the
 # operator-configurable defaults: a bad environment value must fail before it
@@ -53,9 +60,20 @@ def validate_capacity(value: Any, *, field: str, maximum: int) -> int:
     return value
 
 
+def _scale_int(value: int, factor: float, *, minimum: int, maximum: int) -> int:
+    scaled = int(math.floor(value * factor + 0.5))
+    return max(minimum, min(maximum, scaled))
+
+
 @dataclass(slots=True)
 class MemoryLimits:
-    """Host-configurable runtime budgets for the layered memory stack."""
+    """Host-configurable runtime budgets for the layered memory stack.
+
+    Personal default path is automatic: use :meth:`for_profile` (or bare
+    construction for the ``default`` profile). Operators may override single
+    fields via env; hard ceilings always apply and never silent-clamp bad
+    values past the maximum (they fail validation instead).
+    """
 
     recent_limit: int = 4
     layer_budgets: dict[str, int] = field(
@@ -122,29 +140,146 @@ class MemoryLimits:
         self.layer_budgets = normalized
 
     @classmethod
-    def from_env(cls, pick: Callable[..., str]) -> "MemoryLimits":
-        def integer(*keys: str, default: int) -> int:
-            raw = pick(*keys, default=str(default))
-            if isinstance(raw, bool) or isinstance(raw, float):
-                parsed: int | None = None
-            elif isinstance(raw, int):
-                parsed = raw
-            elif isinstance(raw, str) and _STRICT_INTEGER.fullmatch(raw.strip()):
-                parsed = int(raw.strip())
-            else:
-                parsed = None
-            if parsed is None:
-                raise AriadneError(
-                    app_error(
-                        "ARIADNE_CONFIG_INVALID",
-                        f"memory limit {keys[0]} must be a strict integer",
-                        field=keys[0],
-                        value=raw,
-                    )
-                )
-            return parsed
+    def for_profile(cls, profile: str = "default") -> "MemoryLimits":
+        """Build limits for a named personal profile (zero-config path)."""
 
-        budgets = dict(DEFAULT_LAYER_BUDGETS)
+        name = (profile or "default").strip().lower()
+        if name not in MEMORY_PROFILES:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    f"unknown memory profile: {profile!r} "
+                    f"(compact|default|deep)",
+                    profile=profile,
+                )
+            )
+        if name == "compact":
+            return cls(
+                recent_limit=2,
+                layer_budgets={
+                    key: max(200, int(value * 0.6))
+                    for key, value in DEFAULT_LAYER_BUDGETS.items()
+                },
+                episode_max_episodes=512,
+                episode_max_events_per_episode=128,
+                capture_max_records=2048,
+                capture_resume_batch_size=2,
+            )
+        if name == "deep":
+            return cls(
+                recent_limit=8,
+                layer_budgets={
+                    key: min(MAX_LAYER_BUDGET, max(200, int(value * 1.5)))
+                    for key, value in DEFAULT_LAYER_BUDGETS.items()
+                },
+                episode_max_episodes=2048,
+                episode_max_events_per_episode=256,
+                capture_max_records=8192,
+                capture_resume_batch_size=8,
+            )
+        return cls()
+
+    def scaled_to_context(self, context_max_chars: int) -> "MemoryLimits":
+        """Return a copy with recent/layer budgets scaled to a context window.
+
+        Store capacities (episodes, journal records) stay as profile/operator
+        safety ceilings — only prompt-adjacent budgets track context size.
+        Factor is clamped so tiny/huge windows do not collapse or explode
+        layers; values still pass hard maxima via construction.
+        """
+
+        if isinstance(context_max_chars, bool) or not isinstance(
+            context_max_chars, int
+        ):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "context_max_chars must be a strict integer",
+                    field="context_max_chars",
+                    value=context_max_chars,
+                )
+            )
+        if context_max_chars < 4_000 or context_max_chars > 2_000_000:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "context_max_chars must be in range 4000..2000000",
+                    field="context_max_chars",
+                    value=context_max_chars,
+                )
+            )
+        factor = context_max_chars / float(REFERENCE_CONTEXT_CHARS)
+        factor = max(0.5, min(2.0, factor))
+        budgets = {
+            key: _scale_int(
+                value, factor, minimum=200, maximum=MAX_LAYER_BUDGET
+            )
+            for key, value in self.layer_budgets.items()
+        }
+        recent = _scale_int(
+            self.recent_limit, factor, minimum=1, maximum=MAX_RECENT_LIMIT
+        )
+        return MemoryLimits(
+            recent_limit=recent,
+            layer_budgets=budgets,
+            episode_max_episodes=self.episode_max_episodes,
+            episode_max_events_per_episode=self.episode_max_events_per_episode,
+            capture_max_records=self.capture_max_records,
+            capture_resume_batch_size=self.capture_resume_batch_size,
+        )
+
+    @classmethod
+    def from_env(
+        cls,
+        pick: Callable[..., str],
+        *,
+        context_max_chars: int | None = None,
+    ) -> "MemoryLimits":
+        """Load limits: profile auto-defaults, then optional field overrides.
+
+        Order:
+        1. ``ARIADNE_MEMORY_PROFILE`` (default ``default``) → :meth:`for_profile`
+        2. Per-field ``ARIADNE_MEMORY_*`` overrides when the env key is set
+        3. Optional ``ARIADNE_MEMORY_SCALE_TO_CONTEXT=1`` scales recent/layers
+           from ``context_max_chars`` (host context budget)
+        """
+
+        def optional_integer(*keys: str) -> int | None:
+            for key in keys:
+                raw = pick(key, default="")
+                if not str(raw).strip():
+                    continue
+                text = str(raw).strip()
+                if not _STRICT_INTEGER.fullmatch(text):
+                    raise AriadneError(
+                        app_error(
+                            "ARIADNE_CONFIG_INVALID",
+                            f"memory limit {key} must be a strict integer",
+                            field=key,
+                            value=raw,
+                        )
+                    )
+                return int(text)
+            return None
+
+        profile = (
+            pick("ARIADNE_MEMORY_PROFILE", default="default") or "default"
+        ).strip().lower()
+        base = cls.for_profile(profile)
+
+        recent = optional_integer("ARIADNE_MEMORY_RECENT_LIMIT")
+        episodes = optional_integer("ARIADNE_MEMORY_EPISODE_MAX_EPISODES")
+        events = optional_integer(
+            "ARIADNE_MEMORY_EPISODE_MAX_EVENTS_PER_EPISODE",
+            "ARIADNE_MEMORY_EPISODE_MAX_EVENTS",
+        )
+        records = optional_integer("ARIADNE_MEMORY_CAPTURE_MAX_RECORDS")
+        batch = optional_integer(
+            "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE",
+            "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH",
+        )
+
+        budgets = dict(base.layer_budgets)
         raw_budgets = pick("ARIADNE_MEMORY_LAYER_BUDGETS", default="").strip()
         if raw_budgets:
             try:
@@ -163,7 +298,6 @@ class MemoryLimits:
                         "ARIADNE_MEMORY_LAYER_BUDGETS must be a JSON object",
                     )
                 )
-            budgets = dict(DEFAULT_LAYER_BUDGETS)
             for key, value in decoded.items():
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise AriadneError(
@@ -175,23 +309,38 @@ class MemoryLimits:
                         )
                     )
                 budgets[str(key)] = value
-        return cls(
-            recent_limit=integer("ARIADNE_MEMORY_RECENT_LIMIT", default=4),
+
+        limits = cls(
+            recent_limit=recent if recent is not None else base.recent_limit,
             layer_budgets=budgets,
-            episode_max_episodes=integer(
-                "ARIADNE_MEMORY_EPISODE_MAX_EPISODES", default=1024
+            episode_max_episodes=(
+                episodes if episodes is not None else base.episode_max_episodes
             ),
-            episode_max_events_per_episode=integer(
-                "ARIADNE_MEMORY_EPISODE_MAX_EVENTS_PER_EPISODE",
-                "ARIADNE_MEMORY_EPISODE_MAX_EVENTS",
-                default=256,
+            episode_max_events_per_episode=(
+                events
+                if events is not None
+                else base.episode_max_events_per_episode
             ),
-            capture_max_records=integer(
-                "ARIADNE_MEMORY_CAPTURE_MAX_RECORDS", default=4096
+            capture_max_records=(
+                records if records is not None else base.capture_max_records
             ),
-            capture_resume_batch_size=integer(
-                "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE",
-                "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH",
-                default=4,
+            capture_resume_batch_size=(
+                batch if batch is not None else base.capture_resume_batch_size
             ),
         )
+
+        scale_raw = pick("ARIADNE_MEMORY_SCALE_TO_CONTEXT", default="0")
+        scale_on = str(scale_raw).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if scale_on:
+            ctx = (
+                context_max_chars
+                if context_max_chars is not None
+                else REFERENCE_CONTEXT_CHARS
+            )
+            limits = limits.scaled_to_context(ctx)
+        return limits

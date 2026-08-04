@@ -304,7 +304,17 @@ def load_settings(
             )
         )
 
-    configured_memory_limits = memory_limits or MemoryLimits.from_env(pick)
+    context_chars = pick_int(
+        None, "ARIADNE_CONTEXT_MAX_CHARS", default=120_000
+    )
+    if context_chars < 4_000:
+        context_chars = 4_000
+    if context_chars > 2_000_000:
+        context_chars = 2_000_000
+
+    configured_memory_limits = memory_limits or MemoryLimits.from_env(
+        pick, context_max_chars=context_chars
+    )
 
     return Settings(
         base_url=base_url,
@@ -316,6 +326,7 @@ def load_settings(
         sandbox_lifecycle=lifecycle,
         tool_loop_limit=limit,
         max_tokens=max_tok,
+        context_max_chars=context_chars,
         verbose=verbose,
         json_mode=json_mode,
         stream=stream_flag,

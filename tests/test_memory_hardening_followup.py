@@ -115,6 +115,55 @@ def test_partial_layer_budget_overrides_preserve_other_defaults() -> None:
         MemoryLimits(layer_budgets={"typo_layer": 10})
 
 
+def test_memory_limits_profiles_are_automatic_presets() -> None:
+    default = MemoryLimits.for_profile("default")
+    compact = MemoryLimits.for_profile("compact")
+    deep = MemoryLimits.for_profile("deep")
+    assert default.recent_limit == 4
+    assert compact.recent_limit == 2
+    assert deep.recent_limit == 8
+    assert compact.layer_budgets["semantic"] < default.layer_budgets["semantic"]
+    assert deep.layer_budgets["semantic"] > default.layer_budgets["semantic"]
+    assert compact.capture_resume_batch_size == 2
+    assert deep.episode_max_episodes == 2048
+    with pytest.raises(AriadneError) as exc:
+        MemoryLimits.for_profile("turbo")
+    assert exc.value.error.code == "ARIADNE_CONFIG_INVALID"
+
+
+def test_memory_limits_scale_to_context_only_touches_prompt_budgets() -> None:
+    base = MemoryLimits.for_profile("default")
+    small = base.scaled_to_context(60_000)
+    large = base.scaled_to_context(240_000)
+    assert small.recent_limit <= base.recent_limit
+    assert large.recent_limit >= base.recent_limit
+    assert small.layer_budgets["semantic"] < base.layer_budgets["semantic"]
+    assert large.layer_budgets["semantic"] > base.layer_budgets["semantic"]
+    # Store ceilings are not auto-inflated with the context window.
+    assert small.episode_max_episodes == base.episode_max_episodes
+    assert large.capture_max_records == base.capture_max_records
+
+
+def test_memory_profile_env_and_field_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ARIADNE_MEMORY_PROFILE", "compact")
+    monkeypatch.setenv("ARIADNE_MEMORY_RECENT_LIMIT", "6")
+    settings = load_settings(workspace=tmp_path / "ws-profile", force_workspace=True)
+    assert settings.memory_limits.recent_limit == 6
+    assert settings.memory_limits.capture_resume_batch_size == 2
+
+
+def test_memory_scale_to_context_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ARIADNE_MEMORY_SCALE_TO_CONTEXT", "1")
+    monkeypatch.setenv("ARIADNE_CONTEXT_MAX_CHARS", "60000")
+    settings = load_settings(workspace=tmp_path / "ws-scale", force_workspace=True)
+    default = MemoryLimits.for_profile("default")
+    assert settings.context_max_chars == 60_000
+    assert (
+        settings.memory_limits.layer_budgets["semantic"]
+        < default.layer_budgets["semantic"]
+    )
+
+
 def test_goal_binding_read_rejects_corrupt_noncanonical_id(tmp_path: Path) -> None:
     memory = Memory.local(tmp_path / "memory")
     memory.state.bind_task_goal(

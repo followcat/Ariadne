@@ -2,7 +2,7 @@ from .auto_capture import AutomaticMemoryProjector
 from .capture_journal import CaptureJournalStore
 from .episodes import EpisodeStore, EvidenceRef
 from .facade import Memory, MemoryFacade
-from .limits import MemoryLimits
+from .limits import MEMORY_PROFILES, MemoryLimits
 from .projection import ProjectionWorker
 from .prospective import ProspectiveMemoryStore
 from .reflection import ReflectionStore
@@ -21,6 +21,7 @@ __all__ = [
     "Memory",
     "MemoryFacade",
     "MemoryLimits",
+    "MEMORY_PROFILES",
     "AutomaticMemoryProjector",
     "CaptureJournalStore",
     "EpisodeStore",

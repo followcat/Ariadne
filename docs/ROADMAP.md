@@ -331,6 +331,8 @@ hardening remains usage-driven work — not multi-tenant “complete.”**
 - [x] Nonterminal failure/retry Episode lifecycle and strict LLM capture protocol
 - [x] Windowed Episode hits, stable event ids, paged evidence, and total byte caps
 - [x] Centralized `MemoryLimits` settings for layer/recent/store/recovery budgets
+- [x] Automatic memory profiles (`compact`/`default`/`deep`) + optional
+  context-window scale for recent/layer budgets
 - [x] Host-safe conversation-state read view and centralized Goal identity helpers
 - [x] Generic provider token and compositional secret redaction at Memory boundary
 
