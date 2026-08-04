@@ -7,6 +7,12 @@ from typing import Any
 # TOOLCALL §4 rule 4). Secret key recognition has one implementation below;
 # text assignments do not maintain a second finite credential-name list.
 _OPENAI_KEY = re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{8,}")
+_KNOWN_PROVIDER_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"(?P<prefix>gh[pors]_|github_pat_|xox[bpra]-)"
+    r"(?P<credential>[A-Za-z0-9_-]{8,})",
+    re.IGNORECASE,
+)
 _AUTHORIZATION_SCHEME = re.compile(
     r"(?i)(?P<prefix>\bauthorization[\"']?\s*[:=]\s*[\"']?)"
     r"(?P<scheme>bearer|basic|token|apikey)\s+"
@@ -32,10 +38,11 @@ _VALUE = (
 )
 _ASSIGNMENT = re.compile(
     r"(?:"
-    r"(?P<spaced_key>\b(?:aws\s+secret\s+access\s+key|"
+    r"(?P<spaced_key>\b(?:cloud\s+secret\s+access\s+key|"
+    r"secret\s+access\s+key|aws\s+secret\s+access\s+key|"
     r"aws\s+access\s+key|access\s+key\s+id|api\s+key|access\s+token|"
-    r"client\s+secret|private\s+key|secret\s+key|auth(?:orization)?\s+token|"
-    r"session\s+token)\b)"
+    r"access\s+key|session\s+key|client\s+secret|private\s+key|"
+    r"secret\s+key|auth(?:orization)?\s+token|session\s+token)\b)"
     r"|(?P<key>[A-Za-z][A-Za-z0-9_.-]{1,95})"
     r")"
     r"(?P<separator>\s*[:=]\s*)"
@@ -50,7 +57,9 @@ _AUTHORIZATION_SCHEMES = {"bearer", "basic", "token", "apikey"}
 _SECRET_KEY = re.compile(
     r"(?i)(?:^|[_-])(?:api[_-]?key|secret|password|passwd|token|"
     r"access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|"
-    r"authorization|cookie|credential)(?:$|[_-])"
+    r"secret[_-]?access[_-]?key|cloud[_-]?secret[_-]?access[_-]?key|"
+    r"access[_-]?key(?:[_-]?id)?|session[_-]?key|authorization|cookie|credential)"
+    r"(?:$|[_-])"
 )
 
 
@@ -72,6 +81,9 @@ def redact_text(text: str) -> str:
     """Redact credential assignments, including camelCase and spaced key names."""
 
     out = _OPENAI_KEY.sub("sk-***", text)
+    out = _KNOWN_PROVIDER_TOKEN.sub(
+        lambda match: f"{match.group('prefix')}***", out
+    )
     out = _AUTHORIZATION_SCHEME.sub(
         lambda match: (
             f"{match.group('prefix')}{match.group('scheme')} ***"

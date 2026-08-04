@@ -917,12 +917,15 @@ def build_default_registry(
             raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "memory facade not configured"))
         action = str(args.get("action") or "read").lower()
         if action == "read":
-            text, count = ctx.memory.state.render(ctx.session_id)
+            # task_goal_bindings and other Host-only routing metadata must
+            # never cross the model-facing tool boundary.
+            safe_state = ctx.memory.state.get_model_safe(ctx.session_id)
+            text, count = ctx.memory.state.render_state(safe_state)
             return {
                 "action": "read",
                 "entity_count": count,
                 "text": text,
-                "state": ctx.memory.state.get(ctx.session_id),
+                "state": safe_state,
             }
         if action == "apply":
             ops = args.get("operations") or []
