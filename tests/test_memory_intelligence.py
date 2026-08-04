@@ -38,6 +38,17 @@ def _capture(
     tool_calls: list[Any] | None = None,
     verified_goal: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if verified_goal and verified_goal.get("task_id"):
+        goal_id = memory.state.current_goal_id(session_id)
+        if goal_id is not None:
+            memory.state.bind_task_goal(
+                session_id=session_id,
+                task_id=str(verified_goal["task_id"]),
+                goal_id=goal_id,
+                source_turn_id=turn_id,
+                evidence_text=user,
+                idempotency_key=f"test:{session_id}:{verified_goal['task_id']}",
+            )
     return _run(
         memory.capture_turn(
             session_id=session_id,
@@ -1267,8 +1278,18 @@ def test_generic_scalar_credentials_never_reach_persistent_memory(
         ('password="correct horse battery staple"', "correct horse battery staple"),
         ("password='correct horse battery staple'", "correct horse battery staple"),
         ("password=correct horse battery staple", "horse battery"),
+        (
+            "status=ok password=correct horse battery staple",
+            "correct horse battery staple",
+        ),
+        ("result=success accessToken=ACCESS123456", "ACCESS123456"),
+        (
+            "nested_secret_tool completed: password=PASSWORD123456",
+            "PASSWORD123456",
+        ),
         ("API Key: supersecret123", "supersecret123"),
         ("Access Token: abcdefghijklmnop", "abcdefghijklmnop"),
+        ("AWS Secret Access Key: AWSSECRET123456", "AWSSECRET123456"),
     ],
 )
 def test_quoted_and_spaced_secret_assignments_never_reach_memory(
@@ -1506,6 +1527,217 @@ def test_legacy_pending_capture_without_affinity_is_quarantined_once(
     after = journal.list_quarantined()[0]
     assert after["status"] == "migration_required"
     assert int(after.get("resume_attempts") or 0) == 0
+
+
+def test_v2_pending_capture_with_invalid_event_is_quarantined_before_recovery(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "shared" / "capture_journal.json"
+    journal_path.parent.mkdir(parents=True)
+    workspace_key = "/workspace/invalid-event"
+    session_id = "invalid-event-session"
+    turn_id = "t1"
+    capture_id = CaptureJournalStore.capture_id(
+        workspace_key=workspace_key,
+        session_id=session_id,
+        turn_id=turn_id,
+    )
+    stages = {
+        stage: {"status": "pending", "result": {}}
+        for stage in (
+            "user_model",
+            "state",
+            "episode",
+            "reflection",
+            "prospective",
+        )
+    }
+    journal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "records": {
+                    capture_id: {
+                        "capture_id": capture_id,
+                        "workspace_key": workspace_key,
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "input_digest": "digest",
+                        "state_store_identity": "conversation-state-v1:test",
+                        "status": "in_progress",
+                        "prepared": {"events": [1]},
+                        "stages": stages,
+                        "report": {},
+                    }
+                },
+                "quarantined_records": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    journal = CaptureJournalStore(journal_path)
+    raw = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert capture_id not in raw["records"]
+    quarantined = journal.list_quarantined(workspace_key=workspace_key)
+    assert len(quarantined) == 1
+    assert quarantined[0]["status"] == "migration_required"
+    assert "event 0" in quarantined[0]["migration_reason"]
+    assert journal.list_pending(workspace_key=workspace_key) == []
+
+
+def test_terminal_task_without_host_binding_fails_without_pointer_fallback(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="binding-required",
+        turn_id="t1",
+        user="目标是完成任务 A。",
+    )
+    _capture(
+        memory,
+        session_id="binding-required",
+        turn_id="t2",
+        user="新目标是完成任务 B。",
+    )
+
+    with pytest.raises(AriadneError) as error:
+        _run(
+            memory.capture_turn(
+                session_id="binding-required",
+                turn_id="t3",
+                user_text="继续",
+                assistant_text="好的。",
+                verified_goal={
+                    "status": "completed",
+                    "task_id": "task-a",
+                    "goal": "完成任务 A",
+                    "summary": "任务 A 已验证完成",
+                    "check_ids": ["check-a"],
+                },
+            )
+        )
+    assert error.value.error.code == "ARIADNE_MEMORY_GOAL_BINDING"
+    state = memory.state.get("binding-required")
+    assert state["entities"]["goal:t2"]["status"] == "active"
+    assert memory.state.current_goal_id("binding-required") == "goal:t2"
+
+    # The permanent binding error is quarantined on the next bounded recovery,
+    # rather than rotating forever as a transient failure.
+    report = _capture(
+        memory,
+        session_id="binding-required",
+        turn_id="t4",
+        user="继续",
+    )
+    assert report["recovery_failures"] == []
+    assert report["migration_required_capture_ids"]
+
+
+def test_host_task_goal_binding_is_immutable_and_not_model_writable(
+    tmp_path: Path,
+) -> None:
+    assert redact_text("task-security") == "task-security"
+    memory = Memory.local(tmp_path / "memory")
+    _capture(
+        memory,
+        session_id="binding-api",
+        turn_id="t1",
+        user="目标是完成安全检查。",
+    )
+    memory.state.bind_task_goal(
+        session_id="binding-api",
+        task_id="task-security",
+        goal_id="goal:t1",
+        source_turn_id="host-t1",
+        evidence_text="目标是完成安全检查。",
+    )
+    assert memory.state.goal_id_for_task("binding-api", "task-security") == "goal:t1"
+    with pytest.raises(AriadneError) as conflict:
+        memory.state.bind_task_goal(
+            session_id="binding-api",
+            task_id="task-security",
+            goal_id="goal:t2",
+            source_turn_id="host-t2",
+            evidence_text="目标是完成安全检查。",
+        )
+    assert conflict.value.error.code == "ARIADNE_MEMORY_GOAL_BINDING"
+
+    registry = build_default_registry(memory=memory, skills=SkillStore({}))
+    ctx = ToolContext(
+        session_id="binding-api",
+        turn_id="t2",
+        sandbox=None,
+        memory=memory,
+        user_text="写入绑定",
+        evidence_text="写入绑定",
+        observed_evidence_text="写入绑定",
+    )
+    with pytest.raises(AriadneError) as denied:
+        _run(
+            registry.invoke(
+                "conversation_state",
+                {
+                    "action": "apply",
+                    "operations": [
+                        {
+                            "op": "set_attribute",
+                            "entity_id": "goal:t1",
+                            "key": "task_id",
+                            "value": "forged-task",
+                            "evidence_quote": "写入绑定",
+                        }
+                    ],
+                },
+                ctx,
+            )
+        )
+    assert denied.value.error.code == "ARIADNE_TOOL_DENIED"
+
+
+def test_same_turn_task_goal_completion_stays_one_completed_episode(
+    tmp_path: Path,
+) -> None:
+    memory = Memory.local(tmp_path / "memory")
+    # Host binds the task at plan creation before the first capture. The goal
+    # entity itself is created by this same turn's user goal event.
+    memory.state.bind_task_goal(
+        session_id="same-turn-complete",
+        task_id="task-same-turn",
+        goal_id="goal:t1",
+        source_turn_id="t1",
+        evidence_text="目标是完成一次检查。",
+    )
+    report = _capture(
+        memory,
+        session_id="same-turn-complete",
+        turn_id="t1",
+        user="目标是完成一次检查。",
+        verified_goal={
+            "status": "completed",
+            "task_id": "task-same-turn",
+            "goal": "完成一次检查",
+            "summary": "检查已验证完成",
+            "check_ids": ["check-same-turn"],
+        },
+    )
+    assert report["status"] == "used"
+    state = memory.state.get("same-turn-complete")
+    assert state["entities"]["goal:t1"]["status"] == "done"
+    episode = memory.episodes.for_turn(
+        session_id="same-turn-complete",
+        turn_id="t1",
+    )
+    assert episode is not None
+    assert episode["status"] == "completed"
+    assert memory.episodes.for_turn_segment(
+        session_id="same-turn-complete",
+        turn_id="t1",
+        segment="close",
+    ) is None
 
 
 def test_unredacted_traces_do_not_authorize_secret_persistence_in_memory(
