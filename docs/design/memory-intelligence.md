@@ -227,9 +227,9 @@ Personal defaults are configurable without changing the kernel contract:
 | `ARIADNE_MEMORY_RECENT_LIMIT` | 4 | recent raw messages per context build |
 | `ARIADNE_MEMORY_LAYER_BUDGETS` | built-in JSON | per-layer character budgets |
 | `ARIADNE_MEMORY_EPISODE_MAX_EPISODES` | 1024 | maximum stored Episodes |
-| `ARIADNE_MEMORY_EPISODE_MAX_EVENTS` | 256 | maximum events per Episode |
+| `ARIADNE_MEMORY_EPISODE_MAX_EVENTS_PER_EPISODE` | 256 | maximum events per Episode |
 | `ARIADNE_MEMORY_CAPTURE_MAX_RECORDS` | 4096 | maximum capture journal records |
-| `ARIADNE_MEMORY_CAPTURE_RESUME_BATCH` | 4 | bounded pending-capture recovery batch |
+| `ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE` | 4 | bounded pending-capture recovery batch |
 
 These values are loaded into one `MemoryLimits` object and passed by the host
 to every memory store. Invalid values fail configuration with

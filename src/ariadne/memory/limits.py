@@ -87,16 +87,16 @@ class MemoryLimits:
 
     @classmethod
     def from_env(cls, pick: Callable[..., str]) -> "MemoryLimits":
-        def integer(key: str, default: int) -> int:
-            raw = pick(key, default=str(default))
+        def integer(*keys: str, default: int) -> int:
+            raw = pick(*keys, default=str(default))
             try:
                 return int(raw)
             except (TypeError, ValueError) as exc:
                 raise AriadneError(
                     app_error(
                         "ARIADNE_CONFIG_INVALID",
-                        f"memory limit {key} must be an integer",
-                        field=key,
+                        f"memory limit {keys[0]} must be an integer",
+                        field=keys[0],
                         value=raw,
                     )
                 ) from exc
@@ -130,14 +130,22 @@ class MemoryLimits:
                     )
                 ) from exc
         return cls(
-            recent_limit=integer("ARIADNE_MEMORY_RECENT_LIMIT", 4),
+            recent_limit=integer("ARIADNE_MEMORY_RECENT_LIMIT", default=4),
             layer_budgets=budgets,
-            episode_max_episodes=integer("ARIADNE_MEMORY_EPISODE_MAX_EPISODES", 1024),
-            episode_max_events_per_episode=integer(
-                "ARIADNE_MEMORY_EPISODE_MAX_EVENTS", 256
+            episode_max_episodes=integer(
+                "ARIADNE_MEMORY_EPISODE_MAX_EPISODES", default=1024
             ),
-            capture_max_records=integer("ARIADNE_MEMORY_CAPTURE_MAX_RECORDS", 4096),
+            episode_max_events_per_episode=integer(
+                "ARIADNE_MEMORY_EPISODE_MAX_EVENTS_PER_EPISODE",
+                "ARIADNE_MEMORY_EPISODE_MAX_EVENTS",
+                default=256,
+            ),
+            capture_max_records=integer(
+                "ARIADNE_MEMORY_CAPTURE_MAX_RECORDS", default=4096
+            ),
             capture_resume_batch_size=integer(
-                "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH", 4
+                "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE",
+                "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH",
+                default=4,
             ),
         )
