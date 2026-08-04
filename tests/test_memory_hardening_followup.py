@@ -9,6 +9,9 @@ import pytest
 from ariadne.config import load_settings
 from ariadne.errors import AriadneError
 from ariadne.memory import Memory, MemoryLimits, is_goal_id, make_goal_id
+from ariadne.memory.capture_journal import CaptureJournalStore
+from ariadne.memory.episodes import EpisodeStore
+from ariadne.memory.facade import MemoryFacade
 from ariadne.skills.store import SkillStore
 from ariadne.tools.registry import ToolContext, build_default_registry
 from ariadne.redact import redact_text
@@ -31,6 +34,7 @@ def _run(awaitable):
         ("xai-abcd1234567890", "xai-abcd1234567890"),
         ("AIzaabcd1234567890", "AIzaabcd1234567890"),
         ("npm_abcd1234567890", "npm_abcd1234567890"),
+        ("pypi-abcd1234567890", "pypi-abcd1234567890"),
     ],
 )
 def test_generic_provider_credentials_are_redacted(value: str, secret: str) -> None:
@@ -142,6 +146,64 @@ def test_memory_local_applies_configured_store_limits(tmp_path: Path) -> None:
     assert memory.episodes.max_events_per_episode == 8
     assert memory.capture_journal.max_records == 9
     assert memory.auto_capture.resume_batch_size == 10
+
+
+def test_facade_compatibility_overrides_use_host_limits_and_validate(tmp_path: Path) -> None:
+    base = Memory.local(tmp_path / "memory")
+    host_limits = MemoryLimits(layer_budgets={"semantic": 321})
+
+    with pytest.raises(AriadneError):
+        MemoryFacade(
+            base.transcript,
+            base.curated,
+            base.state,
+            base.summaries,
+            base.semantic,
+            recent_limit=129,
+            limits=host_limits,
+        )
+    with pytest.raises(AriadneError):
+        MemoryFacade(
+            base.transcript,
+            base.curated,
+            base.state,
+            base.summaries,
+            base.semantic,
+            recent_limit=1.5,
+            limits=host_limits,
+        )
+    with pytest.raises(AriadneError):
+        MemoryFacade(
+            base.transcript,
+            base.curated,
+            base.state,
+            base.summaries,
+            base.semantic,
+            layer_budgets={"typo": 1},
+            limits=host_limits,
+        )
+
+    facade = MemoryFacade(
+        base.transcript,
+        base.curated,
+        base.state,
+        base.summaries,
+        base.semantic,
+        layer_budgets={"curated": 77},
+        limits=host_limits,
+    )
+    assert facade.layer_budgets["semantic"] == 321
+    assert facade.layer_budgets["curated"] == 77
+    assert facade.layer_budgets["reflection"] == 1200
+
+
+def test_public_store_capacities_share_memory_hard_maxima(tmp_path: Path) -> None:
+    with pytest.raises(AriadneError):
+        EpisodeStore(tmp_path / "episodes.json", max_episodes=8193)
+    with pytest.raises(AriadneError):
+        EpisodeStore(tmp_path / "episodes-events.json", max_events_per_episode=257)
+    with pytest.raises(AriadneError):
+        CaptureJournalStore(tmp_path / "capture.json", max_records=16385)
 
 
 def test_goal_id_helpers_are_canonical() -> None:

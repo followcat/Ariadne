@@ -121,7 +121,8 @@ captured key through that same normalization/matching function, covering
 provider-prefixed token/secret names without a second finite list. Known
 GitHub (`ghp_`, `gho_`, `ghs_`, `ghr_`, `github_pat_`), Slack (`xoxb-`,
 `xoxp-`, `xoxa-`, `xoxr-`), Hugging Face (`hf_`), xAI (`xai-`), Google
-(`AIza`), and npm (`npm_`) token families are also redacted by shape.
+(`AIza`), npm (`npm_`), and PyPI (`pypi-`) token families are also redacted
+by shape.
 Authorization `Bearer`, `Basic`, `Token`, and `ApiKey` schemes have a separate
 closed redaction pass, including short credentials. Episodes retain only
 bounded scalar fields from the status allowlist; nested or oversized values

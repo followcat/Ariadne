@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from ..errors import AriadneError, app_error
 
@@ -29,6 +29,30 @@ MAX_CAPTURE_RESUME_BATCH_SIZE = 32
 _STRICT_INTEGER = re.compile(r"^[+-]?\d+$")
 
 
+def validate_capacity(value: Any, *, field: str, maximum: int) -> int:
+    """Validate a public memory capacity without coercing its type."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"memory limit {field} must be a strict integer",
+                field=field,
+                value=value,
+            )
+        )
+    if value < 1 or value > maximum:
+        raise AriadneError(
+            app_error(
+                "ARIADNE_CONFIG_INVALID",
+                f"memory limit {field} must be in range 1..{maximum}",
+                field=field,
+                value=value,
+            )
+        )
+    return value
+
+
 @dataclass(slots=True)
 class MemoryLimits:
     """Host-configurable runtime budgets for the layered memory stack."""
@@ -44,40 +68,15 @@ class MemoryLimits:
 
     def __post_init__(self) -> None:
         limits = {
-            "recent_limit": (MAX_RECENT_LIMIT, "recent raw message limit"),
-            "episode_max_episodes": (MAX_EPISODES, "Episode capacity"),
-            "episode_max_events_per_episode": (
-                MAX_EVENTS_PER_EPISODE,
-                "events per Episode capacity",
-            ),
-            "capture_max_records": (MAX_CAPTURE_RECORDS, "capture journal capacity"),
-            "capture_resume_batch_size": (
-                MAX_CAPTURE_RESUME_BATCH_SIZE,
-                "capture resume batch size",
-            ),
+            "recent_limit": MAX_RECENT_LIMIT,
+            "episode_max_episodes": MAX_EPISODES,
+            "episode_max_events_per_episode": MAX_EVENTS_PER_EPISODE,
+            "capture_max_records": MAX_CAPTURE_RECORDS,
+            "capture_resume_batch_size": MAX_CAPTURE_RESUME_BATCH_SIZE,
         }
-        for name, (maximum, label) in limits.items():
+        for name, maximum in limits.items():
             raw = getattr(self, name)
-            if isinstance(raw, bool) or not isinstance(raw, int):
-                raise AriadneError(
-                    app_error(
-                        "ARIADNE_CONFIG_INVALID",
-                        f"memory limit {name} must be a strict integer",
-                        field=name,
-                        value=raw,
-                    )
-                )
-            value = raw
-            if value < 1 or value > maximum:
-                raise AriadneError(
-                    app_error(
-                        "ARIADNE_CONFIG_INVALID",
-                        f"{label} must be in range 1..{maximum}",
-                        field=name,
-                        value=value,
-                    )
-                )
-            setattr(self, name, value)
+            setattr(self, name, validate_capacity(raw, field=name, maximum=maximum))
         if not isinstance(self.layer_budgets, dict):
             raise AriadneError(
                 app_error(

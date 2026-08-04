@@ -11,6 +11,11 @@ from typing import Any
 
 from ..errors import AriadneError, app_error
 from .json_file import locked_read_json, locked_update_json, locked_write_json
+from .limits import (
+    MAX_EPISODES,
+    MAX_EVENTS_PER_EPISODE,
+    validate_capacity,
+)
 
 EPISODE_EVENT_TYPES = {
     "problem",
@@ -69,6 +74,16 @@ class EpisodeStore:
     max_events_per_episode: int = 256
 
     def __post_init__(self) -> None:
+        self.max_episodes = validate_capacity(
+            self.max_episodes,
+            field="episode_max_episodes",
+            maximum=MAX_EPISODES,
+        )
+        self.max_events_per_episode = validate_capacity(
+            self.max_events_per_episode,
+            field="episode_max_events_per_episode",
+            maximum=MAX_EVENTS_PER_EPISODE,
+        )
         self.path = Path(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():

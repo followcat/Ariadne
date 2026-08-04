@@ -10,7 +10,11 @@ from typing import Any
 from ..errors import AriadneError, app_error
 from .episodes import EPISODE_EVENT_TYPES
 from .json_file import locked_read_json, locked_update_json, locked_write_json
-from .limits import MAX_CAPTURE_RESUME_BATCH_SIZE
+from .limits import (
+    MAX_CAPTURE_RECORDS,
+    MAX_CAPTURE_RESUME_BATCH_SIZE,
+    validate_capacity,
+)
 
 CAPTURE_STAGES = (
     "user_model",
@@ -39,6 +43,11 @@ class CaptureJournalStore:
     max_records: int = 4096
 
     def __post_init__(self) -> None:
+        self.max_records = validate_capacity(
+            self.max_records,
+            field="capture_max_records",
+            maximum=MAX_CAPTURE_RECORDS,
+        )
         self.path = Path(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():

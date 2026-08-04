@@ -14,7 +14,7 @@ from .capture_journal import CaptureJournalStore
 from .deep_planner import DeepPlan, DeepPlanner, DeepRerankError, LocalSplitPlanner
 from .embeddings import HashEmbeddingProvider
 from .episodes import EpisodeStore
-from .limits import DEFAULT_LAYER_BUDGETS, MemoryLimits
+from .limits import MemoryLimits
 from .projection import ProjectionWorker
 from .prospective import ProspectiveMemoryStore
 from .reflection import ReflectionStore
@@ -84,19 +84,44 @@ class MemoryFacade:
     limits: MemoryLimits = field(default_factory=MemoryLimits)
 
     def __post_init__(self) -> None:
-        if self.recent_limit is None:
-            self.recent_limit = self.limits.recent_limit
-        else:
-            self.recent_limit = int(self.recent_limit)
-        if self.layer_budgets is None:
-            self.layer_budgets = dict(self.limits.layer_budgets)
-        else:
-            # Direct callers may provide an override subset; retain the
-            # defaults for every layer not explicitly overridden.
-            self.layer_budgets = {
-                **DEFAULT_LAYER_BUDGETS,
-                **dict(self.layer_budgets),
-            }
+        if not isinstance(self.limits, MemoryLimits):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "memory facade limits must be a MemoryLimits object",
+                    field="limits",
+                )
+            )
+        if self.layer_budgets is not None and not isinstance(self.layer_budgets, dict):
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "memory facade layer_budgets must be an object",
+                    field="layer_budgets",
+                )
+            )
+        # Legacy constructor arguments remain accepted, but are treated as
+        # overrides of the Host-provided limits and validated by the same
+        # MemoryLimits contract.  In particular, do not fall back to global
+        # defaults when a host supplied custom per-layer budgets.
+        effective = MemoryLimits(
+            recent_limit=(
+                self.limits.recent_limit
+                if self.recent_limit is None
+                else self.recent_limit
+            ),
+            layer_budgets=(
+                dict(self.limits.layer_budgets)
+                if self.layer_budgets is None
+                else {**self.limits.layer_budgets, **self.layer_budgets}
+            ),
+            episode_max_episodes=self.limits.episode_max_episodes,
+            episode_max_events_per_episode=self.limits.episode_max_events_per_episode,
+            capture_max_records=self.limits.capture_max_records,
+            capture_resume_batch_size=self.limits.capture_resume_batch_size,
+        )
+        self.recent_limit = effective.recent_limit
+        self.layer_budgets = effective.layer_budgets
 
     async def capture_turn(
         self,
