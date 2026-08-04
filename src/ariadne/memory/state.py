@@ -158,6 +158,7 @@ class ConversationStateStore:
         source_turn_id: str,
         evidence_text: str,
         idempotency_key: str | None = None,
+        goal_description: str = "",
     ) -> dict[str, Any]:
         """Persist an immutable task→goal binding through a Host-only path."""
 
@@ -172,16 +173,50 @@ class ConversationStateStore:
                     goal_id=gid,
                 )
             )
+        quote = str(evidence_text or "")[:2000]
+        operations: list[dict[str, Any]] = [
+            {
+                "op": "bind_task_goal",
+                "task_id": tid,
+                "goal_id": gid,
+                "evidence_quote": quote,
+            },
+            {
+                "op": "ensure_entity",
+                "entity_id": gid,
+                "type": "goal",
+                "evidence_quote": quote,
+            },
+            {
+                "op": "set_status",
+                "entity_id": gid,
+                "status": "active",
+                "authority": "user_explicit",
+                "evidence_quote": quote,
+            },
+            {
+                "op": "set_current_goal",
+                "goal_id": gid,
+                "authority": "user_explicit",
+                "evidence_quote": quote,
+            },
+        ]
+        if str(goal_description or "").strip():
+            operations.insert(
+                2,
+                {
+                    "op": "set_attribute",
+                    "entity_id": gid,
+                    "key": "description",
+                    "value": str(goal_description).strip()[:2000],
+                    "memory_type": "goal",
+                    "authority": "user_explicit",
+                    "evidence_quote": quote,
+                },
+            )
         return self.apply_ops(
             session_id=session_id,
-            operations=[
-                {
-                    "op": "bind_task_goal",
-                    "task_id": tid,
-                    "goal_id": gid,
-                    "evidence_quote": str(evidence_text or "")[:2000],
-                }
-            ],
+            operations=operations,
             source_turn_id=source_turn_id,
             evidence_text=evidence_text,
             idempotency_key=idempotency_key,

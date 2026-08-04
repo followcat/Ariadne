@@ -998,6 +998,7 @@ class TurnApplication:
                             source_turn_id=turn_id,
                             evidence_text=prompt,
                             idempotency_key=f"{turn_id}:task-goal:{task_state.task_id}",
+                            goal_description=task_state.goal,
                         )
                     for app in control.appends:
                         append_required_context(
