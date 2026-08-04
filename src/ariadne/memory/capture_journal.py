@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import AriadneError, app_error
+from .episodes import EPISODE_EVENT_TYPES
 from .json_file import locked_read_json, locked_update_json, locked_write_json
 
 CAPTURE_STAGES = (
@@ -59,6 +60,7 @@ class CaptureJournalStore:
         reason: str,
         legacy_status: str,
         now: float,
+        source_schema_version: int = 1,
     ) -> dict[str, Any]:
         out = copy.deepcopy(row) if isinstance(row, dict) else {}
         out["capture_id"] = capture_id
@@ -66,15 +68,140 @@ class CaptureJournalStore:
         out["status"] = "migration_required"
         out["migration_error_code"] = "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED"
         out["migration_reason"] = reason
-        out["source_schema_version"] = 1
+        out["source_schema_version"] = source_schema_version
         out["quarantined_at"] = now
         return out
 
+    @staticmethod
+    def _event_contract_error(event: Any, index: int) -> str | None:
+        if not isinstance(event, dict):
+            return f"prepared event {index} is not an object"
+        event_type = str(event.get("type") or "")
+        if event_type not in EPISODE_EVENT_TYPES:
+            return f"prepared event {index} has invalid type"
+        content = event.get("content")
+        if not isinstance(content, str) or not content.strip() or len(content) > 2000:
+            return f"prepared event {index} has invalid content"
+        evidence = event.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            return f"prepared event {index} has no evidence"
+        for ref_index, ref in enumerate(evidence):
+            if not isinstance(ref, dict):
+                return f"prepared event {index} evidence {ref_index} is not an object"
+            for key in ("session_id", "turn_id", "source", "quote"):
+                if not isinstance(ref.get(key), str) or not ref[key].strip():
+                    return f"prepared event {index} evidence {ref_index} has invalid {key}"
+        if not isinstance(event.get("reason", ""), str):
+            return f"prepared event {index} has invalid reason"
+        if not isinstance(event.get("metadata", {}), dict):
+            return f"prepared event {index} has invalid metadata"
+        entities = event.get("entities", [])
+        if not isinstance(entities, list) or not all(
+            isinstance(item, str) for item in entities
+        ):
+            return f"prepared event {index} has invalid entities"
+        relation = event.get("relation")
+        if relation is not None and (
+            not isinstance(relation, dict)
+            or not isinstance(relation.get("from"), str)
+            or not isinstance(relation.get("to"), str)
+        ):
+            return f"prepared event {index} has invalid relation"
+        return None
+
     @classmethod
-    def _legacy_resume_contract_error(
+    def _prepared_contract_error(cls, prepared: Any) -> str | None:
+        if not isinstance(prepared, dict):
+            return "pending capture prepared payload is not an object"
+        events = prepared.get("events")
+        if not isinstance(events, list):
+            return "pending capture prepared.events is not a list"
+        for index, event in enumerate(events):
+            error = cls._event_contract_error(event, index)
+            if error is not None:
+                return error
+        reflection_signals = prepared.get("reflection_signals", [])
+        if not isinstance(reflection_signals, list) or not all(
+            isinstance(item, dict) for item in reflection_signals
+        ):
+            return "pending capture prepared.reflection_signals is invalid"
+        prospective_specs = prepared.get("prospective_specs", [])
+        if not isinstance(prospective_specs, list):
+            return "pending capture prepared.prospective_specs is not a list"
+        for index, spec in enumerate(prospective_specs):
+            if not isinstance(spec, dict):
+                return f"pending capture prospective spec {index} is not an object"
+            content = spec.get("content")
+            trigger = spec.get("trigger")
+            if not isinstance(content, str) or not content.strip() or len(content) > 1000:
+                return f"pending capture prospective spec {index} has invalid content"
+            if not isinstance(trigger, dict) or not trigger:
+                return f"pending capture prospective spec {index} has invalid trigger"
+        context = prepared.get("prospective_context", {})
+        if not isinstance(context, dict):
+            return "pending capture prospective_context is not an object"
+        for key in ("workspace", "text"):
+            if not isinstance(context.get(key, ""), str):
+                return f"pending capture prospective_context.{key} is invalid"
+        for key in ("changed_paths", "tool_names", "event_types", "entity_ids"):
+            values = context.get(key, [])
+            if not isinstance(values, list) or not all(
+                isinstance(item, str) for item in values
+            ):
+                return f"pending capture prospective_context.{key} is invalid"
+        if not isinstance(prepared.get("llm_used", False), bool):
+            return "pending capture llm_used is invalid"
+        rejected = prepared.get("llm_rejected", 0)
+        if not isinstance(rejected, int) or rejected < 0:
+            return "pending capture llm_rejected is invalid"
+        return None
+
+    @staticmethod
+    def _stage_result_contract_error(stage: str, result: Any) -> str | None:
+        if not isinstance(result, dict):
+            return f"capture stage {stage} result is not an object"
+        list_fields = {
+            "user_model": ("user_model_entry_ids",),
+            "episode": ("event_ids",),
+            "reflection": ("reflection_candidate_ids",),
+            "prospective": ("prospective_entry_ids", "triggered_prospective_ids"),
+        }.get(stage, ())
+        for field in list_fields:
+            values = result.get(field)
+            if not isinstance(values, list) or not all(
+                isinstance(item, str) for item in values
+            ):
+                return f"capture stage {stage} result.{field} is invalid"
+        if stage == "state" and (
+            "state_version" not in result
+            or result.get("state_version") is not None
+            and not isinstance(result.get("state_version"), int)
+        ):
+            return "capture stage state result.state_version is invalid"
+        return None
+
+    @classmethod
+    def _stages_contract_error(cls, stages: Any) -> str | None:
+        if not isinstance(stages, dict):
+            return "pending capture stages is not an object"
+        for stage in CAPTURE_STAGES:
+            row = stages.get(stage)
+            if not isinstance(row, dict):
+                return f"pending capture is missing stage {stage}"
+            status = row.get("status")
+            if status not in {"pending", "done"}:
+                return f"pending capture stage {stage} has invalid status"
+            if status == "done":
+                error = cls._stage_result_contract_error(stage, row.get("result", {}))
+                if error is not None:
+                    return error
+        return None
+
+    @classmethod
+    def _record_contract_error(
         cls, capture_id: str, row: dict[str, Any]
     ) -> str | None:
-        """Return why a v1 row cannot satisfy _resume_record prerequisites."""
+        """Return why a journal row cannot satisfy _resume_record prerequisites."""
 
         status = str(row.get("status") or "")
         # workspace_key may be "" for the default personal store.
@@ -103,23 +230,11 @@ class CaptureJournalStore:
         if not str(row.get("state_store_identity") or "").strip():
             return "legacy pending capture has no state-store identity"
         if not str(row.get("input_digest") or "").strip():
-            return "legacy pending capture is missing input_digest"
-        prepared = row.get("prepared")
-        if not isinstance(prepared, dict) or not isinstance(
-            prepared.get("events"), list
-        ):
-            return "legacy pending capture has no valid prepared event plan"
-        stages = row.get("stages")
-        if not isinstance(stages, dict) or not stages:
-            return "legacy pending capture is missing stage map"
-        for stage in CAPTURE_STAGES:
-            stage_row = stages.get(stage)
-            if not isinstance(stage_row, dict):
-                return f"legacy pending capture is missing stage {stage}"
-            stage_status = str(stage_row.get("status") or "")
-            if stage_status not in {"pending", "done"}:
-                return f"legacy pending stage {stage} has invalid status"
-        return None
+            return "pending capture is missing input_digest"
+        prepared_error = cls._prepared_contract_error(row.get("prepared"))
+        if prepared_error is not None:
+            return prepared_error
+        return cls._stages_contract_error(row.get("stages"))
 
     def _migrate_schema(self) -> None:
         """Upgrade v1 without guessing affinity for unrecoverable pending rows."""
@@ -143,7 +258,39 @@ class CaptureJournalStore:
                             "automatic-capture journal containers are invalid",
                         )
                     )
-                return data
+                active: dict[str, Any] = {}
+                quarantined = copy.deepcopy(data.get("quarantined_records") or {})
+                now = time.time()
+                for key, value in (data.get("records") or {}).items():
+                    capture_id = str(key)
+                    if not isinstance(value, dict):
+                        quarantined[capture_id] = self._quarantine_row(
+                            capture_id=capture_id,
+                            row=None,
+                            reason="v2 record is not an object",
+                            legacy_status="invalid",
+                            now=now,
+                            source_schema_version=version,
+                        )
+                        continue
+                    row = copy.deepcopy(value)
+                    error = self._record_contract_error(capture_id, row)
+                    if error is not None:
+                        quarantined[capture_id] = self._quarantine_row(
+                            capture_id=capture_id,
+                            row=row,
+                            reason=error,
+                            legacy_status=str(row.get("status") or "missing"),
+                            now=now,
+                            source_schema_version=version,
+                        )
+                        continue
+                    active[capture_id] = row
+                return {
+                    **data,
+                    "records": active,
+                    "quarantined_records": quarantined,
+                }
             if version != 1:
                 raise AriadneError(
                     app_error(
@@ -176,7 +323,7 @@ class CaptureJournalStore:
                     continue
                 row = copy.deepcopy(value)
                 status = str(row.get("status") or "")
-                contract_error = self._legacy_resume_contract_error(capture_id, row)
+                contract_error = self._record_contract_error(capture_id, row)
                 if contract_error is not None:
                     quarantined[capture_id] = self._quarantine_row(
                         capture_id=capture_id,
@@ -184,6 +331,7 @@ class CaptureJournalStore:
                         reason=contract_error,
                         legacy_status=status or "missing",
                         now=now,
+                        source_schema_version=version,
                     )
                     continue
                 row["source_schema_version"] = 1
@@ -309,6 +457,47 @@ class CaptureJournalStore:
         )
         return pending[:limit]
 
+    @classmethod
+    def validate_record(cls, capture_id: str, row: dict[str, Any]) -> str | None:
+        """Validate a record immediately before recovery, including v2 rows."""
+
+        return cls._record_contract_error(capture_id, row)
+
+    def quarantine(
+        self,
+        *,
+        capture_id: str,
+        reason: str,
+        error_code: str = "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED",
+    ) -> dict[str, Any] | None:
+        """Move an active row to terminal quarantine exactly once."""
+
+        result: dict[str, Any] = {}
+
+        def mut(data: dict[str, Any]) -> dict[str, Any]:
+            records = data.setdefault("records", {})
+            quarantined = data.setdefault("quarantined_records", {})
+            existing = quarantined.get(capture_id)
+            if not isinstance(existing, dict):
+                row = records.pop(capture_id, None)
+                if not isinstance(row, dict):
+                    return data
+                quarantined[capture_id] = self._quarantine_row(
+                    capture_id=capture_id,
+                    row=row,
+                    reason=reason,
+                    legacy_status=str(row.get("status") or "missing"),
+                    now=time.time(),
+                    source_schema_version=CAPTURE_JOURNAL_SCHEMA_VERSION,
+                )
+                quarantined[capture_id]["migration_error_code"] = error_code
+                existing = quarantined[capture_id]
+            result.update(copy.deepcopy(existing))
+            return data
+
+        locked_update_json(self.path, mut, default=self._empty())
+        return result or None
+
     def note_resume_failure(
         self,
         *,
@@ -412,6 +601,15 @@ class CaptureJournalStore:
                 result.update(copy.deepcopy(current))
                 result["idempotent_replay"] = True
                 return data
+            quarantined = (data.get("quarantined_records") or {}).get(capture_id)
+            if isinstance(quarantined, dict):
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CAPTURE_MIGRATION_REQUIRED",
+                        "capture id is terminally quarantined and cannot be replayed",
+                        capture_id=capture_id,
+                    )
+                )
             if len(records) >= self.max_records:
                 raise AriadneError(
                     app_error(
@@ -473,6 +671,16 @@ class CaptureJournalStore:
                     app_error(
                         "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
                         "automatic-capture journal is missing a stage",
+                        capture_id=capture_id,
+                        stage=stage,
+                    )
+                )
+            result_error = self._stage_result_contract_error(stage, stage_result)
+            if result_error is not None:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_CAPTURE_JOURNAL_INVALID",
+                        result_error,
                         capture_id=capture_id,
                         stage=stage,
                     )
