@@ -6,7 +6,7 @@ from typing import Any
 # Obvious value patterns plus structural assignment parsing (SANDBOX §6,
 # TOOLCALL §4 rule 4). Secret key recognition has one implementation below;
 # text assignments do not maintain a second finite credential-name list.
-_OPENAI_KEY = re.compile(r"sk-[A-Za-z0-9_-]{8,}")
+_OPENAI_KEY = re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{8,}")
 _AUTHORIZATION_SCHEME = re.compile(
     r"(?i)(?P<prefix>\bauthorization[\"']?\s*[:=]\s*[\"']?)"
     r"(?P<scheme>bearer|basic|token|apikey)\s+"
@@ -15,20 +15,27 @@ _AUTHORIZATION_SCHEME = re.compile(
 _BEARER_VALUE = re.compile(
     r"(?i)\b(?P<scheme>bearer)\s+(?P<credential>[^\s,;]+)"
 )
-# Compact keys (no spaces) plus a short allowlist of multi-word secret labels.
+# Compact keys (no spaces) plus a bounded allowlist of multi-word secret labels.
 # Multi-word keys must stay allowlisted so tool names containing "secret" are
 # not treated as credential assignments (e.g. "nested_secret_tool completed:").
 _VALUE = (
     r"(?:"
     r"(?P<dq>\"(?P<dq_value>(?:\\.|[^\"\\])*)\")"
     r"|(?P<sq>'(?P<sq_value>(?:\\.|[^'\\])*)')"
-    r"|(?P<bare>[^\s,;}\]]+(?:\s+[^\s,;}\]]+)*)"
+    # Bare values may contain spaces, but stop before another assignment key,
+    # a line/JSON boundary, or punctuation.  The stop condition is essential:
+    # ``status=ok password=...`` must still let the second assignment match.
+    r"|(?P<bare>(?![A-Za-z][A-Za-z0-9_.-]{1,95}\s*[:=])"
+    r"[^\s,;}\]\n]+(?:\s+(?![A-Za-z][A-Za-z0-9_.-]{1,95}\s*[:=])"
+    r"[^\s,;}\]\n]+)*)"
     r")"
 )
 _ASSIGNMENT = re.compile(
     r"(?:"
-    r"(?P<spaced_key>\b(?:api\s+key|access\s+token|client\s+secret|"
-    r"private\s+key|secret\s+key|auth(?:orization)?\s+token|session\s+token)\b)"
+    r"(?P<spaced_key>\b(?:aws\s+secret\s+access\s+key|"
+    r"aws\s+access\s+key|access\s+key\s+id|api\s+key|access\s+token|"
+    r"client\s+secret|private\s+key|secret\s+key|auth(?:orization)?\s+token|"
+    r"session\s+token)\b)"
     r"|(?P<key>[A-Za-z][A-Za-z0-9_.-]{1,95})"
     r")"
     r"(?P<separator>\s*[:=]\s*)"
