@@ -8,7 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import AriadneError, app_error
-from .json_file import locked_read_json, locked_update_json, locked_write_json
+from .state_sqlite import StateSqlite
+from .working_set import (
+    WorkingSetResult,
+    assemble_working_set,
+    decode_cursor,
+    encode_cursor,
+    query_hash,
+    render_item,
+)
 
 ALLOWED_OPS = {
     "ensure_entity",
@@ -42,11 +50,12 @@ TERMINAL_ENTITY_STATUSES = {"done", "cancelled", "archived"}
 CURRENT_GOAL_POINTER_ID = "session:current_goal"
 CURRENT_GOAL_ATTRIBUTE = "goal_id"
 
-MAX_ENTITIES = 256
-MAX_RELATIONS_PER_TYPE = 64
-MAX_RELATION_TYPES = 32
-MAX_COLLECTION_MEMBERS = 64
-MAX_COLLECTIONS = 32
+MAX_ENTITIES = 4_096
+MAX_RELATIONS_PER_TYPE = 256
+MAX_RELATION_TYPES = 64
+MAX_COLLECTION_MEMBERS = 4_096
+MAX_COLLECTIONS = 128
+LOOKUP_RESPONSE_BYTES_MAX = 16_000
 
 # Goal identities are a persistence protocol.  Keep construction and
 # validation in one place so lifecycle-bearing goals cannot drift between
@@ -99,15 +108,14 @@ def empty_state() -> dict[str, Any]:
 
 @dataclass
 class ConversationStateStore:
-    """Authoritative L2 state. File is fcntl-locked for multi-process safety."""
+    """Authoritative L2 state. Events and projection live in SQLite."""
 
     path: Path
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._write({"documents": {}})
+        self._db = StateSqlite(self.path)
 
     @property
     def store_identity(self) -> str:
@@ -118,19 +126,29 @@ class ConversationStateStore:
         ).hexdigest()
         return f"conversation-state-v1:{digest}"
 
-    def _read(self) -> dict[str, Any]:
-        data = locked_read_json(self.path, default={"documents": {}})
-        return data if isinstance(data, dict) else {"documents": {}}
-
-    def _write(self, data: dict[str, Any]) -> None:
-        locked_write_json(self.path, data)
-
     def get(self, session_id: str) -> dict[str, Any]:
-        data = self._read()
-        doc = (data.get("documents") or {}).get(session_id)
+        doc = self._db.get_document(session_id)
         if not doc:
             return empty_state()
-        return dict(doc.get("state") or empty_state())
+        state = doc.get("state") or empty_state()
+        return dict(state) if isinstance(state, dict) else empty_state()
+
+    def _read(self) -> dict[str, Any]:
+        """Reconstruct the legacy document map for tests and debug inspection."""
+
+        documents: dict[str, Any] = {}
+        versions: dict[str, Any] = {}
+        for session_id in self._db.list_session_ids():
+            doc = self._db.get_document(session_id)
+            if doc is None:
+                continue
+            documents[session_id] = {
+                "state": doc.get("state") or empty_state(),
+                "version": int(doc.get("version") or 0),
+                "watermark_turn_id": doc.get("watermark_turn_id"),
+            }
+            versions[session_id] = self._db.list_versions(session_id)
+        return {"documents": documents, "versions": versions}
 
     @staticmethod
     def model_safe_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -396,21 +414,24 @@ class ConversationStateStore:
 
     def version(self, session_id: str) -> int:
         """Current document version (0 when never projected)."""
-        data = self._read()
-        doc = (data.get("documents") or {}).get(session_id)
+        doc = self._db.get_document(session_id)
         if not doc:
             return 0
         return int(doc.get("version") or 0)
 
+    def event_seq(self, session_id: str) -> int:
+        doc = self._db.get_document(session_id)
+        if not doc:
+            return 0
+        return int(doc.get("event_seq") or 0)
+
     def list_versions(self, session_id: str) -> list[dict[str, Any]]:
         """Append-only projection history for the session."""
-        data = self._read()
-        return list((data.get("versions") or {}).get(session_id) or [])
+        return self._db.list_versions(session_id)
 
     def watermark(self, session_id: str) -> str | None:
         """Turn id of the last succeeded projection, or None if never projected."""
-        data = self._read()
-        doc = (data.get("documents") or {}).get(session_id)
+        doc = self._db.get_document(session_id)
         if not doc:
             return None
         wm = doc.get("watermark_turn_id")
@@ -448,9 +469,189 @@ class ConversationStateStore:
             for rel in rels:
                 lines.append(f"- relation {rel_name}: {rel.get('from')} -> {rel.get('to')}")
         text = "\n".join(lines)
-        if len(text) > 8000:
-            raise AriadneError(app_error("ARIADNE_MEMORY_NOT_READY", "state render exceeds hard cap"))
         return text, len(entities)
+
+    def assemble_working_set(
+        self,
+        session_id: str,
+        query: str,
+        *,
+        soft_chars: int,
+        hard_chars: int,
+        allowed_turn_ids: set[str] | None = None,
+    ) -> WorkingSetResult:
+        if allowed_turn_ids is not None:
+            state = self.model_safe_state(
+                self.get_as_of(session_id, allowed_turn_ids=allowed_turn_ids)
+            )
+            items = _projection_items_from_state(state)
+            member_count = sum(
+                len((coll or {}).get("members") or [])
+                for coll in (state.get("collections") or {}).values()
+            )
+        else:
+            items = self._db.list_projection_items(session_id)
+            items = [item for item in items if str(item.get("ref") or "") != "task_goal_bindings"]
+            member_count = self._db.member_count(session_id)
+        return assemble_working_set(
+            items,
+            query=query,
+            projection_seq=self.event_seq(session_id),
+            soft_chars=soft_chars,
+            hard_chars=hard_chars,
+            member_count=member_count,
+        )
+
+    def lookup(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        limit: int = 10,
+        cursor: str = "",
+    ) -> dict[str, Any]:
+        q = (query or "").strip()
+        if not q:
+            raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "query is required"))
+        if limit < 1:
+            raise AriadneError(app_error("ARIADNE_INVALID_TOOL_ARGS", "limit must be >= 1"))
+        if limit > 32:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_INVALID_TOOL_ARGS",
+                    f"limit {limit} exceeds hard max 32",
+                    limit=limit,
+                    limit_max=32,
+                )
+            )
+        seq = self.event_seq(session_id)
+        offset = 0
+        if cursor:
+            payload = decode_cursor(cursor)
+            if str(payload.get("session_id") or "") != session_id:
+                raise AriadneError(
+                    app_error("ARIADNE_MEMORY_STATE_CURSOR_STALE", "lookup cursor session mismatch")
+                )
+            if int(payload.get("projection_seq") or 0) != seq:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_STATE_CURSOR_STALE",
+                        "conversation state changed since this lookup cursor was issued",
+                    )
+                )
+            if str(payload.get("query_hash") or "") != query_hash(q):
+                raise AriadneError(
+                    app_error("ARIADNE_MEMORY_STATE_CURSOR_STALE", "lookup cursor query mismatch")
+                )
+            offset = int(payload.get("offset") or 0)
+        collection = self._db.get_item(session_id, q, kind="collection")
+        exact = collection or self._db.get_item(session_id, q)
+        collection_members = self._db.list_collection_members(session_id, q)
+        if collection is not None or collection_members:
+            page = collection_members[offset : offset + limit]
+            rendered: list[dict[str, Any]] = []
+            for row in page:
+                rendered.append(
+                    {
+                        "kind": "collection_member",
+                        "ref": f"{q}#{row['member_key']}",
+                        "collection": q,
+                        "member": row["member_key"],
+                        "position": row["position"],
+                    }
+                )
+            return self._finish_lookup(
+                session_id=session_id,
+                query=q,
+                seq=seq,
+                offset=offset,
+                limit=limit,
+                items=rendered,
+                total=len(collection_members),
+            )
+        items: list[dict[str, Any]] = []
+        if exact is not None and str(exact.get("status") or "active") not in {
+            "superseded",
+            "expired",
+        }:
+            items.append(exact)
+            if exact.get("kind") == "entity":
+                for fact in self._db.list_projection_items(session_id):
+                    if (
+                        fact.get("kind") == "fact"
+                        and (fact.get("payload") or {}).get("entity_id") == exact.get("ref")
+                        and str(fact.get("status") or "active") not in {"superseded", "expired"}
+                    ):
+                        items.append(fact)
+        else:
+            items = self._db.search_items(session_id, q, limit=max(limit * 3, limit))
+        page_items = items[offset : offset + limit]
+        serialized = []
+        for item in page_items:
+            serialized.append(
+                {
+                    "kind": item.get("kind"),
+                    "ref": item.get("ref"),
+                    "status": item.get("status") or "active",
+                    "payload": item.get("payload") or {},
+                    "text": render_item(item),
+                }
+            )
+        return self._finish_lookup(
+            session_id=session_id,
+            query=q,
+            seq=seq,
+            offset=offset,
+            limit=limit,
+            items=serialized,
+            total=len(items),
+        )
+
+    def _finish_lookup(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        seq: int,
+        offset: int,
+        limit: int,
+        items: list[dict[str, Any]],
+        total: int,
+    ) -> dict[str, Any]:
+        kept = list(items)
+        while kept:
+            body = json.dumps(kept, ensure_ascii=False)
+            if len(body.encode("utf-8")) <= LOOKUP_RESPONSE_BYTES_MAX:
+                break
+            if len(kept) == 1:
+                raise AriadneError(
+                    app_error(
+                        "ARIADNE_MEMORY_LOOKUP_ITEM_TOO_LARGE",
+                        "a single lookup item exceeds the page byte cap",
+                    )
+                )
+            kept.pop()
+        items = kept
+        next_offset = offset + len(items)
+        has_more = next_offset < total
+        next_cursor = ""
+        if has_more:
+            next_cursor = encode_cursor(
+                {
+                    "session_id": session_id,
+                    "projection_seq": seq,
+                    "query_hash": query_hash(query),
+                    "offset": next_offset,
+                }
+            )
+        return {
+            "query": query,
+            "items": items,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+            "projection_seq": seq,
+            "semantic_status": "disabled",
+        }
 
     def apply_ops(
         self,
@@ -573,32 +774,10 @@ class ConversationStateStore:
                     )
                 )
 
-        result_holder: dict[str, Any] = {}
-
-        def mut(data: dict[str, Any]) -> dict[str, Any]:
-            scoped_key = (
-                f"{session_id}:{idempotency_key}"
-                if idempotency_key is not None
-                else ""
-            )
-            applied = data.setdefault("idempotency_keys", {})
-            if scoped_key and scoped_key in applied:
-                result_holder.update(dict(applied[scoped_key]))
-                result_holder["idempotent_replay"] = True
-                return data
-            docs = data.setdefault("documents", {})
-            doc = docs.get(session_id) or {}
-            current_version = int(doc.get("version") or 0)
-            if expected_parent_version is not None and expected_parent_version != current_version:
-                raise AriadneError(
-                    app_error(
-                        "ARIADNE_MEMORY_NOT_READY",
-                        "state version conflict (CAS parent mismatch)",
-                        expected_parent_version=expected_parent_version,
-                        current_version=current_version,
-                    )
-                )
-            state = copy.deepcopy(doc.get("state") or empty_state())
+        def mutate(current: dict[str, Any]) -> dict[str, Any]:
+            state = current or empty_state()
+            if "entities" not in state:
+                state = empty_state() | state
             for op in operations:
                 self._apply_one(state, op, source_turn_id=source_turn_id)
             if len(state.get("entities") or {}) > MAX_ENTITIES:
@@ -632,43 +811,16 @@ class ConversationStateStore:
                             collection=cname,
                         )
                     )
-            new_version = current_version + 1
-            docs[session_id] = {
-                "state": state,
-                "watermark_turn_id": source_turn_id,
-                "version": new_version,
-            }
-            versions = data.setdefault("versions", {}).setdefault(session_id, [])
-            versions.append(
-                {
-                    "version": new_version,
-                    "parent_version": current_version,
-                    "watermark_turn_id": source_turn_id,
-                    "source_turn_id": source_turn_id,
-                    "ops": [str(op.get("op")) for op in operations],
-                    "operations": copy.deepcopy(operations),
-                }
-            )
-            result_holder.update(
-                {
-                    "decision": "apply",
-                    "state": state,
-                    "ops": len(operations),
-                    "version": new_version,
-                    "parent_version": current_version,
-                }
-            )
-            if scoped_key:
-                applied[scoped_key] = {
-                    "decision": "apply",
-                    "ops": len(operations),
-                    "version": new_version,
-                    "parent_version": current_version,
-                }
-            return data
+            return state
 
-        locked_update_json(self.path, mut, default={"documents": {}})
-        return result_holder
+        return self._db.apply_in_transaction(
+            session_id=session_id,
+            expected_parent_version=expected_parent_version,
+            idempotency_key=str(idempotency_key or ""),
+            source_turn_id=source_turn_id,
+            operations=operations,
+            mutate=mutate,
+        )
 
     def _apply_one(self, state: dict[str, Any], op: dict[str, Any], *, source_turn_id: str) -> None:
         entities: dict[str, Any] = state.setdefault("entities", {})
@@ -967,3 +1119,69 @@ class ConversationStateStore:
             coll = collections.setdefault(cname, {"members": []})
             member = str(op["member"])
             coll["members"] = [m for m in (coll.get("members") or []) if m != member]
+
+
+def _projection_items_from_state(state: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for eid, ent in (state.get("entities") or {}).items():
+        if not isinstance(ent, dict):
+            continue
+        items.append(
+            {
+                "kind": "entity",
+                "ref": str(eid),
+                "payload": {
+                    "type": ent.get("type") or "generic",
+                    "status": ent.get("status") or "active",
+                    "status_authority": ent.get("status_authority") or "model_inferred",
+                    "aliases": list(ent.get("aliases") or []),
+                },
+                "source_turn_id": str(ent.get("status_source_turn_id") or ""),
+                "status": str(ent.get("status") or "active"),
+            }
+        )
+        for key, attr in (ent.get("attributes") or {}).items():
+            if not isinstance(attr, dict):
+                continue
+            items.append(
+                {
+                    "kind": "fact",
+                    "ref": f"{eid}.{key}",
+                    "payload": {
+                        "entity_id": str(eid),
+                        "key": str(key),
+                        "value": attr.get("value"),
+                        "authority": attr.get("authority") or "model_inferred",
+                        "memory_type": attr.get("memory_type") or "fact",
+                    },
+                    "source_turn_id": str(attr.get("source_turn_id") or ""),
+                    "status": str(attr.get("status") or "active"),
+                }
+            )
+    for rel_name, edges in (state.get("relations") or {}).items():
+        for edge in edges or []:
+            if not isinstance(edge, dict):
+                continue
+            left = str(edge.get("from") or "")
+            right = str(edge.get("to") or "")
+            items.append(
+                {
+                    "kind": "relation",
+                    "ref": f"{rel_name}:{left}->{right}",
+                    "payload": {"relation": str(rel_name), "from": left, "to": right},
+                    "source_turn_id": "",
+                    "status": "active",
+                }
+            )
+    for cname, coll in (state.get("collections") or {}).items():
+        members = list((coll or {}).get("members") or [])
+        items.append(
+            {
+                "kind": "collection",
+                "ref": str(cname),
+                "payload": {"member_count": len(members)},
+                "source_turn_id": "",
+                "status": "active",
+            }
+        )
+    return items

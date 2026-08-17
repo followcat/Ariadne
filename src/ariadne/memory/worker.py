@@ -7,7 +7,7 @@ Personal v1 does not require a separate OS process. Hosts may:
 3. Rely on inline ``process_pending`` during summary render (default path)
 4. Spawn ``spawn_worker_process`` / ``python -m ariadne.memory.worker_main``
 
-Shared JSON stores (``summaries.json``, ``projection_jobs.json``, ``state.json``)
+Shared stores (``summaries.json``, ``projection_jobs.json``, L2 SQLite)
 use fcntl file locks, so **in-process and sub-process workers may run together**
 without lost updates. Prefer short drain ticks over long exclusive holds.
 

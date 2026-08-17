@@ -195,10 +195,19 @@ def test_goal_binding_read_rejects_corrupt_noncanonical_id(tmp_path: Path) -> No
         source_turn_id="t1",
         evidence_text="完成安全检查",
     )
-    path = memory.state.path
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["documents"]["s1"]["state"]["task_goal_bindings"]["task-1"] = "foo"
-    path.write_text(json.dumps(data), encoding="utf-8")
+    state = memory.state.get("s1")
+    state["task_goal_bindings"]["task-1"] = "foo"
+    memory.state._db.persist_apply(
+        session_id="s1",
+        state=state,
+        operations=[{"op": "set_attribute", "entity_id": "corrupt", "key": "x", "value": "foo", "evidence_quote": "x"}],
+        source_turn_id="corrupt",
+        current_version=memory.state.version("s1"),
+        new_version=memory.state.version("s1") + 1,
+        current_event_seq=memory.state.event_seq("s1"),
+        idempotency_key="",
+        idempotency_result={},
+    )
     with pytest.raises(AriadneError) as exc:
         memory.state.goal_id_for_task("s1", "task-1")
     assert exc.value.error.code == "ARIADNE_MEMORY_GOAL_BINDING"
