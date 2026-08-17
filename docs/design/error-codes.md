@@ -23,6 +23,9 @@ Stable enough for hosts to branch on.
 | `ARIADNE_SKILL_NOT_FOUND` | skills | search/load target missing |
 | `ARIADNE_SKILL_INVALID` | skills | pack failed validation |
 | `ARIADNE_MEMORY_NOT_READY` | memory | required layer/projection incomplete |
+| `ARIADNE_MEMORY_WORKING_SET_OVERFLOW` | memory | working-set assembler exceeded its hard character contract |
+| `ARIADNE_MEMORY_STATE_CURSOR_STALE` | memory | conversation_state_lookup cursor no longer matches the current projection |
+| `ARIADNE_MEMORY_LOOKUP_ITEM_TOO_LARGE` | memory | a single lookup item cannot fit the page byte cap |
 | `ARIADNE_MEMORY_WRITE_FAILED` | memory | durable write failed |
 | `ARIADNE_MEMORY_CONFLICT` | memory | a lower-authority or invalid temporal transition conflicts with authoritative state |
 | `ARIADNE_MEMORY_GOAL_BINDING` | memory | Host-owned task→goal binding is missing, ambiguous, immutable-conflicting, or points to an invalid goal |

@@ -132,6 +132,10 @@ Rules:
 | Tool | Role |
 | --- | --- |
 | `memory` | curated durable memory ops |
+| `memory_search` | graded episodic recall |
+| `memory_expand_evidence` | paged Episode events |
+| `conversation_state` | read working set / apply current-state ops |
+| `conversation_state_lookup` | page omitted current-state rows |
 | `search_skills` | skill discovery |
 | `load_skill` | skill body load |
 | `sandbox.exec` | run command in sandbox port |

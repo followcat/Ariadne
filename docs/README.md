@@ -34,6 +34,7 @@ User-facing pages are bilingual; design contracts stay **English-first** (see [I
 | [design/memory-scopes.md](design/memory-scopes.md) | User / workspace / session memory scopes |
 | [design/memory-search.md](design/memory-search.md) | Graded `memory_search` (fast/auto/deep) |
 | [design/memory-intelligence.md](design/memory-intelligence.md) | Auto-capture, Episodes, Host task→goal bind, MemoryLimits, model-safe L2 (Phase 15) |
+| [design/memory-working-set.md](design/memory-working-set.md) | L2 event stream, bounded working set, current-state lookup |
 | [design/agent-closed-loop.md](design/agent-closed-loop.md) | Functional plan → act → verify → replan slice; production hardening backlog (Phase 14) |
 | [design/sandbox-v1.md](design/sandbox-v1.md) | Redesigned sandbox port |
 | [design/memory-sandbox-synthesis.md](design/memory-sandbox-synthesis.md) | How memory and sandbox meet |

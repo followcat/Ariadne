@@ -6,7 +6,7 @@ Related: [../MEMORY.md](../MEMORY.md), [../SOURCE_MAP.md](../SOURCE_MAP.md)
 
 ## 0. Research summary (what production taught us)
 
-From AIFlow memory evolution + memory branch benchmarks:
+From production layered-memory failures and personal-kernel benchmarks:
 
 | Lesson | Implication for Ariadne |
 | --- | --- |
@@ -150,7 +150,7 @@ Dedupe by turn id. Cap selected summaries by token budget.
 
 ### Non-goal
 
-No query-time "history summary LLM" blocking `build_context` (AIFlow archived this path for good reasons).
+No query-time "history summary LLM" blocking `build_context`.
 
 ---
 
@@ -185,10 +185,13 @@ This is the highest-leverage improvement over "vector chat memory."
 }
 ```
 
-Hard limits (fail, do not truncate silently):
+Two independent capacity contracts (fail, do not truncate silently):
 
-- entities / relations / collections / members caps
-- rendered prompt token cap (e.g. 800-2000)
+- **Storage** caps on entities / relations / collections / members
+- **Working-set** soft/hard character caps on the per-turn prompt view
+
+The complete projection may grow up to the storage caps. The prompt view
+must not. See [memory-working-set.md](memory-working-set.md).
 
 ### 5.2 Allowed operations only
 
@@ -256,17 +259,24 @@ prompt_delta = render(raw_turns after watermark)  # bounded
 
 Do **not** invent a third mode that returns partial reducer output.
 
-### 5.5 Personal simplification vs AIFlow
+Prompt assembly uses a **working set**: complete injection when the
+projection is small enough to fit the soft budget, otherwise a
+query-selected view plus `conversation_state_lookup` for omitted current
+rows. Collection members live in their own table and are never rendered as
+`members=[]`.
+
+### 5.5 Personal packaging
 
 Keep:
 
-- authority split, evidence quotes, closed ops, append-only versions, last-good+delta
+- authority split, evidence quotes, closed ops, append-only versions,
+  last-good+delta, bounded working set
 
-Drop / optionalize:
+Leave out of the kernel:
 
-- multi-tenant operator resolve CLI as core requirement
-- complex enrollment rollout matrix (still useful as feature flags)
-- mandatory inspector product surface
+- multi-tenant enrollment / cutover control planes
+- a mandatory inspector product surface
+- a hosted database as a required runtime
 
 ---
 
@@ -274,7 +284,7 @@ Drop / optionalize:
 
 ### Semantics
 
-Ordered string entries with hard caps (AIFlow defaults as starting point):
+Ordered string entries with hard caps (personal starting point):
 
 - ~24 entries / scope
 - ~600 chars / entry

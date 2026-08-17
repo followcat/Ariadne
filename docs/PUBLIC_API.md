@@ -125,6 +125,9 @@ Fastfail examples:
 | `ARIADNE_SKILL_NOT_FOUND` | load/search target missing |
 | `ARIADNE_SKILL_INVALID` | pack validation failed |
 | `ARIADNE_MEMORY_NOT_READY` | required projection/layer incomplete |
+| `ARIADNE_MEMORY_WORKING_SET_OVERFLOW` | working-set text exceeded the hard character cap |
+| `ARIADNE_MEMORY_STATE_CURSOR_STALE` | lookup cursor is stale after a state change |
+| `ARIADNE_MEMORY_LOOKUP_ITEM_TOO_LARGE` | one lookup item exceeds the page byte cap |
 | `ARIADNE_SANDBOX_DISABLED` | sandbox tool used without backend |
 | `ARIADNE_MODEL_ERROR` | provider failure mapped cleanly |
 
@@ -187,7 +190,11 @@ Memory.in_memory()  # tests only
 Budgets default to the personal `default` profile (see `MemoryLimits` /
 `ARIADNE_MEMORY_PROFILE`). Model-facing conversation state is always projected
 through the model-safe snapshot (no Host-only `task_goal_bindings` in context
-or the `conversation_state` tool). Closed-loop task plan submit persists a
+or the `conversation_state` tool). Conversation-state context is a bounded
+working set; omitted current rows are read with `conversation_state_lookup`.
+`MemoryContextSummary` reports `selection_mode`, `omitted_count`,
+`projection_seq`, and named `sections` (required working set / pinned vs
+droppable retrieved layers). Closed-loop task plan submit persists a
 Host-owned `task_id → goal_id` binding before steps run.
 
 ### 5.3 Tools

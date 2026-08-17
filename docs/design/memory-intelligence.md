@@ -259,6 +259,10 @@ tool). Host-only `task_goal_bindings` remain available to task completion and
 journal recovery but are omitted from both returned JSON and rendered text;
 the tool's structured view and text are produced from the same sanitized read.
 Bare `state.render()` is not used on model-facing production paths.
+Conversation-state context is the bounded working set from
+[memory-working-set.md](memory-working-set.md), not an exhaustive dump of
+the projection. Episode / reflection / prospective layers stay separate:
+they do not become current-state authority.
 
 ## 8. Scope and remaining work
 

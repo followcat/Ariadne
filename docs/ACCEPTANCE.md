@@ -19,6 +19,8 @@ Run: `pytest -q` from repo root. Optional web browser: `python scripts/verify_we
 | L8 | Skill body **section** load + discriminator metadata | `tests/test_skill_section_and_discriminator.py` |
 | L9 | Memory **consolidation** → L3 curated (explicit apply) | `tests/test_memory_consolidation.py` |
 | L10 | **Persistent grants** survive reload | `tests/test_grants.py` |
+| L11 | Working set + lookup (complete/selected, no silent truncate, cursor) | `tests/test_memory_working_set.py`, `tests/test_memory_state_eval.py` |
+| L12 | Query-selected memory prompt (pinned, low-info skip, no eviction of state) | `tests/test_memory_prompt_selection.py`, `tests/test_context_compiler.py` |
 
 ## CLI host
 

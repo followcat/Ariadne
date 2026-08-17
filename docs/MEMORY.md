@@ -70,7 +70,14 @@ Implemented as an opt-in advanced layer:
 
 - Strict structured projector decisions: `apply` or `confirmed_no_change`
 - Evidence quotes checked against completed-turn input/output/tool evidence
-- Append-only document versions, CAS parent fencing, and per-field history
+- Append-only event stream + document versions, CAS parent fencing, and
+  per-field history
+- Complete typed projection (entities, facts, relations, collection members)
+  is the current-state authority and may grow with the session
+- Each turn injects a **bounded working set**, not the whole projection.
+  Small states (`rows ≤ 50` and under the soft char budget) inject complete;
+  larger states are query-selected. Omitted current facts are read with
+  `conversation_state_lookup`. A lookup miss is not a negative assertion.
 - Coordinator-locked lease validation + state apply + job completion, so a
   stale local worker cannot commit a projection after a newer claim
 - Authority-aware conflict errors plus `active|superseded|expired` semantics
@@ -79,6 +86,8 @@ Implemented as an opt-in advanced layer:
 
 Projection remains off by default; enabling it in the composed host wires the
 configured model as a conservative structured projector.
+
+See [design/memory-working-set.md](design/memory-working-set.md).
 
 ## 4. Read API
 
@@ -178,14 +187,13 @@ context window (`ARIADNE_CONTEXT_MAX_CHARS`, default 120_000). Store capacities
 
 Strict integer types and hard maxima fail fast. Partial layer overrides retain
 defaults and unknown layer names are rejected.
-**Model-safe state choke point:** every model-facing State surface goes through
-`ConversationStateStore.render_model_safe` /
-`render_model_safe_snapshot` (MemoryFacade context assembly and the
-`conversation_state` tool). Structured JSON and rendered text share one
-sanitized snapshot, so concurrent Host updates cannot desync the two views.
-Production paths must not call bare `state.render()` for model context.
-Host-only `task_goal_bindings` stay available to task completion and journal
-recovery but never appear in model JSON or text.
+**Model-safe state choke point:** model-facing current state is assembled by
+`ConversationStateStore.assemble_working_set` (facade context and the
+`conversation_state` tool). Text and `WorkingSetResult.state_json` come from
+one projection snapshot; Host-only `task_goal_bindings` stay out of both.
+`render_model_safe` / `render_model_safe_snapshot` remain Host/debug helpers
+and are not the live prompt path. Production paths must not call bare
+`state.render()` for model context.
 
 The journal validates prepared events, reflection/prospective payloads, stage
 status/result contracts, and active v2 rows before recovery. Invalid rows are
@@ -305,6 +313,7 @@ Kernel does not require a hosted multi-tenant DB.
 | [design/memory-scopes.md](design/memory-scopes.md) | Personal **user / workspace / session** scopes, host layout, `user_id`, user episodic root, KNOWLEDGE boundary |
 | [design/memory-search.md](design/memory-search.md) | **Graded retrieval** — Retrieval modes, tool contract, as-of clocks, deep two-phase planner, config knobs |
 | [design/memory-intelligence.md](design/memory-intelligence.md) | Automatic projection, episodes/causal/time memory, constrained traversal, reflection, prospective memory |
+| [design/memory-working-set.md](design/memory-working-set.md) | L2 event stream, typed projection, bounded working set, lookup |
 | [ROADMAP.md](ROADMAP.md) Phase 11b | Living checklist (S0–S2 done; S3/S4 partial) |
 | [design/agent-closed-loop.md](design/agent-closed-loop.md) | Plan/verify loop; opt-in L2 project; Context Compiler (Phase 14) |
 

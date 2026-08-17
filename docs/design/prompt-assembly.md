@@ -14,7 +14,12 @@ Related: [../SKILLS.md](../SKILLS.md), [../MEMORY.md](../MEMORY.md), [../TOOLCAL
 ```text
 1. Core policy (incl. skill selection discipline + cross-tool rules)
 2. High-signal memory system block
-   (conversation_state → curated → summaries → semantic; layer budgets traced)
+   (working set → pinned user model → retrieved profile →
+   query-selected summaries → semantic; layer budgets traced).
+   Low-information acknowledgements skip retrieved profile, summaries, and
+   semantic. Immediate deixis (“刚才” / previous reply) skips semantic and
+   non-recent summaries. Working set, pinned preferences/constraints/goals,
+   state delta, recent raw, reflection, and prospective stay.
 3. Skill selection plan [SKILL_SELECTION] (auto_load / recommended / other + budget line)
 4. Turn-scoped auto_load skill bodies [SKILL_BODY … scope=this_turn] (budgeted)
 5. Short tool catalog (discovery only; deferred marked)

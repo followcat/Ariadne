@@ -16,6 +16,8 @@
 | **Memory layer** | One contribution to context (raw, summary, curated, semantic, state) |
 | **Curated memory** | Explicit durable facts |
 | **Conversation state** | Structured L2 projection of evolving session facts (entities, relations, collections) |
+| **Working set** | Bounded, possibly non-exhaustive prompt view of current conversation state |
+| **conversation_state_lookup** | Tool to page current projection rows omitted from the working set |
 | **MemoryLimits** | Host budgets for recent messages, per-layer chars, Episode/journal capacity, recovery batch; auto profiles `compact`/`default`/`deep` |
 | **task_goal_bindings** | Host-only immutable `task_id → goal_id` map; never model-facing |
 | **Goal pointer** | `session:current_goal` points at a lifecycle Goal entity; not the Goal itself |

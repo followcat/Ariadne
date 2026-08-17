@@ -341,6 +341,17 @@ not multi-tenant “complete.”**
 - [x] Host-safe conversation-state read view and centralized Goal identity helpers
 - [x] Generic provider token and compositional secret redaction at Memory boundary
 
+### Phase 16 — Conversation-state working set + prompt selection
+
+Design: [design/memory-working-set.md](design/memory-working-set.md).
+
+- [x] L2 SQLite event stream + typed projection + JSON import
+- [x] Bounded working set (`complete` / `selected`) and
+      `conversation_state_lookup`
+- [x] Query-selected profile / summaries; pinned typed personalization;
+      low-information and immediate-deixis skip rules
+- [x] Deterministic state eval + lab cases rebound to the projection store
+
 ## Explicitly deferred forever (unless product changes)
 
 - Company Pack system (superseded by official optional plugins)
