@@ -419,8 +419,23 @@ def run_repl(
                 if action != "read":
                     ui.out.print("usage: /memory read")
                     continue
+                memory = agent.turn_app.memory
+                _text, summary = memory.build_context(
+                    session_id=settings.session_id, query=""
+                )
+                ui.out.print(
+                    "working_set "
+                    f"mode={summary.selection_mode or 'none'} "
+                    f"omitted={summary.omitted_count} "
+                    f"seq={summary.projection_seq} "
+                    f"watermark={memory.state.watermark(settings.session_id) or '-'}"
+                )
+                ui.out.print(
+                    "omitted current facts: conversation_state_lookup "
+                    "(a miss does not prove the fact is absent)"
+                )
                 curated = asyncio.run(agent.get_curated(session_id=settings.session_id))
-                for scope in ("user", "session"):
+                for scope in ("user", "workspace", "session"):
                     entries = curated.get(scope) or []
                     ui.out.print(f"[{scope}] {len(entries)} entries")
                     for entry in entries:

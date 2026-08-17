@@ -249,7 +249,7 @@ If images are present and the model is not multimodal under the active policy, A
 /tools
 /skills
 /model [name]               show or hot-swap model
-/memory read
+/memory read                working-set mode/omitted/watermark + curated
 /usage                      cumulative tokens this REPL
 /compact                    archive transcript (summaries keep history)
 /resume [id]                list or switch sessions

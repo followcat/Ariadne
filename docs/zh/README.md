@@ -25,7 +25,7 @@
 | [../PUBLIC_API.md](../PUBLIC_API.md) | 可调用表面 |
 | [../SKILLS.md](../SKILLS.md) | Skills 运行时 |
 | [../TOOLCALL.md](../TOOLCALL.md) | 注册表与工具循环 |
-| [../MEMORY.md](../MEMORY.md) | 分层记忆 |
+| [../MEMORY.md](../MEMORY.md) | 分层记忆（含有界 working set 与 lookup） |
 | [../SANDBOX.md](../SANDBOX.md) | 沙箱端口 |
 | [../ROADMAP.md](../ROADMAP.md) | 交付清单 |
 | [../NON_GOALS.md](../NON_GOALS.md) | 明确不做 |

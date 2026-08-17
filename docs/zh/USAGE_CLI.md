@@ -237,7 +237,7 @@ export ARIADNE_CONTEXT_MAX_CHARS=120000    # host 提示预算（缩放参考）
 /tools
 /skills
 /model [name]               查看或热切换模型
-/memory read
+/memory read                当前 working set 元数据 + curated
 /usage                      本 REPL 累计 token
 /compact                    归档 transcript（摘要仍保留历史）
 /resume [id]                列出或切换会话
