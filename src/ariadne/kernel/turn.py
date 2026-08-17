@@ -72,6 +72,7 @@ Skills:
 
 Memory:
 - conversation_state is authoritative for current-session facts/todos.
+- Conversation-state prompt text is a bounded working set. If a needed current fact is omitted, call conversation_state_lookup. A lookup miss does not prove the fact is absent; do not invent it from summaries.
 - memory tool is for durable preferences across sessions.
 - Semantic hits and summaries are historical and may be superseded by conversation_state.
 
@@ -486,7 +487,23 @@ class TurnApplication:
                     verbatim=True,
                 )
             )
-        if memory_system:
+        if memory_summary.sections:
+            for section in memory_summary.sections:
+                if not section.text:
+                    continue
+                context_blocks.append(
+                    ContextBlock(
+                        source=f"memory:{section.name}",
+                        role="system",
+                        content=section.text,
+                        reason=section.reason or f"memory layer {section.name}",
+                        score=section.score,
+                        required=section.required,
+                        trust="memory_derived",
+                        verbatim=section.required,
+                    )
+                )
+        elif memory_system:
             context_blocks.append(
                 ContextBlock(
                     source="memory_context",

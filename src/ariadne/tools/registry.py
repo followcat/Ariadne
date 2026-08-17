@@ -919,13 +919,27 @@ def build_default_registry(
         if action == "read":
             # task_goal_bindings and other Host-only routing metadata must
             # never cross the model-facing tool boundary.
-            safe_state, text, count = ctx.memory.state.render_model_safe_snapshot(
-                ctx.session_id
-            )
+            assemble = getattr(ctx.memory, "assemble_turn_working_set", None)
+            if assemble is not None:
+                working = assemble(
+                    session_id=ctx.session_id,
+                    query=str(ctx.user_text or ""),
+                )
+            else:
+                working = ctx.memory.state.assemble_working_set(
+                    ctx.session_id,
+                    str(ctx.user_text or ""),
+                    soft_chars=ctx.memory.limits.working_set_soft_chars,
+                    hard_chars=ctx.memory.limits.working_set_hard_chars,
+                )
+            safe_state = ctx.memory.state.model_safe_state(working.state_json)
             return {
                 "action": "read",
-                "entity_count": count,
-                "text": text,
+                "entity_count": working.selected_count,
+                "omitted_count": working.omitted_count,
+                "selection_mode": working.selection_mode,
+                "projection_seq": working.projection_seq,
+                "text": working.text,
                 "state": safe_state,
             }
         if action == "apply":
@@ -1000,7 +1014,8 @@ def build_default_registry(
             description=(
                 "Read or apply conversation state (L2 authoritative session state: "
                 "todos, entities, current facts). "
-                "action=read returns the rendered state. "
+                "action=read returns a bounded working set, not the full projection; "
+                "use conversation_state_lookup for omitted current facts. "
                 "action=apply takes operations=[...]; every op must include an "
                 "evidence_quote copied verbatim from current user or tool-observed "
                 "text. The host derives evidence authority; callers cannot supply it. "
@@ -1088,6 +1103,52 @@ def build_default_registry(
             ),
             network_access="none",
             idempotent=None,
+        )
+    )
+
+    async def conversation_state_lookup_tool(
+        args: dict[str, Any], ctx: ToolContext
+    ) -> dict[str, Any]:
+        if ctx.memory is None:
+            raise AriadneError(app_error("ARIADNE_CONFIG_INVALID", "memory facade not configured"))
+        lookup = getattr(ctx.memory, "conversation_state_lookup", None)
+        if lookup is None:
+            raise AriadneError(
+                app_error("ARIADNE_CONFIG_INVALID", "conversation_state_lookup not available")
+            )
+        return lookup(
+            session_id=ctx.session_id,
+            query=str(args.get("query") or ""),
+            limit=args.get("limit"),
+            cursor=str(args.get("cursor") or ""),
+        )
+
+    registry.register(
+        ToolSpec(
+            name="conversation_state_lookup",
+            catalog_description="current-state lookup",
+            description=(
+                "Page current conversation-state facts omitted from the working set. "
+                "Zero results do not prove a current fact is absent. "
+                "Do not substitute turn summaries for a lookup miss."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 32},
+                    "cursor": {"type": "string"},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            handler=conversation_state_lookup_tool,
+            tool_exposure="named_deferred",
+            title="Conversation state lookup",
+            kind="tool",
+            side_effect_level="read",
+            network_access="none",
+            idempotent=True,
         )
     )
 

@@ -54,14 +54,12 @@ def test_curated_and_state_and_context(tmp_path: Path) -> None:
         assistant_text="hi about glass harbor route",
     )
     text, summary = mem.build_context(session_id="s1", query="what is the route for glass harbor")
-    assert "CONVERSATION_STATE" in text
-    assert "Prefer tables" in text
+    assert "CONVERSATION_STATE_WORKING_SET" in text
     assert "SOUTH-29" in text
-    assert summary.curated_count == 1
-    assert summary.state_entity_count == 1
+    assert summary.state_entity_count >= 1
     names = {layer.name: layer.status for layer in summary.layers}
     assert names["conversation_state"] == "used"
-    assert names["curated"] == "used"
+    assert names["retrieved_profile"] == "skipped"
 
 
 def test_state_requires_evidence(tmp_path: Path) -> None:

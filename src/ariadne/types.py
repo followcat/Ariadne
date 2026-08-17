@@ -48,6 +48,20 @@ class LayerReport:
     token_chars: int = 0
     item_ids: list[str] = field(default_factory=list)
     notes: str = ""
+    selection_mode: str = ""
+    omitted_count: int = 0
+    projection_seq: int = 0
+
+
+@dataclass(slots=True)
+class MemoryPromptSection:
+    """One named memory prompt block for ContextCompiler."""
+
+    name: str
+    text: str
+    required: bool = False
+    score: float = 50.0
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -56,6 +70,10 @@ class MemoryContextSummary:
     curated_count: int = 0
     state_entity_count: int = 0
     recent_turn_count: int = 0
+    sections: list[MemoryPromptSection] = field(default_factory=list)
+    selection_mode: str = ""
+    omitted_count: int = 0
+    projection_seq: int = 0
 
 
 @dataclass(slots=True)

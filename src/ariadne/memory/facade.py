@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..errors import AriadneError, app_error
-from ..types import LayerReport, MemoryContext, MemoryContextSummary
+from ..types import LayerReport, MemoryContext, MemoryContextSummary, MemoryPromptSection
 from .curated import CuratedStore
 from .capture_journal import CaptureJournalStore
 from .deep_planner import DeepPlan, DeepPlanner, DeepRerankError, LocalSplitPlanner
@@ -40,6 +41,15 @@ _VAGUE_DEIXIS = re.compile(
     r"(昨天|之前|那个|上次|早先|earlier|yesterday|previous|that\s+(plan|approach|issue|bug)|the\s+one\s+we)",
     re.I,
 )
+_LOW_INFORMATION_QUERY = re.compile(
+    r"(?i)^\s*(?:好(?:的|吧|啊)?|嗯+|哦+|收到|知道了|继续|可以|行|"
+    r"ok(?:ay)?|thanks?|thank you|got it)[。.!！?？~～\s]*$"
+)
+_IMMEDIATE_DEIXIS = re.compile(
+    r"(刚才|上一句|上一轮|刚刚说|this reply|previous reply|just now)",
+    re.I,
+)
+_PINNED_USER_MODEL_TYPES = frozenset({"preference", "constraint", "goal", "capability"})
 
 
 @dataclass
@@ -119,6 +129,9 @@ class MemoryFacade:
             episode_max_events_per_episode=self.limits.episode_max_events_per_episode,
             capture_max_records=self.limits.capture_max_records,
             capture_resume_batch_size=self.limits.capture_resume_batch_size,
+            working_set_soft_chars=self.limits.working_set_soft_chars,
+            working_set_hard_chars=self.limits.working_set_hard_chars,
+            lookup_page_limit=self.limits.lookup_page_limit,
         )
         self.recent_limit = effective.recent_limit
         self.layer_budgets = effective.layer_budgets
@@ -151,6 +164,7 @@ class MemoryFacade:
         session_id: str,
         query: str,
         blocks: list[str],
+        sections: list[MemoryPromptSection],
         layers: list[LayerReport],
     ) -> None:
         if self.reflection is None:
@@ -160,7 +174,15 @@ class MemoryFacade:
                 text, count = self.reflection.render_pending(session_id=session_id)
                 text, note = self._apply_budget("reflection", text)
                 if text:
-                    blocks.append(text)
+                    _push_section(
+                        blocks,
+                        sections,
+                        name="reflection",
+                        text=text,
+                        required=True,
+                        score=85.0,
+                        reason="pending reflection candidates",
+                    )
                     layers.append(
                         LayerReport(
                             name="reflection",
@@ -201,7 +223,15 @@ class MemoryFacade:
                 text, count = self.prospective.render_active()
                 text, note = self._apply_budget("prospective", text)
                 if text:
-                    blocks.append(text)
+                    _push_section(
+                        blocks,
+                        sections,
+                        name="prospective",
+                        text=text,
+                        required=True,
+                        score=85.0,
+                        reason="triggered prospective reminders",
+                    )
                     layers.append(
                         LayerReport(
                             name="prospective",
@@ -281,26 +311,6 @@ class MemoryFacade:
         if scope == "user" and self.user_curated is not None:
             return self.user_curated
         return self.curated
-
-    def _curated_snapshot(self, session_id: str) -> tuple[str, int]:
-        """Merge user-scope (optional separate store) + workspace/session curated."""
-        lines: list[str] = []
-        count = 0
-        for scope, store in (
-            ("user", self._curated_for_scope("user")),
-            ("workspace", self.curated),
-            ("session", self.curated),
-        ):
-            data = store.apply(action="read", scope=scope, session_id=session_id)
-            items = list(data.get("entries") or [])
-            if not items:
-                continue
-            lines.append(f"[CURATED_DURABLE {scope}]")
-            for item in items:
-                eid = item.get("id", "?")
-                lines.append(f"- ({eid}) {item['content']}")
-                count += 1
-        return "\n".join(lines), count
 
     def _apply_budget(self, name: str, text: str) -> tuple[str, str]:
         """Clamp a layer block to its configured budget with an explicit marker."""
@@ -427,6 +437,39 @@ class MemoryFacade:
             session_id=session_id,
             source_turn_id=source_turn_id,
             source_session_id=session_id,
+        )
+
+    def assemble_turn_working_set(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        allowed_turn_ids: set[str] | None = None,
+    ) -> Any:
+        assemble_query = "" if self._query_class(query) == "low_info" else query
+        return self.state.assemble_working_set(
+            session_id,
+            assemble_query,
+            soft_chars=self.limits.working_set_soft_chars,
+            hard_chars=self.limits.working_set_hard_chars,
+            allowed_turn_ids=allowed_turn_ids,
+        )
+
+    def conversation_state_lookup(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        limit: int | None = None,
+        cursor: str = "",
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.resolve_user_id(user_id)
+        return self.state.lookup(
+            session_id=session_id,
+            query=query,
+            limit=self.limits.lookup_page_limit if limit is None else int(limit),
+            cursor=cursor,
         )
 
     async def memory_search(
@@ -1229,6 +1272,325 @@ class MemoryFacade:
                     break
         return found
 
+    def _query_class(self, query: str) -> str:
+        text = (query or "").strip()
+        if not text or _LOW_INFORMATION_QUERY.match(text):
+            return "low_info"
+        if _IMMEDIATE_DEIXIS.search(text) and not _VAGUE_DEIXIS.search(text):
+            return "immediate"
+        return "informative"
+
+    def _append_state_layer(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        query_class: str,
+        allowed: set[str] | None,
+        blocks: list[str],
+        sections: list[MemoryPromptSection],
+        layers: list[LayerReport],
+        extra_notes: str = "",
+    ) -> None:
+        assemble_query = "" if query_class == "low_info" else query
+        try:
+            working = self.state.assemble_working_set(
+                session_id,
+                assemble_query,
+                soft_chars=self.limits.working_set_soft_chars,
+                hard_chars=self.limits.working_set_hard_chars,
+                allowed_turn_ids=allowed,
+            )
+        except AriadneError as exc:
+            layers.append(
+                LayerReport(
+                    name="conversation_state",
+                    status="failed",
+                    notes=f"{exc.error.code}: {exc.error.message}"[:200],
+                )
+            )
+            return
+        notes = ", ".join(
+            x
+            for x in (
+                extra_notes,
+                f"selection_mode={working.selection_mode}",
+                f"omitted={working.omitted_count}",
+                f"projection_seq={working.projection_seq}",
+                f"assemble_query={query_class}",
+            )
+            if x
+        )
+        keep = bool(working.text) and (
+            working.selected_count > 0
+            or working.omitted_count > 0
+            or working.selection_mode == "selected"
+        )
+        if keep:
+            _push_section(
+                blocks,
+                sections,
+                name="conversation_state",
+                text=working.text,
+                required=True,
+                score=90.0,
+                reason="authoritative current-state working set",
+            )
+            layers.append(
+                LayerReport(
+                    name="conversation_state",
+                    status="used",
+                    token_chars=working.char_count,
+                    item_ids=[f"entities:{working.selected_count}"],
+                    notes=notes,
+                    selection_mode=working.selection_mode,
+                    omitted_count=working.omitted_count,
+                    projection_seq=working.projection_seq,
+                )
+            )
+        else:
+            layers.append(
+                LayerReport(
+                    name="conversation_state",
+                    status="disabled" if self.projection is None else "skipped",
+                    notes=notes,
+                    selection_mode=working.selection_mode,
+                    omitted_count=working.omitted_count,
+                    projection_seq=working.projection_seq,
+                )
+            )
+
+    def _render_user_model_rows(self, rows: list[dict[str, Any]], *, heading: str) -> str:
+        if not rows:
+            return ""
+        lines = [heading]
+        for row in rows:
+            lines.append(
+                f"- {row['type']}:{row['key']}={row['value']!r} "
+                f"scope={row['scope']} confidence={row['confidence']:.2f} "
+                f"source={row['source']} id={row['entry_id']} rev={row['revision']}"
+            )
+        return "\n".join(lines)
+
+    def _lexical_score(self, query: str, text: str) -> int:
+        hay = (text or "").lower()
+        score = 0
+        for token in re.findall(r"[\w\u4e00-\u9fff]{2,}", (query or "").lower()):
+            if token in hay:
+                score += 1
+        return score
+
+    def _append_profile_layers(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        query_class: str,
+        blocks: list[str],
+        sections: list[MemoryPromptSection],
+        layers: list[LayerReport],
+    ) -> None:
+        pinned: list[dict[str, Any]] = []
+        retrieved_typed: list[dict[str, Any]] = []
+        if self.user_model is None:
+            layers.append(LayerReport(name="user_model", status="disabled"))
+        else:
+            rows = self.user_model.list(
+                workspace_key=self.workspace_key, session_id=session_id
+            )
+            pinned = [row for row in rows if str(row.get("type")) in _PINNED_USER_MODEL_TYPES]
+            retrieved_typed = [
+                row for row in rows if str(row.get("type")) not in _PINNED_USER_MODEL_TYPES
+            ]
+            pinned_text = self._render_user_model_rows(
+                pinned, heading="[USER_MODEL: PINNED]"
+            )
+            if pinned_text:
+                _push_section(
+                    blocks,
+                    sections,
+                    name="user_model",
+                    text=pinned_text,
+                    required=True,
+                    score=88.0,
+                    reason="pinned typed personalization",
+                )
+                layers.append(
+                    LayerReport(
+                        name="user_model",
+                        status="used",
+                        token_chars=len(pinned_text),
+                        item_ids=[f"pinned:{len(pinned)}"],
+                    )
+                )
+            else:
+                layers.append(LayerReport(name="user_model", status="skipped"))
+        user_curated = self._curated_for_scope("user").apply(
+            action="read", scope="user", session_id=session_id
+        )
+        typed_values = {
+            unicodedata.normalize("NFKC", str(row.get("value") or "")).casefold()
+            for row in pinned
+        }
+        user_lines = ["[CURATED_DURABLE user]"]
+        user_ids: list[str] = []
+        overlaps = 0
+        for item in user_curated.get("entries") or []:
+            content = str(item.get("content") or "")
+            normalized = unicodedata.normalize("NFKC", content).casefold()
+            if normalized in typed_values:
+                overlaps += 1
+                continue
+            user_lines.append(f"- ({item.get('id', '?')}) {content}")
+            user_ids.append(str(item.get("id") or ""))
+        user_text = "\n".join(user_lines) if len(user_lines) > 1 else ""
+        user_text, user_note = self._apply_budget("curated", user_text)
+        if user_text:
+            _push_section(
+                blocks,
+                sections,
+                name="curated",
+                text=user_text,
+                required=True,
+                score=82.0,
+                reason="user-scope durable curated notes",
+            )
+            layers.append(
+                LayerReport(
+                    name="curated",
+                    status="used",
+                    token_chars=len(user_text),
+                    item_ids=[f"count:{len(user_ids)}"],
+                    notes=user_note,
+                )
+            )
+        else:
+            layers.append(LayerReport(name="curated", status="skipped"))
+
+        if query_class == "low_info":
+            layers.append(
+                LayerReport(
+                    name="retrieved_profile",
+                    status="skipped",
+                    notes="low_information_query",
+                )
+            )
+            return
+        workspace = self.curated.apply(
+            action="read", scope="workspace", session_id=session_id
+        )
+        selected_lines: list[str] = ["[RETRIEVED_PROFILE]"]
+        selected_ids: list[str] = []
+        for row in retrieved_typed:
+            blob = f"{row.get('type')} {row.get('key')} {row.get('value')}"
+            if self._lexical_score(query, blob) <= 0:
+                continue
+            selected_lines.append(
+                f"- {row['type']}:{row['key']}={row['value']!r} scope={row['scope']}"
+            )
+            selected_ids.append(str(row.get("entry_id") or row.get("key")))
+        for item in workspace.get("entries") or []:
+            content = str(item.get("content") or "")
+            if self._lexical_score(query, content) <= 0:
+                continue
+            selected_lines.append(f"- ({item.get('id', '?')}) {content}")
+            selected_ids.append(str(item.get("id") or ""))
+        retrieved_text = "\n".join(selected_lines) if len(selected_lines) > 1 else ""
+        retrieved_text, retrieved_note = self._apply_budget("curated", retrieved_text)
+        note = ", ".join(
+            x
+            for x in (
+                retrieved_note,
+                f"deduped:{overlaps}" if overlaps else "",
+            )
+            if x
+        )
+        if retrieved_text:
+            _push_section(
+                blocks,
+                sections,
+                name="retrieved_profile",
+                text=retrieved_text,
+                required=False,
+                score=40.0,
+                reason="query-selected profile memory",
+            )
+            layers.append(
+                LayerReport(
+                    name="retrieved_profile",
+                    status="used",
+                    token_chars=len(retrieved_text),
+                    item_ids=selected_ids,
+                    notes=note,
+                )
+            )
+        else:
+            layers.append(
+                LayerReport(name="retrieved_profile", status="skipped", notes=note)
+            )
+
+    def _append_summary_layer(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        query_class: str,
+        allowed: set[str] | None,
+        recent_turn_ids: set[str],
+        blocks: list[str],
+        sections: list[MemoryPromptSection],
+        layers: list[LayerReport],
+    ) -> None:
+        if query_class == "low_info":
+            layers.append(
+                LayerReport(name="turn_summary", status="skipped", notes="low_information_query")
+            )
+            return
+        items = self.summaries.list_ready(
+            session_id, limit=16, allowed_turn_ids=allowed
+        )
+        if query_class == "immediate":
+            layers.append(
+                LayerReport(name="turn_summary", status="skipped", notes="immediate_deixis")
+            )
+            return
+        scored: list[tuple[int, dict[str, str]]] = []
+        for item in items:
+            tid = str(item.get("turn_id") or "")
+            if tid in recent_turn_ids:
+                continue
+            score = self._lexical_score(query, str(item.get("summary_text") or ""))
+            if score > 0 or not query.strip():
+                scored.append((score, item))
+        scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("turn_id"))))
+        picked = [item for _score, item in scored[:4]]
+        if not picked:
+            layers.append(LayerReport(name="turn_summary", status="skipped"))
+            return
+        lines = ["[HISTORICAL_CONTEXT: MAY BE SUPERSEDED BY CONVERSATION_STATE]"]
+        for item in picked:
+            lines.append(f"- turn {item['turn_id']}: {item['summary_text']}")
+        text = "\n".join(lines)
+        text, note = self._apply_budget("turn_summary", text)
+        _push_section(
+            blocks,
+            sections,
+            name="turn_summary",
+            text=text,
+            required=False,
+            score=35.0,
+            reason="query-selected turn summaries",
+        )
+        layers.append(
+            LayerReport(
+                name="turn_summary",
+                status="used",
+                token_chars=len(text),
+                item_ids=[str(item.get("turn_id") or "") for item in picked],
+                notes=note,
+            )
+        )
+
     def _check_require_ready(self, session_id: str, *, require_ready: bool | None) -> None:
         flag = self.require_ready if require_ready is None else require_ready
         if not flag or self.projection is None:
@@ -1257,38 +1619,34 @@ class MemoryFacade:
         allowed = self._allowed_turns(session_id, before_turn_id)
         layers: list[LayerReport] = []
         blocks: list[str] = []
+        sections: list[MemoryPromptSection] = []
         pit_note = f"before_turn_id:{before_turn_id}" if before_turn_id else ""
 
-        state_text, entity_count = self.state.render_model_safe(
-            session_id, allowed_turn_ids=allowed
-        )
-        state_text, state_note = self._apply_budget("conversation_state", state_text)
+        query_class = self._query_class(query)
         proj_note = "projection:disabled" if self.projection is None else ""
-        notes = ", ".join(x for x in (state_note, proj_note, pit_note) if x)
-        if state_text:
-            blocks.append(state_text)
-            layers.append(
-                LayerReport(
-                    name="conversation_state",
-                    status="used",
-                    token_chars=len(state_text),
-                    item_ids=[f"entities:{entity_count}"],
-                    notes=notes,
-                )
-            )
-        else:
-            layers.append(
-                LayerReport(
-                    name="conversation_state",
-                    status="disabled" if self.projection is None else "skipped",
-                    notes=notes or pit_note,
-                )
-            )
+        self._append_state_layer(
+            session_id=session_id,
+            query=query,
+            query_class=query_class,
+            allowed=allowed,
+            blocks=blocks,
+            sections=sections,
+            layers=layers,
+            extra_notes=", ".join(x for x in (proj_note, pit_note) if x),
+        )
 
         delta = self._state_delta(session_id, before_turn_id=before_turn_id)
         if delta is not None:
             delta_text, delta_ids = delta
-            blocks.append(delta_text)
+            _push_section(
+                blocks,
+                sections,
+                name="state_delta",
+                text=delta_text,
+                required=True,
+                score=89.0,
+                reason="raw turns newer than last-good state",
+            )
             layers.append(
                 LayerReport(
                     name="state_delta",
@@ -1298,101 +1656,92 @@ class MemoryFacade:
                 )
             )
 
-        user_model_text, user_model_count = (
-            self.user_model.render(
-                workspace_key=self.workspace_key,
-                session_id=session_id,
-            )
-            if self.user_model is not None
-            else ("", 0)
+        self._append_profile_layers(
+            session_id=session_id,
+            query=query,
+            query_class=query_class,
+            blocks=blocks,
+            sections=sections,
+            layers=layers,
         )
-        user_model_text, user_model_note = self._apply_budget(
-            "user_model", user_model_text
-        )
-        if user_model_text:
-            blocks.append(user_model_text)
-            layers.append(
-                LayerReport(
-                    name="user_model",
-                    status="used",
-                    token_chars=len(user_model_text),
-                    item_ids=[f"count:{user_model_count}"],
-                    notes=user_model_note,
-                )
-            )
-        else:
-            layers.append(
-                LayerReport(
-                    name="user_model",
-                    status="disabled" if self.user_model is None else "skipped",
-                )
-            )
 
         self._append_cognitive_context(
             session_id=session_id,
             query=query,
             blocks=blocks,
+            sections=sections,
             layers=layers,
         )
 
-        curated_text, curated_count = self._curated_snapshot(session_id)
-        curated_text, _ = self._apply_budget("curated", curated_text)
-        if curated_text:
-            blocks.append(curated_text)
-            layers.append(
-                LayerReport(
-                    name="curated",
-                    status="used",
-                    token_chars=len(curated_text),
-                    item_ids=[f"count:{curated_count}"],
-                )
-            )
-        else:
-            layers.append(LayerReport(name="curated", status="skipped"))
-
-        summary_text = self.summaries.render(
-            session_id, limit=8, allowed_turn_ids=allowed
+        recent_for_summary = self.recent_messages(
+            session_id=session_id, before_turn_id=before_turn_id
         )
-        summary_text, _ = self._apply_budget("turn_summary", summary_text)
-        if summary_text:
-            blocks.append(summary_text)
-            layers.append(LayerReport(name="turn_summary", status="used", token_chars=len(summary_text)))
-        else:
-            layers.append(LayerReport(name="turn_summary", status="skipped"))
-
-        auth_fields = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
-        hits = self.semantic.search(
+        recent_ids = {
+            str(msg.get("turn_id") or "")
+            for msg in recent_for_summary
+            if msg.get("turn_id")
+        }
+        self._append_summary_layer(
             session_id=session_id,
             query=query,
-            limit=5,
-            expand_aliases=self._aliases_from_state(
-                session_id, allowed_turn_ids=allowed
-            ),
-            demote_entity_ids=set(auth_fields),
-            authoritative_fields=auth_fields,
-            allowed_turn_ids=allowed,
+            query_class=query_class,
+            allowed=allowed,
+            recent_turn_ids=recent_ids,
+            blocks=blocks,
+            sections=sections,
+            layers=layers,
         )
-        semantic_text = self.semantic.render(hits)
-        semantic_text, _ = self._apply_budget("semantic", semantic_text)
-        if semantic_text:
-            blocks.append(semantic_text)
-            layers.append(
-                LayerReport(
-                    name="semantic",
-                    status="used",
-                    token_chars=len(semantic_text),
-                    item_ids=[h["turn_id"] for h in hits],
-                    notes="field_demote; hybrid_skipped: sync_path",
-                )
-            )
-        else:
+
+        if query_class in {"low_info", "immediate"}:
             layers.append(
                 LayerReport(
                     name="semantic",
                     status="skipped",
-                    notes="hybrid_skipped: sync_path",
+                    notes=f"{query_class}; hybrid_skipped: sync_path",
                 )
             )
+        else:
+            auth_fields = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
+            hits = self.semantic.search(
+                session_id=session_id,
+                query=query,
+                limit=5,
+                expand_aliases=self._aliases_from_state(
+                    session_id, allowed_turn_ids=allowed
+                ),
+                demote_entity_ids=set(auth_fields),
+                authoritative_fields=auth_fields,
+                allowed_turn_ids=allowed,
+            )
+            semantic_text = self.semantic.render(hits)
+            semantic_text, _ = self._apply_budget("semantic", semantic_text)
+            if semantic_text:
+                _push_section(
+                    blocks,
+                    sections,
+                    name="semantic",
+                    text=semantic_text,
+                    required=False,
+                    score=30.0,
+                    reason="query-selected episodic hits",
+                )
+                layers.append(
+                    LayerReport(
+                        name="semantic",
+                        status="used",
+                        token_chars=len(semantic_text),
+                        item_ids=[h["turn_id"] for h in hits],
+                        notes="field_demote; hybrid_skipped: sync_path",
+                    )
+                )
+            else:
+                layers.append(
+                    LayerReport(
+                        name="semantic",
+                        status="skipped",
+                        notes="hybrid_skipped: sync_path",
+                    )
+                )
 
         recent = self.recent_messages(
             session_id=session_id, before_turn_id=before_turn_id
@@ -1415,12 +1764,7 @@ class MemoryFacade:
             )
 
         memory_system = "\n\n".join(b for b in blocks if b)
-        summary = MemoryContextSummary(
-            layers=layers,
-            curated_count=curated_count,
-            state_entity_count=entity_count,
-            recent_turn_count=len(recent) // 2,
-        )
+        summary = _context_summary(layers, sections, recent)
         return memory_system, summary
 
     async def build_context_async(
@@ -1444,40 +1788,36 @@ class MemoryFacade:
         allowed = self._allowed_turns(session_id, before_turn_id)
         layers: list[LayerReport] = []
         blocks: list[str] = []
+        sections: list[MemoryPromptSection] = []
         pit_note = f"before_turn_id:{before_turn_id}" if before_turn_id else ""
 
-        state_text, entity_count = self.state.render_model_safe(
-            session_id, allowed_turn_ids=allowed
-        )
-        state_text, state_note = self._apply_budget("conversation_state", state_text)
+        query_class = self._query_class(query)
         lag = self.projection.pending_lag(session_id) if self.projection else 0
         lag_note = f"projection_lag:{lag}" if lag else ""
         proj_note = "projection:disabled" if self.projection is None else ""
-        notes = ", ".join(x for x in (state_note, lag_note, proj_note, pit_note) if x)
-        if state_text:
-            blocks.append(state_text)
-            layers.append(
-                LayerReport(
-                    name="conversation_state",
-                    status="used",
-                    token_chars=len(state_text),
-                    item_ids=[f"entities:{entity_count}"],
-                    notes=notes,
-                )
-            )
-        else:
-            layers.append(
-                LayerReport(
-                    name="conversation_state",
-                    status="disabled" if self.projection is None else "skipped",
-                    notes=notes,
-                )
-            )
+        self._append_state_layer(
+            session_id=session_id,
+            query=query,
+            query_class=query_class,
+            allowed=allowed,
+            blocks=blocks,
+            sections=sections,
+            layers=layers,
+            extra_notes=", ".join(x for x in (lag_note, proj_note, pit_note) if x),
+        )
 
         delta = self._state_delta(session_id, before_turn_id=before_turn_id)
         if delta is not None:
             delta_text, delta_ids = delta
-            blocks.append(delta_text)
+            _push_section(
+                blocks,
+                sections,
+                name="state_delta",
+                text=delta_text,
+                required=True,
+                score=89.0,
+                reason="raw turns newer than last-good state",
+            )
             layers.append(
                 LayerReport(
                     name="state_delta",
@@ -1487,105 +1827,92 @@ class MemoryFacade:
                 )
             )
 
-        user_model_text, user_model_count = (
-            self.user_model.render(
-                workspace_key=self.workspace_key,
-                session_id=session_id,
-            )
-            if self.user_model is not None
-            else ("", 0)
+        self._append_profile_layers(
+            session_id=session_id,
+            query=query,
+            query_class=query_class,
+            blocks=blocks,
+            sections=sections,
+            layers=layers,
         )
-        user_model_text, user_model_note = self._apply_budget(
-            "user_model", user_model_text
-        )
-        if user_model_text:
-            blocks.append(user_model_text)
-            layers.append(
-                LayerReport(
-                    name="user_model",
-                    status="used",
-                    token_chars=len(user_model_text),
-                    item_ids=[f"count:{user_model_count}"],
-                    notes=user_model_note,
-                )
-            )
-        else:
-            layers.append(
-                LayerReport(
-                    name="user_model",
-                    status="disabled" if self.user_model is None else "skipped",
-                )
-            )
 
         self._append_cognitive_context(
             session_id=session_id,
             query=query,
             blocks=blocks,
+            sections=sections,
             layers=layers,
         )
 
-        curated_text, curated_count = self._curated_snapshot(session_id)
-        curated_text, _ = self._apply_budget("curated", curated_text)
-        if curated_text:
-            blocks.append(curated_text)
-            layers.append(
-                LayerReport(
-                    name="curated",
-                    status="used",
-                    token_chars=len(curated_text),
-                    item_ids=[f"count:{curated_count}"],
-                )
-            )
-        else:
-            layers.append(LayerReport(name="curated", status="skipped"))
-
-        summary_text = self.summaries.render(
-            session_id, limit=8, allowed_turn_ids=allowed
+        recent_for_summary = self.recent_messages(
+            session_id=session_id, before_turn_id=before_turn_id
         )
-        summary_text, _ = self._apply_budget("turn_summary", summary_text)
-        if summary_text:
-            blocks.append(summary_text)
-            layers.append(LayerReport(name="turn_summary", status="used", token_chars=len(summary_text)))
-        else:
-            layers.append(LayerReport(name="turn_summary", status="skipped"))
+        recent_ids = {
+            str(msg.get("turn_id") or "")
+            for msg in recent_for_summary
+            if msg.get("turn_id")
+        }
+        self._append_summary_layer(
+            session_id=session_id,
+            query=query,
+            query_class=query_class,
+            allowed=allowed,
+            recent_turn_ids=recent_ids,
+            blocks=blocks,
+            sections=sections,
+            layers=layers,
+        )
 
         # Episodic L4 is light/budgeted in build_context; use memory_search for hard recall
-        auth_fields = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
-        try:
-            hits = await self.semantic.search_hybrid(
-                session_id=session_id,
-                query=query,
-                limit=5,
-                expand_aliases=self._aliases_from_state(
-                    session_id, allowed_turn_ids=allowed
-                ),
-                demote_entity_ids=set(auth_fields),
-                authoritative_fields=auth_fields,
-                allowed_turn_ids=allowed,
+        if query_class in {"low_info", "immediate"}:
+            layers.append(
+                LayerReport(name="semantic", status="skipped", notes=query_class)
             )
-            semantic_text = self.semantic.render(hits)
-            semantic_text, _ = self._apply_budget("semantic", semantic_text)
-            if semantic_text:
-                blocks.append(semantic_text)
+        else:
+            auth_fields = self._authoritative_fields(session_id, allowed_turn_ids=allowed)
+            try:
+                hits = await self.semantic.search_hybrid(
+                    session_id=session_id,
+                    query=query,
+                    limit=5,
+                    expand_aliases=self._aliases_from_state(
+                        session_id, allowed_turn_ids=allowed
+                    ),
+                    demote_entity_ids=set(auth_fields),
+                    authoritative_fields=auth_fields,
+                    allowed_turn_ids=allowed,
+                )
+                semantic_text = self.semantic.render(hits)
+                semantic_text, _ = self._apply_budget("semantic", semantic_text)
+                if semantic_text:
+                    _push_section(
+                        blocks,
+                        sections,
+                        name="semantic",
+                        text=semantic_text,
+                        required=False,
+                        score=30.0,
+                        reason="query-selected episodic hits",
+                    )
+                    layers.append(
+                        LayerReport(
+                            name="semantic",
+                            status="used",
+                            token_chars=len(semantic_text),
+                            item_ids=[h["turn_id"] for h in hits],
+                            notes="hybrid; field_demote; prefer memory_search for hard recall",
+                        )
+                    )
+                else:
+                    layers.append(LayerReport(name="semantic", status="skipped"))
+            except Exception as exc:  # noqa: BLE001 — layer-local fail (MEMORY fail-visible)
                 layers.append(
                     LayerReport(
                         name="semantic",
-                        status="used",
-                        token_chars=len(semantic_text),
-                        item_ids=[h["turn_id"] for h in hits],
-                        notes="hybrid; field_demote; prefer memory_search for hard recall",
+                        status="failed",
+                        notes=f"{type(exc).__name__}: {exc}"[:200],
                     )
                 )
-            else:
-                layers.append(LayerReport(name="semantic", status="skipped"))
-        except Exception as exc:  # noqa: BLE001 — layer-local fail (MEMORY fail-visible)
-            layers.append(
-                LayerReport(
-                    name="semantic",
-                    status="failed",
-                    notes=f"{type(exc).__name__}: {exc}"[:200],
-                )
-            )
 
         recent = self.recent_messages(
             session_id=session_id, before_turn_id=before_turn_id
@@ -1603,13 +1930,64 @@ class MemoryFacade:
             layers.append(LayerReport(name="recent_raw", status="skipped"))
 
         memory_system = "\n\n".join(b for b in blocks if b)
-        summary = MemoryContextSummary(
-            layers=layers,
-            curated_count=curated_count,
-            state_entity_count=entity_count,
-            recent_turn_count=len(recent) // 2,
-        )
+        summary = _context_summary(layers, sections, recent)
         return memory_system, summary
+
+
+def _push_section(
+    blocks: list[str],
+    sections: list[MemoryPromptSection],
+    *,
+    name: str,
+    text: str,
+    required: bool,
+    score: float,
+    reason: str,
+) -> None:
+    if not text:
+        return
+    blocks.append(text)
+    sections.append(
+        MemoryPromptSection(
+            name=name,
+            text=text,
+            required=required,
+            score=score,
+            reason=reason,
+        )
+    )
+
+
+def _context_summary(
+    layers: list[LayerReport],
+    sections: list[MemoryPromptSection],
+    recent: list[dict[str, str]],
+) -> MemoryContextSummary:
+    state_layer = next((layer for layer in layers if layer.name == "conversation_state"), None)
+    return MemoryContextSummary(
+        layers=layers,
+        curated_count=_layer_item_count(layers, "curated"),
+        state_entity_count=_layer_item_count(layers, "conversation_state"),
+        recent_turn_count=len(recent) // 2,
+        sections=list(sections),
+        selection_mode=state_layer.selection_mode if state_layer else "",
+        omitted_count=state_layer.omitted_count if state_layer else 0,
+        projection_seq=state_layer.projection_seq if state_layer else 0,
+    )
+
+
+def _layer_item_count(layers: list[LayerReport], name: str) -> int:
+    for layer in layers:
+        if layer.name != name:
+            continue
+        for item_id in layer.item_ids:
+            text = str(item_id)
+            if ":" in text:
+                tail = text.rsplit(":", 1)[-1]
+                if tail.isdigit():
+                    return int(tail)
+        return len(layer.item_ids)
+    return 0
 
 
 class Memory(MemoryFacade):

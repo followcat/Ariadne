@@ -150,3 +150,59 @@ def test_context_budget_counts_tool_call_arguments_and_tool_schemas() -> None:
             ],
         )
     assert schema_error.value.error.details["tool_schema_chars"] > 180
+
+
+def test_context_compiler_keeps_required_working_set_and_drops_retrieved() -> None:
+    compiler = ContextCompiler(max_chars=280, min_summary_chars=40)
+    compiled = compiler.compile(
+        [
+            ContextBlock(
+                source="memory:conversation_state",
+                role="system",
+                content="[CONVERSATION_STATE_WORKING_SET]\n- route SOUTH",
+                reason="authoritative current-state working set",
+                score=90.0,
+                required=True,
+                trust="memory_derived",
+                verbatim=True,
+            ),
+            ContextBlock(
+                source="memory:user_model",
+                role="system",
+                content="[USER_MODEL: PINNED]\n- prefer tables",
+                reason="pinned typed personalization",
+                score=88.0,
+                required=True,
+                trust="memory_derived",
+                verbatim=True,
+            ),
+            ContextBlock(
+                source="memory:retrieved_profile",
+                role="system",
+                content="R" * 200,
+                reason="query-selected profile memory",
+                score=40.0,
+                required=False,
+                trust="memory_derived",
+            ),
+            ContextBlock(
+                source="memory:semantic",
+                role="system",
+                content="S" * 200,
+                reason="query-selected episodic hits",
+                score=30.0,
+                required=False,
+                trust="memory_derived",
+            ),
+        ]
+    )
+    by_source = {item.source: item for item in compiled.attributions}
+    assert by_source["memory:conversation_state"].disposition == "included"
+    assert by_source["memory:user_model"].disposition == "included"
+    assert by_source["memory:retrieved_profile"].disposition in {"summarized", "dropped"}
+    assert by_source["memory:semantic"].disposition in {"summarized", "dropped"}
+    joined = "\n".join(
+        str(message["content"]) for message in compiled.messages if message["role"] == "system"
+    )
+    assert "CONVERSATION_STATE_WORKING_SET" in joined
+    assert "prefer tables" in joined

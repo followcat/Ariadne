@@ -124,7 +124,7 @@ def test_last_good_plus_delta_read_mode(tmp_path: Path) -> None:
 
     text, summary = memory.build_context(session_id=session, query="which route?")
     # last-good state is still rendered authoritatively
-    assert "[CONVERSATION_STATE: AUTHORITATIVE]" in text
+    assert "[CONVERSATION_STATE_WORKING_SET]" in text
     assert "NORTH" in text
     # and the newer-than-state delta is rendered with precedence marker
     assert "[RECENT_TURNS: NEWER THAN CONVERSATION_STATE]" in text

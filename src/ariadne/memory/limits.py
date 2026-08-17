@@ -9,7 +9,7 @@ from typing import Any, Callable
 from ..errors import AriadneError, app_error
 
 DEFAULT_LAYER_BUDGETS = {
-    "conversation_state": 2500,
+    "conversation_state": 8000,
     "curated": 1500,
     "turn_summary": 2000,
     "semantic": 1500,
@@ -33,6 +33,11 @@ MAX_EPISODES = 8_192
 MAX_EVENTS_PER_EPISODE = 256
 MAX_CAPTURE_RECORDS = 16_384
 MAX_CAPTURE_RESUME_BATCH_SIZE = 32
+MAX_WORKING_SET_CHARS = 32_000
+MAX_LOOKUP_PAGE_LIMIT = 32
+DEFAULT_WORKING_SET_SOFT_CHARS = 6_000
+DEFAULT_WORKING_SET_HARD_CHARS = 8_000
+DEFAULT_LOOKUP_PAGE_LIMIT = 32
 _STRICT_INTEGER = re.compile(r"^[+-]?\d+$")
 
 
@@ -83,6 +88,9 @@ class MemoryLimits:
     episode_max_events_per_episode: int = 256
     capture_max_records: int = 4096
     capture_resume_batch_size: int = 4
+    working_set_soft_chars: int = DEFAULT_WORKING_SET_SOFT_CHARS
+    working_set_hard_chars: int = DEFAULT_WORKING_SET_HARD_CHARS
+    lookup_page_limit: int = DEFAULT_LOOKUP_PAGE_LIMIT
 
     def __post_init__(self) -> None:
         limits = {
@@ -91,6 +99,9 @@ class MemoryLimits:
             "episode_max_events_per_episode": MAX_EVENTS_PER_EPISODE,
             "capture_max_records": MAX_CAPTURE_RECORDS,
             "capture_resume_batch_size": MAX_CAPTURE_RESUME_BATCH_SIZE,
+            "working_set_soft_chars": MAX_WORKING_SET_CHARS,
+            "working_set_hard_chars": MAX_WORKING_SET_CHARS,
+            "lookup_page_limit": MAX_LOOKUP_PAGE_LIMIT,
         }
         for name, maximum in limits.items():
             raw = getattr(self, name)
@@ -138,6 +149,24 @@ class MemoryLimits:
                 )
             normalized[str(key)] = budget
         self.layer_budgets = normalized
+        if self.working_set_soft_chars > self.working_set_hard_chars:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "working_set_soft_chars cannot exceed working_set_hard_chars",
+                    field="working_set_soft_chars",
+                    value=self.working_set_soft_chars,
+                )
+            )
+        if self.working_set_soft_chars < 256 or self.working_set_hard_chars < 256:
+            raise AriadneError(
+                app_error(
+                    "ARIADNE_CONFIG_INVALID",
+                    "working set character budgets must be at least 256",
+                    field="working_set_hard_chars",
+                    value=self.working_set_hard_chars,
+                )
+            )
 
     @classmethod
     def for_profile(cls, profile: str = "default") -> "MemoryLimits":
@@ -164,6 +193,8 @@ class MemoryLimits:
                 episode_max_events_per_episode=128,
                 capture_max_records=2048,
                 capture_resume_batch_size=2,
+                working_set_soft_chars=3600,
+                working_set_hard_chars=4800,
             )
         if name == "deep":
             return cls(
@@ -176,6 +207,8 @@ class MemoryLimits:
                 episode_max_events_per_episode=256,
                 capture_max_records=8192,
                 capture_resume_batch_size=8,
+                working_set_soft_chars=9000,
+                working_set_hard_chars=12000,
             )
         return cls()
 
@@ -226,6 +259,13 @@ class MemoryLimits:
             episode_max_events_per_episode=self.episode_max_events_per_episode,
             capture_max_records=self.capture_max_records,
             capture_resume_batch_size=self.capture_resume_batch_size,
+            working_set_soft_chars=_scale_int(
+                self.working_set_soft_chars, factor, minimum=256, maximum=MAX_WORKING_SET_CHARS
+            ),
+            working_set_hard_chars=_scale_int(
+                self.working_set_hard_chars, factor, minimum=256, maximum=MAX_WORKING_SET_CHARS
+            ),
+            lookup_page_limit=self.lookup_page_limit,
         )
 
     @classmethod
@@ -278,6 +318,9 @@ class MemoryLimits:
             "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH_SIZE",
             "ARIADNE_MEMORY_CAPTURE_RESUME_BATCH",
         )
+        soft = optional_integer("ARIADNE_MEMORY_WORKING_SET_SOFT_CHARS")
+        hard = optional_integer("ARIADNE_MEMORY_WORKING_SET_HARD_CHARS")
+        lookup_limit = optional_integer("ARIADNE_MEMORY_LOOKUP_PAGE_LIMIT")
 
         budgets = dict(base.layer_budgets)
         raw_budgets = pick("ARIADNE_MEMORY_LAYER_BUDGETS", default="").strip()
@@ -326,6 +369,15 @@ class MemoryLimits:
             ),
             capture_resume_batch_size=(
                 batch if batch is not None else base.capture_resume_batch_size
+            ),
+            working_set_soft_chars=(
+                soft if soft is not None else base.working_set_soft_chars
+            ),
+            working_set_hard_chars=(
+                hard if hard is not None else base.working_set_hard_chars
+            ),
+            lookup_page_limit=(
+                lookup_limit if lookup_limit is not None else base.lookup_page_limit
             ),
         )
 
