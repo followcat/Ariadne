@@ -75,3 +75,53 @@ def test_curated_cap_fastfail(tmp_path: Path) -> None:
     store.apply(action="add", content="b", scope="user", session_id="s")
     with pytest.raises(AriadneError):
         store.apply(action="add", content="c", scope="user", session_id="s")
+
+
+def test_multi_entity_working_set_does_not_resurrect_stale_field(tmp_path: Path) -> None:
+    mem = _facade(tmp_path)
+    mem.state.apply_ops(
+        session_id="s",
+        source_turn_id="t1",
+        evidence_text="alpha city Beijing beta city Shanghai",
+        operations=[
+            {"op": "ensure_entity", "entity_id": "alpha", "evidence_quote": "alpha"},
+            {
+                "op": "set_attribute",
+                "entity_id": "alpha",
+                "key": "city",
+                "value": "Beijing",
+                "evidence_quote": "Beijing",
+            },
+            {"op": "ensure_entity", "entity_id": "beta", "evidence_quote": "beta"},
+            {
+                "op": "set_attribute",
+                "entity_id": "beta",
+                "key": "city",
+                "value": "Shanghai",
+                "evidence_quote": "Shanghai",
+            },
+        ],
+    )
+    mem.state.apply_ops(
+        session_id="s",
+        source_turn_id="t2",
+        evidence_text="alpha city Guangzhou",
+        operations=[
+            {
+                "op": "set_attribute",
+                "entity_id": "alpha",
+                "key": "city",
+                "value": "Guangzhou",
+                "evidence_quote": "Guangzhou",
+            }
+        ],
+    )
+    working = mem.state.assemble_working_set(
+        "s", "alpha city", soft_chars=6000, hard_chars=8000
+    )
+    assert "Guangzhou" in working.text
+    assert "Beijing" not in working.text
+    page = mem.state.lookup(session_id="s", query="alpha.city")
+    values = [str(item.get("payload", {}).get("value")) for item in page["items"]]
+    assert "Guangzhou" in values
+    assert "Beijing" not in values
